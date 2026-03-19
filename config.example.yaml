@@ -1,0 +1,8 @@
+ai_server:
+  base_url: "https://your-ai-server.example.com"
+  api_key: "<REPLACE_WITH_YOUR_API_KEY>"
+  model: "your-model-name"
+  timeout: 120
+  verify_ssl: true
+  http2: true
+  ca_bundle: ""  # optional: path to corporate CA bundle (e.g. "/path/to/ca-bundle.pem")

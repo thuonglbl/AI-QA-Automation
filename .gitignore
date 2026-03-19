@@ -1,0 +1,19 @@
+# IDE
+prompt.txt
+_bmad
+.claude
+.agent
+
+# secrets
+config.yaml
+config-*.yaml
+config_*.yaml
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# CSharp
+[Bb]in/
+[Oo]bj/
