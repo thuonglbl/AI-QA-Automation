@@ -1,0 +1,30 @@
+# Pre-commit hooks for ai-qa-automation
+# Install with: uv run pre-commit install
+# Run manually: uv run pre-commit run --all-files
+# Docs: https://pre-commit.com
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Version matches dev dependency: ruff>=0.9.0
+    rev: v0.9.0
+    hooks:
+      # Run ruff linter (with auto-fix)
+      - id: ruff
+        args: [--fix]
+        types_or: [python, pyi]
+      # Run ruff formatter
+      - id: ruff-format
+        types_or: [python, pyi]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.0
+    hooks:
+      - id: mypy
+        files: ^src/
+        args:
+          - --config-file=pyproject.toml
+        additional_dependencies:
+          - fastapi>=0.115.0
+          - pydantic>=2.4.0
+          - pydantic-settings>=2.4.0
+          - mcp>=1.6.0

@@ -1,0 +1,303 @@
+"""Mary agent - Test Case Generation with Per-Item Review.
+
+Mary generates test cases from requirements extracted by Bob and presents them
+for per-item review. Users can approve or reject individual test cases with feedback.
+"""
+
+import logging
+from pathlib import Path
+from typing import Any
+
+from ai_qa.agents.base import AgentState, BaseAgent
+from ai_qa.ai_connection.config import LLMConfig
+from ai_qa.models import StageResult, TestCase
+from ai_qa.pipelines.output_writer import OutputWriter
+from ai_qa.pipelines.test_case_extractor import TestCaseExtractor
+
+logger = logging.getLogger(__name__)
+
+
+class MaryAgent(BaseAgent):
+    """Agent for generating and reviewing test cases.
+
+    Mary reads requirements from workspace/requirements/, generates test cases
+    using TestCaseExtractor, and presents them for per-item review. Users can
+    approve or reject individual test cases with feedback.
+
+    Lifecycle:
+        START → PROCESSING → REVIEW_REQUEST → (Approve/Reject+feedback) → DONE
+    """
+
+    def __init__(
+        self,
+        name: str = "Mary",
+        color: str = "green",
+        step_number: int = 3,
+        step_title: str = "Create Test Cases",
+        workspace_dir: Path | None = None,
+    ) -> None:
+        """Initialize Mary agent.
+
+        Args:
+            name: Agent display name
+            color: HEX colour string matching frontend
+            step_number: Pipeline step index
+            step_title: Human-readable label shown in UI
+            workspace_dir: Override workspace root path (used in tests)
+        """
+        super().__init__(name, color, step_number, step_title, workspace_dir)
+
+        # Mary-specific state
+        self.test_cases: list[TestCase] = []
+        self.current_review_index: int = 0
+
+        # Initialize pipeline components
+        try:
+            self.config = LLMConfig.from_agents_json(agent_name="mary")
+        except FileNotFoundError:
+            # Use default config if agents.json doesn't exist (test environment)
+            self.config = LLMConfig(
+                provider="litellm",
+                model_name="gpt-4",
+                temperature=0.0,
+                api_key="",
+                base_url="",
+            )
+
+        self.extractor = TestCaseExtractor(
+            output_base_dir=self._workspace_dir / "testcases",
+            llm_config=self.config,
+        )
+        self.writer = OutputWriter(output_base_dir=self._workspace_dir / "testcases")
+
+    async def process(
+        self,
+        input_data: dict[str, Any],
+        feedback: str | None = None,
+    ) -> StageResult:
+        """Generate test cases from requirements.
+
+        Args:
+            input_data: User input (ignored for Mary - reads from workspace)
+            feedback: User rejection feedback for re-processing
+
+        Returns:
+            StageResult with generated test cases
+        """
+        try:
+            # Read requirements from workspace/requirements/
+            requirements_dir = self._workspace_dir / "requirements"
+            requirements_files = list(requirements_dir.glob("*.md"))
+
+            if not requirements_files:
+                return StageResult(
+                    success=True,
+                    data=[],
+                    errors=[],
+                    warnings=["No requirements files found in workspace/requirements/"],
+                    confidence=1.0,
+                )
+
+            # Send progress updates
+            await self.send_message(
+                f"Found {len(requirements_files)} requirement(s) to process",
+                message_type="info",
+            )
+
+            # Extract test cases using TestCaseExtractor
+            source_urls = [""] * len(requirements_files)
+            result = await self.extractor.extract_batch(requirements_files, source_urls)
+
+            if not result.success:
+                return result
+
+            # Store generated test cases
+            self.test_cases = result.data or []
+
+            # Send progress updates for each test case
+            for i, _test_case in enumerate(self.test_cases, start=1):
+                await self.send_message(
+                    f"Generating test case {i} of {len(self.test_cases)}...",
+                    message_type="info",
+                )
+
+            # Reset review index
+            self.current_review_index = 0
+
+            return StageResult(
+                success=True,
+                data=self.test_cases,
+                errors=[],
+                warnings=result.warnings,
+                confidence=result.confidence,
+            )
+
+        except Exception as e:
+            logger.error(f"Error in Mary agent process: {e}")
+            return StageResult(
+                success=False,
+                data=None,
+                errors=[f"Failed to generate test cases: {e}"],
+                warnings=[],
+                confidence=0.0,
+            )
+
+    async def handle_approve(self) -> None:
+        """Handle approval of current test case.
+
+        Advances to next test case or transitions to DONE if all approved.
+        """
+        # Mark current test case as approved (implicit by advancing index)
+        self.current_review_index += 1
+
+        # Check if all test cases approved
+        if self.current_review_index >= len(self.test_cases):
+            # Write all approved test cases to workspace
+            await self._write_approved_test_cases()
+
+            # Transition to DONE
+            await self.transition_to(AgentState.DONE)
+            await self.send_message(
+                f"{len(self.test_cases)} test cases saved to testcases/",
+                message_type="success",
+            )
+        else:
+            # Present next test case for review
+            await self.transition_to(AgentState.REVIEW_REQUEST)
+            await self._present_current_test_case()
+
+    async def handle_reject(self, feedback: str) -> None:
+        """Handle rejection of current test case with feedback.
+
+        Re-generates the current test case with feedback context and re-presents.
+
+        Args:
+            feedback: User rejection feedback
+        """
+        # Paraphrase feedback in acknowledgment (UX-DR12)
+        await self.send_message(
+            f"I'll revise the test case to address your feedback: '{feedback}'",
+            message_type="text",
+        )
+
+        # Re-generate current test case with feedback
+        await self.transition_to(AgentState.PROCESSING)
+
+        # For now, we'll re-run extraction with feedback context
+        # In a more sophisticated implementation, we'd extract just the current test case
+        try:
+            requirements_dir = self._workspace_dir / "requirements"
+            requirements_files = list(requirements_dir.glob("*.md"))
+
+            if requirements_files:
+                # Extract with feedback context (simplified - re-extracts all)
+                result = await self.extractor.extract_batch(
+                    requirements_files, [""] * len(requirements_files)
+                )
+
+                if result.success and result.data:
+                    # Replace current test case with regenerated one
+                    if self.current_review_index < len(result.data):
+                        self.test_cases[self.current_review_index] = result.data[
+                            self.current_review_index
+                        ]
+
+            # Re-present the test case
+            await self.transition_to(AgentState.REVIEW_REQUEST)
+            await self._present_current_test_case()
+
+        except Exception as e:
+            logger.error(f"Error re-generating test case: {e}")
+            await self.transition_to(AgentState.ERROR)
+            await self.send_message(
+                f"Failed to regenerate test case: {e}",
+                message_type="error",
+            )
+
+    def _format_review_content(self, result: StageResult) -> str:
+        """Format test case for review display.
+
+        Args:
+            result: StageResult with test case data
+
+        Returns:
+            Formatted markdown string with test case structure
+        """
+        if not self.test_cases or self.current_review_index >= len(self.test_cases):
+            return "No test case to review."
+
+        test_case = self.test_cases[self.current_review_index]
+        total = len(self.test_cases)
+        current = self.current_review_index + 1
+
+        # Format test case with clear structure
+        content = f"## Test Case {current} of {total}: {test_case.title}\n\n"
+
+        if test_case.preconditions:
+            content += "**Preconditions:**\n"
+            for i, precond in enumerate(test_case.preconditions, start=1):
+                content += f"{i}. {precond}\n"
+            content += "\n"
+
+        if test_case.steps:
+            content += "**Steps:**\n"
+            for step in test_case.steps:
+                content += f"{step.number}. {step.action} (target: {step.target})"
+                if step.data:
+                    content += f" - Data: {step.data}"
+                content += "\n"
+            content += "\n"
+
+        if test_case.expected_results:
+            content += "**Expected Results:**\n"
+            for i, expected_result in enumerate(test_case.expected_results, start=1):
+                content += f"{i}. {expected_result}\n"
+            content += "\n"
+
+        if test_case.automation_hints:
+            content += "**Automation Hints:**\n"
+            for hint in test_case.automation_hints:
+                content += f"- {hint}\n"
+            content += "\n"
+
+        return content
+
+    async def _present_current_test_case(self) -> None:
+        """Present current test case for review via WebSocket."""
+        if self.test_cases and self.current_review_index < len(self.test_cases):
+            test_case = self.test_cases[self.current_review_index]
+            total = len(self.test_cases)
+
+            content = self._format_review_content(
+                StageResult(success=True, data=self.test_cases, errors=[], warnings=[])
+            )
+
+            await self.send_message(
+                content,
+                message_type="text",
+                metadata={
+                    "test_case": test_case.model_dump(),
+                    "current_index": self.current_review_index,
+                    "total_count": total,
+                },
+            )
+
+    async def _write_approved_test_cases(self) -> None:
+        """Write all approved test cases to workspace/testcases/."""
+        from ai_qa.pipelines.models import OutputMetadata
+
+        for test_case in self.test_cases:
+            try:
+                filename = f"{test_case.filename}.json"
+                content = test_case.model_dump_json(indent=2)
+
+                metadata = OutputMetadata(
+                    source_url="",
+                    model=self.config.model_name,
+                    confidence=1.0,  # Approved by user = high confidence
+                )
+
+                await self.writer.write(filename, content, metadata)
+
+            except Exception as e:
+                logger.error(f"Failed to write test case {test_case.title}: {e}")

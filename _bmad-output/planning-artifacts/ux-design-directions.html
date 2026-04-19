@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI QA Automation — Complete UI Design (Direction D: Conversational)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #0f172a; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+
+  /* ===== NAV ===== */
+  .nav { position: fixed; top: 0; left: 0; right: 0; background: #fff; border-bottom: 1px solid #e2e8f0; padding: 10px 24px; display: flex; align-items: center; gap: 12px; z-index: 100; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+  .nav-logo { font-size: 15px; font-weight: 700; color: #0f172a; white-space: nowrap; }
+  .nav-logo span { color: #3b82f6; }
+  .nav-divider { width: 1px; height: 24px; background: #e2e8f0; }
+  .nav-steps { display: flex; gap: 2px; flex-wrap: wrap; }
+  .nav-step { padding: 6px 12px; border-radius: 6px; border: none; background: transparent; color: #64748b; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+  .nav-step:hover { background: #f1f5f9; color: #0f172a; }
+  .nav-step.active { background: #3b82f6; color: #fff; }
+  .state-toggle { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: #64748b; flex-shrink: 0; }
+  .state-toggle button { padding: 5px 10px; border-radius: 6px; border: 1px solid #e2e8f0; background: #fff; font-size: 11px; cursor: pointer; transition: all 0.15s; font-weight: 500; }
+  .state-toggle button.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+  .state-toggle button:hover:not(.active) { background: #f8fafc; }
+
+  /* ===== CONTENT ===== */
+  .content { margin-top: 56px; padding: 24px; display: flex; justify-content: center; align-items: flex-start; min-height: calc(100vh - 56px); }
+  .mockup-frame { width: 100%; max-width: 860px; background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,0.15); overflow: hidden; display: none; }
+  .mockup-frame.active { display: flex; flex-direction: column; }
+
+  /* ===== TOPBAR ===== */
+  .topbar { padding: 14px 20px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; gap: 12px; background: #fff; }
+  .avatar { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 700; color: #fff; flex-shrink: 0; }
+  .avatar-pink { background: #ec4899; }
+  .avatar-blue { background: #3b82f6; }
+  .avatar-green { background: #22c55e; }
+  .avatar-purple { background: #8b5cf6; }
+  .avatar-orange { background: #f97316; }
+  .topbar-info { flex: 1; }
+  .topbar-info h3 { font-size: 15px; font-weight: 600; line-height: 1.2; }
+  .topbar-info .meta { font-size: 12px; color: #64748b; margin-top: 1px; }
+  .topbar-info .meta strong { color: #3b82f6; }
+  .step-dots { display: flex; gap: 5px; align-items: center; }
+  .step-dot { width: 8px; height: 8px; border-radius: 50%; background: #e2e8f0; transition: background 0.2s; }
+  .step-dot.done { background: #22c55e; }
+  .step-dot.active { background: #3b82f6; }
+  .step-dot.active.processing { background: #f59e0b; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; }
+  .badge-start { background: #f1f5f9; color: #64748b; }
+  .badge-start::before { background: #94a3b8; }
+  .badge-processing { background: #fffbeb; color: #d97706; }
+  .badge-processing::before { background: #f59e0b; animation: pulse 1.4s ease-in-out infinite; }
+  .badge-review { background: #eff6ff; color: #2563eb; }
+  .badge-review::before { background: #3b82f6; }
+  .badge-done { background: #f0fdf4; color: #16a34a; }
+  .badge-done::before { background: #22c55e; }
+
+  /* ===== CHAT ===== */
+  .chat { flex: 1; padding: 20px; overflow-y: auto; background: #f8fafc; min-height: 420px; max-height: 520px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 600px; animation: fadeIn 0.2s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .msg-agent { align-self: flex-start; }
+  .msg-user { align-self: flex-end; }
+  .msg .sender { font-size: 11px; font-weight: 600; margin-bottom: 3px; }
+  .msg-agent .sender { color: #3b82f6; }
+  .msg-user .sender { color: #64748b; text-align: right; }
+  .bubble { padding: 14px 18px; border-radius: 16px; font-size: 14px; line-height: 1.65; }
+  .msg-agent .bubble { background: #fff; border: 1px solid #e2e8f0; border-bottom-left-radius: 4px; }
+  .msg-user .bubble { background: #3b82f6; color: #fff; border-bottom-right-radius: 4px; }
+  .bubble a { color: #3b82f6; text-decoration: none; font-weight: 500; }
+  .msg-user .bubble a { color: #bfdbfe; }
+  .bubble strong { font-weight: 600; }
+  .bubble .highlight { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px 14px; margin: 10px 0 4px; font-size: 13px; }
+  .bubble .provider-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 14px; margin: 6px 0; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+  .bubble .provider-card .pname { font-weight: 600; }
+  .bubble .provider-card .ptag { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
+  .ptag-best { background: #f0fdf4; color: #16a34a; }
+  .ptag-secure { background: #eff6ff; color: #2563eb; }
+  .ptag-good { background: #fffbeb; color: #d97706; }
+  .bubble .model-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+  .bubble .model-table th { text-align: left; padding: 6px 8px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 600; color: #64748b; }
+  .bubble .model-table td { padding: 6px 8px; border-bottom: 1px solid #f1f5f9; }
+  .bubble .review-content { background: #f8fafc; border-radius: 8px; padding: 14px; margin: 10px 0 4px; font-size: 13px; line-height: 1.7; }
+  .bubble .review-content h5 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+  .bubble .review-content ul { padding-left: 18px; margin: 6px 0; }
+  .bubble .review-content li { margin-bottom: 3px; }
+  .bubble .review-content .tc-step { display: flex; gap: 8px; padding: 4px 0; }
+  .bubble .review-content .tc-num { color: #3b82f6; font-weight: 600; flex-shrink: 0; }
+  .bubble .code-block { background: #1e293b; color: #e2e8f0; border-radius: 8px; padding: 14px; margin: 10px 0 4px; font-size: 12px; line-height: 1.6; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; overflow-x: auto; white-space: pre; }
+  .code-block .kw { color: #c084fc; }
+  .code-block .fn { color: #67e8f9; }
+  .code-block .str { color: #86efac; }
+  .code-block .cm { color: #64748b; }
+  .bubble .report-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+  .bubble .report-table th { text-align: left; padding: 8px; background: #f8fafc; border-bottom: 2px solid #e2e8f0; font-weight: 600; }
+  .bubble .report-table td { padding: 8px; border-bottom: 1px solid #f1f5f9; }
+  .pass { color: #16a34a; font-weight: 600; }
+  .fail { color: #ef4444; font-weight: 600; }
+  .typing-dots { display: inline-flex; gap: 4px; align-items: center; padding: 4px 0; }
+  .typing-dots span { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; animation: bounce 1.4s ease-in-out infinite; }
+  .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
+
+  /* ===== INPUT AREA ===== */
+  .input-area { padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #fff; }
+  .input-row { display: flex; gap: 8px; align-items: center; }
+  .input-field { flex: 1; padding: 10px 16px; border: 1px solid #e2e8f0; border-radius: 20px; font-size: 14px; outline: none; font-family: inherit; }
+  .input-field:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+  .input-field:disabled { background: #f8fafc; color: #94a3b8; }
+  .btn { padding: 10px 20px; border-radius: 20px; border: none; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.15s; font-family: inherit; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-blue { background: #3b82f6; color: #fff; }
+  .btn-blue:hover:not(:disabled) { background: #2563eb; }
+  .btn-green { background: #22c55e; color: #fff; }
+  .btn-green:hover { background: #16a34a; }
+  .btn-red { background: #fff; color: #ef4444; border: 1px solid #fca5a5; }
+  .btn-red:hover { background: #fef2f2; }
+  .btn-ghost { background: transparent; color: #64748b; border: 1px solid #e2e8f0; }
+  .btn-ghost:hover { background: #f8fafc; }
+  .btn-group { display: flex; gap: 8px; width: 100%; }
+  .btn-group .btn { flex: 1; }
+  .input-disabled { text-align: center; color: #94a3b8; font-size: 13px; padding: 12px; }
+  .nav-row { display: flex; justify-content: space-between; align-items: center; }
+  .page-info { font-size: 12px; color: #64748b; }
+
+  /* ===== TITLE CARD ===== */
+  .title-section { text-align: center; padding: 32px 24px 16px; }
+  .title-section h1 { font-size: 22px; font-weight: 700; color: #0f172a; }
+  .title-section p { font-size: 14px; color: #64748b; margin-top: 6px; max-width: 520px; margin-left: auto; margin-right: auto; line-height: 1.5; }
+  .title-section .subtitle { font-size: 12px; color: #94a3b8; margin-top: 12px; }
+
+  /* Select dropdown */
+  .select-grid { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 6px; }
+  .select-option { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 14px; cursor: pointer; transition: all 0.15s; display: flex; justify-content: space-between; align-items: center; }
+  .select-option:hover { border-color: #3b82f6; background: #eff6ff; }
+  .select-option.selected { border-color: #3b82f6; background: #eff6ff; }
+  .select-option .opt-left { display: flex; flex-direction: column; gap: 2px; }
+  .select-option .opt-name { font-weight: 600; font-size: 13px; }
+  .select-option .opt-desc { font-size: 11px; color: #64748b; }
+  .select-option .opt-tag { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+
+  /* Reject textarea */
+  .reject-area { width: 100%; margin-bottom: 8px; }
+  .reject-textarea { width: 100%; padding: 10px 14px; border: 1px solid #fca5a5; border-radius: 12px; font-size: 13px; resize: none; height: 56px; outline: none; font-family: inherit; }
+  .reject-textarea:focus { box-shadow: 0 0 0 3px rgba(239,68,68,0.1); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-logo">AI <span>QA Automation</span></div>
+  <div class="nav-divider"></div>
+  <div class="nav-steps">
+    <button class="nav-step active" onclick="showStep('s1')">1. Alice — Config</button>
+    <button class="nav-step" onclick="showStep('s2')">2. Bob — Extract</button>
+    <button class="nav-step" onclick="showStep('s3')">3. Mary — Test Cases</button>
+    <button class="nav-step" onclick="showStep('s4')">4. Sarah — Scripts</button>
+    <button class="nav-step" onclick="showStep('s5')">5. Jack — Run</button>
+  </div>
+  <div class="state-toggle">
+    <button class="active" onclick="showState('start')">Start</button>
+    <button onclick="showState('process')">Processing</button>
+    <button onclick="showState('review')">Review</button>
+    <button onclick="showState('done')">Done</button>
+  </div>
+</nav>
+
+<div class="content">
+
+<!-- ===================== STEP 1: ALICE — CONFIGURATION ===================== -->
+
+<!-- S1 START -->
+<div class="mockup-frame active" id="s1-start">
+  <div class="topbar">
+    <div class="avatar avatar-pink">A</div>
+    <div class="topbar-info">
+      <h3>Alice — Configuration</h3>
+      <div class="meta">Step 1 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot active"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-start">Start</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Alice</div>
+      <div class="bubble">
+        Hi! I'm <strong>Alice</strong>, and I'll help you set up your AI provider so the team can get to work. 👋<br><br>
+        Which AI provider would you like to use? Each has different quality and security trade-offs:
+        <div class="select-grid">
+          <div class="select-option">
+            <div class="opt-left"><span class="opt-name">☁️ Browser Use Cloud</span><span class="opt-desc">Highest quality (78% benchmark) · Cloud servers · Personal API key required</span></div>
+            <span class="opt-tag ptag-best">Best quality</span>
+          </div>
+          <div class="select-option selected">
+            <div class="opt-left"><span class="opt-name">🔷 Claude (Anthropic)</span><span class="opt-desc">Second highest quality (62%) · Enterprise license · API key or SSO login</span></div>
+            <span class="opt-tag ptag-good">Recommended</span>
+          </div>
+          <div class="select-option">
+            <div class="opt-left"><span class="opt-name">🌐 Gemini / ChatGPT</span><span class="opt-desc">Good quality · Cloud · Personal API key from Google or OpenAI</span></div>
+            <span class="opt-tag" style="background:#f1f5f9;color:#64748b;">Good</span>
+          </div>
+          <div class="select-option">
+            <div class="opt-left"><span class="opt-name">🔒 On-Premises</span><span class="opt-desc">Highest security · All data stays on your infrastructure · Server URL + API key</span></div>
+            <span class="opt-tag ptag-secure">Most secure</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="input-row">
+      <input class="input-field" placeholder="Enter your Claude API key..." />
+      <button class="btn btn-blue">Start</button>
+    </div>
+  </div>
+</div>
+
+<!-- S1 PROCESSING -->
+<div class="mockup-frame" id="s1-process">
+  <div class="topbar">
+    <div class="avatar avatar-pink">A</div>
+    <div class="topbar-info">
+      <h3>Alice — Configuration</h3>
+      <div class="meta">Step 1 of 5 · Testing connection...</div>
+    </div>
+    <div class="step-dots"><span class="step-dot active processing"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-processing">Processing</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Alice</div>
+      <div class="bubble">Great choice! Let me verify your Claude API key...</div>
+    </div>
+    <div class="msg msg-user">
+      <div class="bubble mono" style="font-size:12px;">sk-ant-••••••••••••••kX9w</div>
+    </div>
+    <div class="msg msg-agent">
+      <div class="sender">Alice</div>
+      <div class="bubble">
+        <div class="typing-dots"><span></span><span></span><span></span></div>
+        Testing connection to Claude API...
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="input-disabled">Alice is verifying your connection...</div>
+  </div>
+</div>
+
+<!-- S1 REVIEW -->
+<div class="mockup-frame" id="s1-review">
+  <div class="topbar">
+    <div class="avatar avatar-pink">A</div>
+    <div class="topbar-info">
+      <h3>Alice — Configuration</h3>
+      <div class="meta">Step 1 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot active"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-review">Review Request</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Alice</div>
+      <div class="bubble">
+        ✅ Connected successfully to <strong>Claude (Anthropic)</strong>!<br><br>
+        Here's how I'll assign models to each agent:
+        <table class="model-table">
+          <tr><th>Agent</th><th>Role</th><th>Model</th></tr>
+          <tr><td>🔵 Bob</td><td>Extract Requirements</td><td><strong>Claude Opus</strong></td></tr>
+          <tr><td>🟢 Mary</td><td>Create Test Cases</td><td>Claude Sonnet</td></tr>
+          <tr><td>🟣 Sarah</td><td>Create Test Scripts</td><td>Claude Sonnet</td></tr>
+          <tr><td>🟠 Jack</td><td>Run Test Scripts</td><td>Claude Sonnet</td></tr>
+        </table>
+        <em style="font-size:12px;color:#64748b;">Bob uses Opus (highest quality) for requirement extraction. Other agents use Sonnet for speed and cost efficiency.</em><br><br>
+        Does this look right to you?
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="btn-group">
+      <button class="btn btn-green">Approve ✓</button>
+      <button class="btn btn-red">Reject ✗</button>
+    </div>
+  </div>
+</div>
+
+<!-- S1 DONE -->
+<div class="mockup-frame" id="s1-done">
+  <div class="topbar">
+    <div class="avatar avatar-pink">A</div>
+    <div class="topbar-info">
+      <h3>Alice — Configuration</h3>
+      <div class="meta">Step 1 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-done">Done ✓</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Alice</div>
+      <div class="bubble">
+        ✅ Connected successfully to <strong>Claude (Anthropic)</strong>!<br><br>
+        Here's how I'll assign models to each agent:
+        <table class="model-table">
+          <tr><th>Agent</th><th>Role</th><th>Model</th></tr>
+          <tr><td>🔵 Bob</td><td>Extract Requirements</td><td><strong>Claude Opus</strong></td></tr>
+          <tr><td>🟢 Mary</td><td>Create Test Cases</td><td>Claude Sonnet</td></tr>
+          <tr><td>🟣 Sarah</td><td>Create Test Scripts</td><td>Claude Sonnet</td></tr>
+          <tr><td>🟠 Jack</td><td>Run Test Scripts</td><td>Claude Sonnet</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="msg msg-agent">
+      <div class="sender">Alice</div>
+      <div class="bubble">
+        All set! Your configuration is saved — you won't need to do this again. 🎉<br><br>
+        <strong>Bob</strong> will take it from here to extract your requirements from Confluence.
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="btn-group">
+      <button class="btn btn-blue" style="flex:1;">Continue to Bob →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== STEP 2: BOB — EXTRACT REQUIREMENTS ===================== -->
+
+<!-- S2 START -->
+<div class="mockup-frame" id="s2-start">
+  <div class="topbar">
+    <div class="avatar avatar-blue">B</div>
+    <div class="topbar-info">
+      <h3>Bob — Extract Requirements</h3>
+      <div class="meta">Step 2 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot active"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-start">Start</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Bob</div>
+      <div class="bubble">
+        Hi! I'm <strong>Bob</strong>, and I'll help you extract requirements from Confluence. 👋<br><br>
+        <div class="highlight">
+          <strong>📋 Before we start:</strong> Please make sure you've configured your Jira PAT and Confluence PAT on the <a href="#">internal MCP Server</a> (Atlassian tab).
+        </div>
+        <br>
+        Please share your Confluence project URL to get started. You can also add a Jira URL optionally.
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <div class="input-row">
+        <input class="input-field" placeholder="Confluence project URL (required)" />
+      </div>
+      <div class="input-row">
+        <input class="input-field" placeholder="Jira project URL (optional)" style="border-style:dashed;" />
+        <button class="btn btn-blue">Start</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- S2 PROCESSING -->
+<div class="mockup-frame" id="s2-process">
+  <div class="topbar">
+    <div class="avatar avatar-blue">B</div>
+    <div class="topbar-info">
+      <h3>Bob — Extract Requirements</h3>
+      <div class="meta">Step 2 of 5 · Reading page 3 of 5...</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot active processing"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-processing">Processing</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-user">
+      <div class="bubble mono" style="font-size:12px;">your confluence url</div>
+    </div>
+    <div class="msg msg-agent">
+      <div class="sender">Bob</div>
+      <div class="bubble">
+        <div class="typing-dots"><span></span><span></span><span></span></div>
+        Reading page 3 of 5... <strong>PTP — Booking Flow</strong>
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="input-disabled">Bob is extracting requirements from Confluence...</div>
+  </div>
+</div>
+
+<!-- S2 REVIEW -->
+<div class="mockup-frame" id="s2-review">
+  <div class="topbar">
+    <div class="avatar avatar-blue">B</div>
+    <div class="topbar-info">
+      <h3>Bob — Extract Requirements</h3>
+      <div class="meta">Step 2 of 5 · Page 1 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot active"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-review">Review Request</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Bob</div>
+      <div class="bubble">
+        I've extracted the first page. Please compare with your <a href="#" target="_blank">original Confluence page ↗</a>:<br>
+        <div class="review-content">
+          <h5>PTP — Login Flow Test Cases</h5>
+          <p>Test cases for the Personal Travel Plan login functionality.</p>
+          <ul>
+            <li><strong>TC-001:</strong> Valid login with correct credentials — verify redirect to dashboard</li>
+            <li><strong>TC-002:</strong> Invalid login with wrong password — verify error message "Invalid credentials" displayed</li>
+            <li><strong>TC-003:</strong> Login with expired session token — verify redirect to login page with "Session expired" message</li>
+            <li><strong>TC-004:</strong> Login with SSO — verify SAML redirect and successful authentication</li>
+          </ul>
+        </div>
+        Does this match your Confluence page?
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="nav-row">
+      <span class="page-info">Page 1 of 5</span>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-green">Approve ✓</button>
+        <button class="btn btn-red">Reject ✗</button>
+        <button class="btn btn-ghost">Next →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- S2 DONE -->
+<div class="mockup-frame" id="s2-done">
+  <div class="topbar">
+    <div class="avatar avatar-blue">B</div>
+    <div class="topbar-info">
+      <h3>Bob — Extract Requirements</h3>
+      <div class="meta">Step 2 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-done">Done ✓</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Bob</div>
+      <div class="bubble">
+        All pages have been extracted and approved! ✅<br><br>
+        <strong>5 requirement files</strong> saved to <code>requirements/</code> folder:<br>
+        • login-flow.md · booking-flow.md · search.md · user-profile.md · admin-panel.md<br><br>
+        Great work! <strong>Mary</strong> will take it from here to create test cases.
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="btn-group">
+      <button class="btn btn-blue" style="flex:1;">Continue to Mary →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== STEP 3: MARY — CREATE TEST CASES ===================== -->
+
+<!-- S3 START -->
+<div class="mockup-frame" id="s3-start">
+  <div class="topbar">
+    <div class="avatar avatar-green">M</div>
+    <div class="topbar-info">
+      <h3>Mary — Create Test Cases</h3>
+      <div class="meta">Step 3 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot active"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-start">Start</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Mary</div>
+      <div class="bubble">
+        Hi! I'm <strong>Mary</strong>. I'll create test cases from the 5 requirement files Bob extracted. 📝<br><br>
+        No input needed from you — I'll read from the <code>requirements/</code> folder and generate structured test cases.<br><br>
+        Click <strong>Start</strong> when you're ready!
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="btn-group">
+      <button class="btn btn-blue" style="flex:1;">Start</button>
+    </div>
+  </div>
+</div>
+
+<!-- S3 PROCESSING -->
+<div class="mockup-frame" id="s3-process">
+  <div class="topbar">
+    <div class="avatar avatar-green">M</div>
+    <div class="topbar-info">
+      <h3>Mary — Create Test Cases</h3>
+      <div class="meta">Step 3 of 5 · Generating test case 8 of 12...</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot active processing"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-processing">Processing</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Mary</div>
+      <div class="bubble">
+        <div class="typing-dots"><span></span><span></span><span></span></div>
+        Generating test case 8 of 12... <strong>TC-008: Booking date validation</strong>
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="input-disabled">Mary is generating test cases from your requirements...</div>
+  </div>
+</div>
+
+<!-- S3 REVIEW -->
+<div class="mockup-frame" id="s3-review">
+  <div class="topbar">
+    <div class="avatar avatar-green">M</div>
+    <div class="topbar-info">
+      <h3>Mary — Create Test Cases</h3>
+      <div class="meta">Step 3 of 5 · Test Case 1 of 12</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot active"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-review">Review Request</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Mary</div>
+      <div class="bubble">
+        Here's the first test case. Does this match your intent?
+        <div class="review-content">
+          <h5>TC-001: Valid Login with Correct Credentials</h5>
+          <p><strong>Preconditions:</strong> User has a valid account, browser is on login page</p>
+          <p><strong>Steps:</strong></p>
+          <div class="tc-step"><span class="tc-num">1.</span> Navigate to the PTP login page</div>
+          <div class="tc-step"><span class="tc-num">2.</span> Enter valid username in the username field</div>
+          <div class="tc-step"><span class="tc-num">3.</span> Enter valid password in the password field</div>
+          <div class="tc-step"><span class="tc-num">4.</span> Click the "Login" button</div>
+          <div class="tc-step"><span class="tc-num">5.</span> Wait for page redirect</div>
+          <p style="margin-top:8px;"><strong>Expected Result:</strong> User is redirected to <code>/dashboard</code> and sees welcome message with username</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="nav-row">
+      <span class="page-info">Test Case 1 of 12</span>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-green">Approve ✓</button>
+        <button class="btn btn-red">Reject ✗</button>
+        <button class="btn btn-ghost">Next →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- S3 DONE -->
+<div class="mockup-frame" id="s3-done">
+  <div class="topbar">
+    <div class="avatar avatar-green">M</div>
+    <div class="topbar-info">
+      <h3>Mary — Create Test Cases</h3>
+      <div class="meta">Step 3 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot"></span><span class="step-dot"></span></div>
+    <span class="badge badge-done">Done ✓</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Mary</div>
+      <div class="bubble">
+        All test cases approved! ✅<br><br>
+        <strong>12 test cases</strong> saved to <code>testcases/</code> folder.<br><br>
+        <strong>Sarah</strong> will take it from here to generate Playwright scripts. She'll need your Chrome path.
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="btn-group">
+      <button class="btn btn-blue" style="flex:1;">Continue to Sarah →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== STEP 4: SARAH — CREATE TEST SCRIPTS ===================== -->
+
+<!-- S4 START -->
+<div class="mockup-frame" id="s4-start">
+  <div class="topbar">
+    <div class="avatar avatar-purple">S</div>
+    <div class="topbar-info">
+      <h3>Sarah — Create Test Scripts</h3>
+      <div class="meta">Step 4 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot active"></span><span class="step-dot"></span></div>
+    <span class="badge badge-start">Start</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Sarah</div>
+      <div class="bubble">
+        Hi! I'm <strong>Sarah</strong>. I'll generate Playwright test scripts from Mary's 12 test cases. 🧪<br><br>
+        <div class="highlight">
+          <strong>🖥️ I need your local Chrome path</strong> so I can use a vision model to identify accurate page locators.
+        </div>
+        <br>
+        Please enter your Chrome executable path below.
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="input-row">
+      <input class="input-field mono" style="font-size:12px;" value="C:\Program Files\Google\Chrome\Application\chrome.exe" />
+      <button class="btn btn-blue">Start</button>
+    </div>
+  </div>
+</div>
+
+<!-- S4 PROCESSING -->
+<div class="mockup-frame" id="s4-process">
+  <div class="topbar">
+    <div class="avatar avatar-purple">S</div>
+    <div class="topbar-info">
+      <h3>Sarah — Create Test Scripts</h3>
+      <div class="meta">Step 4 of 5 · Generating script 3 of 12...</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot active processing"></span><span class="step-dot"></span></div>
+    <span class="badge badge-processing">Processing</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Sarah</div>
+      <div class="bubble">
+        <div class="typing-dots"><span></span><span></span><span></span></div>
+        Generating script 3 of 12... <strong>test_login_expired_session.py</strong>
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="input-disabled">Sarah is generating Playwright scripts...</div>
+  </div>
+</div>
+
+<!-- S4 REVIEW -->
+<div class="mockup-frame" id="s4-review">
+  <div class="topbar">
+    <div class="avatar avatar-purple">S</div>
+    <div class="topbar-info">
+      <h3>Sarah — Create Test Scripts</h3>
+      <div class="meta">Step 4 of 5 · Script 1 of 12</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot active"></span><span class="step-dot"></span></div>
+    <span class="badge badge-review">Review Request</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Sarah</div>
+      <div class="bubble">
+        Here's the test case alongside the generated script. Compare to verify:
+        <div class="review-content" style="margin-bottom:8px;">
+          <h5>📋 TC-001: Valid Login with Correct Credentials</h5>
+          <div class="tc-step"><span class="tc-num">1.</span> Navigate to login page</div>
+          <div class="tc-step"><span class="tc-num">2.</span> Enter valid username</div>
+          <div class="tc-step"><span class="tc-num">3.</span> Enter valid password</div>
+          <div class="tc-step"><span class="tc-num">4.</span> Click "Login" button</div>
+          <div class="tc-step"><span class="tc-num">5.</span> Verify redirect to /dashboard</div>
+        </div>
+        <div class="code-block"><span class="cm"># test_login_valid.py</span>
+<span class="kw">import</span> pytest
+<span class="kw">from</span> playwright.sync_api <span class="kw">import</span> Page
+
+<span class="kw">def</span> <span class="fn">test_valid_login</span>(page: Page):
+    <span class="str">"""TC-001: Valid login with correct credentials"""</span>
+    page.goto(<span class="str">"your_url/login"</span>)
+    page.get_by_role(<span class="str">"textbox"</span>, name=<span class="str">"Username"</span>).fill(<span class="str">"test_user"</span>)
+    page.get_by_role(<span class="str">"textbox"</span>, name=<span class="str">"Password"</span>).fill(<span class="str">"valid_pass"</span>)
+    page.get_by_role(<span class="str">"button"</span>, name=<span class="str">"Login"</span>).click()
+    page.wait_for_url(<span class="str">"**/dashboard"</span>)
+    <span class="kw">assert</span> <span class="str">"Welcome"</span> <span class="kw">in</span> page.content()</div>
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="nav-row">
+      <span class="page-info">Script 1 of 12</span>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-green">Approve ✓</button>
+        <button class="btn btn-red">Reject ✗</button>
+        <button class="btn btn-ghost">Next →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- S4 DONE -->
+<div class="mockup-frame" id="s4-done">
+  <div class="topbar">
+    <div class="avatar avatar-purple">S</div>
+    <div class="topbar-info">
+      <h3>Sarah — Create Test Scripts</h3>
+      <div class="meta">Step 4 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot"></span></div>
+    <span class="badge badge-done">Done ✓</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Sarah</div>
+      <div class="bubble">
+        All scripts approved! ✅<br><br>
+        <strong>12 Playwright scripts</strong> saved to <code>testscripts/</code> folder.<br><br>
+        <strong>Jack</strong> will take it from here to run them across your browsers.
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="btn-group">
+      <button class="btn btn-blue" style="flex:1;">Continue to Jack →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== STEP 5: JACK — RUN TEST SCRIPTS ===================== -->
+
+<!-- S5 START -->
+<div class="mockup-frame" id="s5-start">
+  <div class="topbar">
+    <div class="avatar avatar-orange">J</div>
+    <div class="topbar-info">
+      <h3>Jack — Run Test Scripts</h3>
+      <div class="meta">Step 5 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot active"></span></div>
+    <span class="badge badge-start">Start</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Jack</div>
+      <div class="bubble">
+        Hi! I'm <strong>Jack</strong>. I'll run Sarah's 12 test scripts across your browsers. 🚀<br><br>
+        <div class="highlight">
+          <strong>🌐 Select which browsers to test:</strong>
+          <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;"><input type="checkbox" checked /> Chrome <span style="color:#94a3b8;">(auto-detected)</span></label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;"><input type="checkbox" checked /> Edge</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;"><input type="checkbox" /> Firefox</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;"><input type="checkbox" disabled /> Safari <span style="color:#94a3b8;">(macOS only)</span></label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="input-row">
+      <input class="input-field mono" style="font-size:12px;" placeholder="Edge path (optional — auto-detected if installed)" />
+      <button class="btn btn-blue">Start</button>
+    </div>
+  </div>
+</div>
+
+<!-- S5 PROCESSING -->
+<div class="mockup-frame" id="s5-process">
+  <div class="topbar">
+    <div class="avatar avatar-orange">J</div>
+    <div class="topbar-info">
+      <h3>Jack — Run Test Scripts</h3>
+      <div class="meta">Step 5 of 5 · Running test 7 of 12 on Chrome...</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot active processing"></span></div>
+    <span class="badge badge-processing">Processing</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Jack</div>
+      <div class="bubble">
+        <div class="typing-dots"><span></span><span></span><span></span></div>
+        Running test 7 of 12 on <strong>Chrome</strong>... <code>test_booking_date_validation.py</code>
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="input-disabled">Jack is running tests across Chrome and Edge...</div>
+  </div>
+</div>
+
+<!-- S5 REVIEW -->
+<div class="mockup-frame" id="s5-review">
+  <div class="topbar">
+    <div class="avatar avatar-orange">J</div>
+    <div class="topbar-info">
+      <h3>Jack — Run Test Scripts</h3>
+      <div class="meta">Step 5 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot active"></span></div>
+    <span class="badge badge-review">Review Request</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Jack</div>
+      <div class="bubble">
+        Test execution complete! Here's the report:
+        <table class="report-table">
+          <tr><th>Test Case</th><th>Chrome</th><th>Edge</th></tr>
+          <tr><td>TC-001: Valid login</td><td class="pass">✓ Pass</td><td class="pass">✓ Pass</td></tr>
+          <tr><td>TC-002: Invalid login</td><td class="pass">✓ Pass</td><td class="pass">✓ Pass</td></tr>
+          <tr><td>TC-003: Expired session</td><td class="pass">✓ Pass</td><td class="fail">✗ Fail</td></tr>
+          <tr><td>TC-004: SSO login</td><td class="pass">✓ Pass</td><td class="pass">✓ Pass</td></tr>
+          <tr><td>TC-005: Booking create</td><td class="pass">✓ Pass</td><td class="pass">✓ Pass</td></tr>
+          <tr><td>TC-006: Booking edit</td><td class="fail">✗ Fail</td><td class="fail">✗ Fail</td></tr>
+          <tr><td>TC-007: Booking cancel</td><td class="pass">✓ Pass</td><td class="pass">✓ Pass</td></tr>
+          <tr><td>TC-008: Date validation</td><td class="pass">✓ Pass</td><td class="pass">✓ Pass</td></tr>
+          <tr><td>TC-009: Search basic</td><td class="pass">✓ Pass</td><td class="pass">✓ Pass</td></tr>
+          <tr><td>TC-010: Search filters</td><td class="pass">✓ Pass</td><td class="pass">✓ Pass</td></tr>
+          <tr><td>TC-011: Profile update</td><td class="pass">✓ Pass</td><td class="pass">✓ Pass</td></tr>
+          <tr><td>TC-012: Admin access</td><td class="pass">✓ Pass</td><td class="pass">✓ Pass</td></tr>
+        </table>
+        <div style="margin-top:8px;font-size:13px;">
+          <strong>Summary:</strong> Chrome <span class="pass">11/12 passed</span> · Edge <span class="pass">10/12 passed</span><br>
+          <span style="color:#64748b;">2 failures need investigation: TC-003 (Edge), TC-006 (both browsers)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="btn-group">
+      <button class="btn btn-green" style="flex:1;">Approve ✓</button>
+      <button class="btn btn-red">Reject ✗</button>
+    </div>
+  </div>
+</div>
+
+<!-- S5 DONE -->
+<div class="mockup-frame" id="s5-done">
+  <div class="topbar">
+    <div class="avatar avatar-orange">J</div>
+    <div class="topbar-info">
+      <h3>Jack — Run Test Scripts</h3>
+      <div class="meta">Step 5 of 5</div>
+    </div>
+    <div class="step-dots"><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span><span class="step-dot done"></span></div>
+    <span class="badge badge-done">Completed ✓</span>
+  </div>
+  <div class="chat">
+    <div class="msg msg-agent">
+      <div class="sender">Jack</div>
+      <div class="bubble">
+        All done! 🎉<br><br>
+        <strong>Execution reports</strong> saved to <code>report/</code> folder.<br><br>
+        <strong>Pipeline Summary:</strong>
+        <table class="model-table" style="margin-top:8px;">
+          <tr><th>Step</th><th>Agent</th><th>Output</th></tr>
+          <tr><td>1. Configuration</td><td>Alice</td><td>Claude (Opus + Sonnet)</td></tr>
+          <tr><td>2. Requirements</td><td>Bob</td><td>5 files in requirements/</td></tr>
+          <tr><td>3. Test Cases</td><td>Mary</td><td>12 test cases in testcases/</td></tr>
+          <tr><td>4. Test Scripts</td><td>Sarah</td><td>12 scripts in testscripts/</td></tr>
+          <tr><td>5. Execution</td><td>Jack</td><td>Reports in report/ (21/24 passed)</td></tr>
+        </table>
+        <br>
+        Thank you for using AI QA Automation! You can close this window or start a new pipeline run.
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="btn-group">
+      <button class="btn btn-green" style="flex:1;">✓ Completed</button>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script>
+const steps = ['s1','s2','s3','s4','s5'];
+const states = ['start','process','review','done'];
+let currentStep = 's1';
+let currentState = 'start';
+
+function showStep(step) {
+  currentStep = step;
+  updateView();
+  document.querySelectorAll('.nav-step').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+}
+
+function showState(state) {
+  currentState = state;
+  updateView();
+  document.querySelectorAll('.state-toggle button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+}
+
+function updateView() {
+  document.querySelectorAll('.mockup-frame').forEach(f => f.classList.remove('active'));
+  const el = document.getElementById(currentStep + '-' + currentState);
+  if (el) el.classList.add('active');
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-qa-automation"
+version = "0.1.0"
+description = "AI QA Automation Framework"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "browser-use>=0.12.5",
+    "fastapi>=0.115.0",
+    "langchain-anthropic>=1.3.1",
+    "mcp>=1.0.0",
+    "httpx>=0.27.0",
+    "markdownify>=0.13.0",
+    "pydantic-settings>=2.4.0",
+    "pyyaml>=6.0",
+    "tenacity>=8.0.0",
+    "uvicorn[standard]>=0.32.0",
+    "websockets>=13.0",
+    "langchain-openai>=1.1.9",
+]
+
+[project.scripts]
+ai-qa = "ai_qa.__main__:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ai_qa"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true  # third-party libs (browser-use) lack stubs
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line-length enforced by formatter not lint
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # allow assert in tests
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "--cov=src/ai_qa --cov-report=term-missing --cov-fail-under=50"
+
+[tool.coverage.run]
+omit = [
+    "src/ai_qa/__main__.py",  # starts uvicorn server — integration tested separately
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.14.0",
+    "pre-commit>=4.0.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.0",
+]

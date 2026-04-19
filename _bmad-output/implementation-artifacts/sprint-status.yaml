@@ -1,0 +1,106 @@
+# generated: 2026-04-07T16:11:19+07:00
+# last_updated: 2026-04-19T01:55:00+0700
+# project: ai-qa-automation
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: c:\Users\laub\source\repos\ai-qa-automation\_bmad-output\implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-04-07T16:11:19+07:00
+last_updated: 2026-04-19T02:46:00+0700
+project: ai-qa-automation
+project_key: NOKEY
+tracking_system: file-system
+story_location: c:\Users\laub\source\repos\ai-qa-automation\_bmad-output\implementation-artifacts
+
+development_status:
+  epic-1: done
+  1-1-project-restructure-to-src-layout: done
+  1-2-configuration-system-with-pydantic-settings: done
+  1-3-custom-exception-hierarchy: done
+  1-4-shared-pydantic-models-stageresult-agentmessage: done
+  1-5-dev-tooling-setup-ruff-mypy-pytest-pre-commit: done
+  epic-1-retrospective: optional
+  epic-2: done
+  2-1-fastapi-server-foundation-with-websocket-support: done
+  2-2-react-frontend-scaffold-with-shadcn-ui: done
+  2-3-baseagent-lifecycle-start-processing-review-done: done
+  2-4-agenttopbar-and-stepdots-components: done
+  2-5-chatmessage-component-with-rich-content: done
+  2-6-chatinputarea-component-state-dependent-actions: done
+  2-7-processingindicator-and-error-feedback: done
+  2-8-alice-agent-ai-provider-selection-configuration: done
+  epic-2-retrospective: optional
+  epic-3: done
+  3-1-mcp-client-foundation: done
+  3-2-confluence-reader-pipeline-stage: done
+  3-3-content-parser-markdown-mermaid-and-images: done
+  3-4-output-writer-pipeline-stage: done
+  3-5-bob-agent-extract-requirements-with-paginated-review: done
+  epic-3-retrospective: optional
+  epic-4: done
+  4-1-llm-abstraction-layer-langchain-litellm: done
+  4-2-test-case-extractor-pipeline-stage: done
+  4-3-mary-agent-create-test-cases-with-per-item-review: done
+  epic-4-retrospective: optional
+  epic-5: in-progress
+  5-1-browser-use-agent-configuration-and-session-management: done
+  5-2-script-generator-pipeline-stage: done
+  5-3-vision-assisted-locator-identification: backlog
+  5-4-sarah-agent-generate-scripts-with-side-by-side-review: backlog
+  epic-5-retrospective: optional
+  epic-6: backlog
+  6-1-script-runner-pipeline-stage: backlog
+  6-2-execution-report-generation: backlog
+  6-3-jack-agent-run-tests-and-present-final-report: backlog
+  epic-6-retrospective: optional
+  epic-7: backlog
+  7-1-confluence-content-variation-handling: backlog
+  7-2-input-quality-detection-and-pre-generation-warning: backlog
+  7-3-low-confidence-generation-flagging: backlog
+  epic-7-retrospective: optional
+  epic-8: backlog
+  8-1-script-editing-before-approval: backlog
+  8-2-side-by-side-source-and-script-review-enhancement: backlog
+  8-3-multi-provider-llm-switching: backlog
+  8-4-llm-comparison-testing: backlog
+  epic-8-retrospective: optional
+  epic-9: backlog
+  9-1a-jira-mcp-integration: backlog
+  9-1b-audit-logger-foundation: backlog
+  9-2-audit-trail-logger-extended-event-types: backlog
+  9-3-audit-integration-across-all-agents: backlog
+  epic-9-retrospective: optional
+  epic-10: backlog
+  10-1-metrics-collection-service: backlog
+  10-3-rest-api-for-metrics-data: backlog
+  10-2-metrics-dashboard-frontend: backlog
+  epic-10-retrospective: optional

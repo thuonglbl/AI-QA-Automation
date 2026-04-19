@@ -1,19 +1,35 @@
-# IDE
-prompt.txt
-_bmad
-.claude
-.agent
-
-# secrets
-config.yaml
-config-*.yaml
-config_*.yaml
-
-# Python
+# Python-generated files
 __pycache__/
-*.pyc
-.env
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
 
-# CSharp
-[Bb]in/
-[Oo]bj/
+# Virtual environments
+.venv
+
+# IDE-specific files
+.vscode/
+.idea/
+.claude/
+_bmad/
+.agent/
+.gemini/
+.windsurf/
+.cline/
+.roo/
+
+# secret files
+.env
+config.yaml
+_bmad-output/planning-artifacts/secret-brief-internal.md
+
+# Frontend build artifacts
+frontend/dist/
+frontend/node_modules/
+
+# Root-level accidental node_modules (dependencies belong in frontend/)
+/node_modules/
+/package.json
+/package-lock.json
