@@ -24,6 +24,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# Third party
+import httpx
+
 # Local
 from ai_qa.agents.base import AgentState, BaseAgent
 from ai_qa.config import AppSettings
@@ -238,12 +241,18 @@ class AliceAgent(BaseAgent):
         """Get On-Premises default values from .env.
 
         Returns:
-            Dict with server_url and api_key from settings
+            Dict with server_url and api_key from user config or settings
         """
-        return {
-            "server_url": self._settings.on_premises_ai_server_url or "",
-            "api_key": self._settings.on_premises_ai_server_key or "",
-        }
+        # Use per-user config if available, otherwise empty (user must configure via Alice UI)
+        if self._user_email:
+            from ai_qa.config import UserConfig
+
+            user_config = UserConfig.load(self._user_email)
+            return {
+                "server_url": user_config.on_premises_ai_server_url or "",
+                "api_key": user_config.on_premises_ai_server_key or "",
+            }
+        return {"server_url": "", "api_key": ""}
 
     # -------------------------------------------------------------------------
     # BaseAgent Interface
@@ -315,7 +324,7 @@ class AliceAgent(BaseAgent):
         )
 
         # Generate configuration
-        self._configuration = self._generate_configuration(provider_info, credentials)
+        self._configuration = await self._generate_configuration(provider_info, credentials)
 
         # Return result with model assignments for review
         return StageResult(
@@ -360,26 +369,9 @@ class AliceAgent(BaseAgent):
             )
             return
 
-        # No existing config - show greeting and provider options
-        await self.send_message(
-            content="Hi! I'm Alice. Let's set up your AI provider so we can get started with test automation. "
-            "I'll help you choose the best provider for your needs and configure the models for each agent.",
-            message_type="text",
-        )
-
-        # Send provider options
-        await self.send_message(
-            content="Please select your AI provider:",
-            message_type="info",
-            metadata={
-                "type": "provider_options",
-                "options": self.get_provider_options(),
-                "on_prem_defaults": self.get_on_prem_defaults(),
-            },
-        )
-
-        # Transition to processing if input_data has provider (direct start with selection)
+        # Check if user already selected provider (frontend sent provider in input_data)
         if input_data.get("provider"):
+            # User already selected provider, skip greeting and go straight to processing
             await self.transition_to(AgentState.PROCESSING)
             try:
                 result = await self.process(input_data, feedback=None)
@@ -405,6 +397,24 @@ class AliceAgent(BaseAgent):
                     content=self._format_error_message(result.errors),
                     message_type="error",
                 )
+        else:
+            # No provider selected yet - show greeting and provider options
+            await self.send_message(
+                content="Hi! I'm Alice. Let's set up your AI provider so we can get started with test automation. "
+                "I'll help you choose the best provider for your needs and configure the models for each agent.",
+                message_type="text",
+            )
+
+            # Send provider options
+            await self.send_message(
+                content="Please select your AI provider:",
+                message_type="info",
+                metadata={
+                    "type": "provider_options",
+                    "options": self.get_provider_options(),
+                    "on_prem_defaults": self.get_on_prem_defaults(),
+                },
+            )
 
     async def handle_approve(self) -> None:
         """Save configuration and complete Alice step."""
@@ -489,7 +499,7 @@ class AliceAgent(BaseAgent):
             },
         )
 
-    def _generate_configuration(
+    async def _generate_configuration(
         self, provider_info: dict[str, Any], credentials: dict[str, str]
     ) -> AliceConfiguration:
         """Generate complete configuration for selected provider.
@@ -521,7 +531,23 @@ class AliceAgent(BaseAgent):
         )
 
         # Create agents config with model assignments
-        model_mappings = DEFAULT_MODEL_MAPPINGS.get(provider_id, DEFAULT_MODEL_MAPPINGS["claude"])
+        # For on-premise, discover and smart-match models
+        if provider_id == "on-premises":
+            server_url = credentials.get("server_url", "")
+            api_key = credentials.get("api_key", "")
+            available_models = await self._fetch_available_models(server_url, api_key)
+            if available_models:
+                model_mappings = self._match_models_to_agents(available_models)
+                logger.info("Using discovered models: %s", model_mappings)
+            else:
+                model_mappings = DEFAULT_MODEL_MAPPINGS.get(
+                    "on-premises", DEFAULT_MODEL_MAPPINGS["claude"]
+                )
+                logger.warning("Could not discover models, using defaults: %s", model_mappings)
+        else:
+            model_mappings = DEFAULT_MODEL_MAPPINGS.get(
+                provider_id, DEFAULT_MODEL_MAPPINGS["claude"]
+            )
 
         agents: dict[str, AgentModelConfig] = {}
         for agent_name in ["bob", "mary", "sarah", "jack"]:
@@ -652,6 +678,143 @@ class AliceAgent(BaseAgent):
         )
 
         return "\n".join(lines)
+
+    async def _fetch_available_models(self, server_url: str, api_key: str) -> list[dict[str, Any]]:
+        """Fetch available models from on-premise LLM server.
+
+        Tries common endpoints: /v1/models, /models, /api/models
+        """
+        endpoints_to_try = [
+            f"{server_url.rstrip('/')}/v1/models",
+            f"{server_url.rstrip('/')}/models",
+            f"{server_url.rstrip('/')}/api/models",
+        ]
+
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        for endpoint in endpoints_to_try:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(endpoint, headers=headers)
+                    if response.status_code == 200:
+                        data = response.json()
+                        # Handle different response formats
+                        if isinstance(data, list):
+                            return [
+                                {"id": m.get("id", m), "name": m.get("id", str(m))} for m in data
+                            ]
+                        elif isinstance(data, dict) and "data" in data:
+                            return [
+                                {"id": m.get("id", m), "name": m.get("id", str(m))}
+                                for m in data["data"]
+                            ]
+                        elif isinstance(data, dict) and "models" in data:
+                            return [
+                                {"id": m.get("id", m), "name": m.get("id", str(m))}
+                                for m in data["models"]
+                            ]
+            except Exception as exc:
+                logger.debug("Failed to fetch models from %s: %s", endpoint, exc)
+                continue
+
+        return []
+
+    def _match_models_to_agents(self, available_models: list[dict[str, Any]]) -> dict[str, str]:
+        """Smart match available models to agents based on capabilities.
+
+        Priority:
+        1. Bob (requirements): Best code/understanding model (coder, large, reasoning)
+        2. Mary (test cases): Balanced model (general purpose, medium)
+        3. Sarah (scripts): Coding + browser automation capable
+        4. Jack (execution): Fast/light model (small, fast)
+        """
+        if not available_models:
+            # Fallback to hardcoded defaults
+            return DEFAULT_MODEL_MAPPINGS.get("on-premises", {})
+
+        def score_model_for_agent(model_id: str, agent: str) -> int:
+            """Score how well a model fits an agent's needs."""
+            score = 0
+            model_lower = model_id.lower()
+
+            # Size indicators
+            has_large = any(
+                x in model_lower for x in ["70b", "72b", "33b", "65b", "40b", "large", "xl"]
+            )
+            has_medium = any(x in model_lower for x in ["13b", "14b", "20b", "medium"])
+            has_small = any(x in model_lower for x in ["7b", "8b", "9b", "small", "mini", "tiny"])
+
+            # Capability indicators
+            is_coder = any(x in model_lower for x in ["code", "coder", "deepseek", "qwen-coder"])
+            is_reasoning = any(x in model_lower for x in ["reasoning", "o1", "r1", "qwq"])
+            is_chat = any(x in model_lower for x in ["chat", "instruct"])
+
+            if agent == "bob":
+                # Bob needs best understanding for requirements
+                if is_coder:
+                    score += 10
+                if is_reasoning:
+                    score += 8
+                if has_large:
+                    score += 5
+                if has_medium:
+                    score += 3
+
+            elif agent == "mary":
+                # Mary needs balanced general purpose
+                if is_chat:
+                    score += 5
+                if has_large:
+                    score += 4
+                if has_medium:
+                    score += 6  # Prefer medium for cost/speed balance
+
+            elif agent == "sarah":
+                # Sarah needs coding for test scripts
+                if is_coder:
+                    score += 10
+                if has_large:
+                    score += 4
+                if has_medium:
+                    score += 3
+
+            elif agent == "jack":
+                # Jack needs fast execution
+                if has_small:
+                    score += 10
+                elif has_medium:
+                    score += 5
+                if is_chat and not is_coder:
+                    score += 3
+
+            # Penalize if clearly wrong type
+            if agent in ["bob", "sarah"] and not is_coder and not is_chat:
+                score -= 3
+
+            return score
+
+        assignments = {}
+        for agent in ["bob", "mary", "sarah", "jack"]:
+            best_model = None
+            best_score = -1
+
+            for model in available_models:
+                model_id = model.get("id", "")
+                score = score_model_for_agent(model_id, agent)
+                if score > best_score:
+                    best_score = score
+                    best_model = model_id
+
+            if best_model:
+                assignments[agent] = best_model
+            else:
+                # Fallback to default
+                assignments[agent] = DEFAULT_MODEL_MAPPINGS.get("on-premises", {}).get(
+                    agent, "unknown"
+                )
+
+        logger.info("Smart model matching: %s", assignments)
+        return assignments
 
     def _format_model_assignments(self, config: AliceConfiguration) -> str:
         """Format model assignments from existing config."""

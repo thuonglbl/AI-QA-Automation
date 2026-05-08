@@ -5,12 +5,14 @@ for per-item review. Users can approve or reject individual test cases with feed
 """
 
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from ai_qa.agents.base import AgentState, BaseAgent
 from ai_qa.ai_connection.config import LLMConfig
 from ai_qa.models import StageResult, TestCase
+from ai_qa.pipelines.artifact_adapter import PipelineArtifact, PipelineArtifactAdapter
 from ai_qa.pipelines.output_writer import OutputWriter
 from ai_qa.pipelines.test_case_extractor import TestCaseExtractor
 
@@ -85,16 +87,24 @@ class MaryAgent(BaseAgent):
             StageResult with generated test cases
         """
         try:
-            # Read requirements from workspace/requirements/
-            requirements_dir = self._workspace_dir / "requirements"
-            requirements_files = list(requirements_dir.glob("*.md"))
+            if self.project_context is not None:
+                requirement_artifacts = PipelineArtifactAdapter(
+                    self.project_context
+                ).load_requirement_markdown()
+                requirements_files = self._materialize_requirement_artifacts(requirement_artifacts)
+                missing_warning = "No requirement artifacts found for this project"
+            else:
+                # Read requirements from workspace/requirements/
+                requirements_dir = self._workspace_dir / "requirements"
+                requirements_files = list(requirements_dir.glob("*.md"))
+                missing_warning = "No requirements files found in workspace/requirements/"
 
             if not requirements_files:
                 return StageResult(
                     success=True,
                     data=[],
                     errors=[],
-                    warnings=["No requirements files found in workspace/requirements/"],
+                    warnings=[missing_warning],
                     confidence=1.0,
                 )
 
@@ -157,8 +167,9 @@ class MaryAgent(BaseAgent):
 
             # Transition to DONE
             await self.transition_to(AgentState.DONE)
+            destination = "project artifacts" if self.project_context is not None else "testcases/"
             await self.send_message(
-                f"{len(self.test_cases)} test cases saved to testcases/",
+                f"{len(self.test_cases)} test cases saved to {destination}",
                 message_type="success",
             )
         else:
@@ -186,8 +197,14 @@ class MaryAgent(BaseAgent):
         # For now, we'll re-run extraction with feedback context
         # In a more sophisticated implementation, we'd extract just the current test case
         try:
-            requirements_dir = self._workspace_dir / "requirements"
-            requirements_files = list(requirements_dir.glob("*.md"))
+            if self.project_context is not None:
+                requirement_artifacts = PipelineArtifactAdapter(
+                    self.project_context
+                ).load_requirement_markdown()
+                requirements_files = self._materialize_requirement_artifacts(requirement_artifacts)
+            else:
+                requirements_dir = self._workspace_dir / "requirements"
+                requirements_files = list(requirements_dir.glob("*.md"))
 
             if requirements_files:
                 # Extract with feedback context (simplified - re-extracts all)
@@ -283,8 +300,27 @@ class MaryAgent(BaseAgent):
             )
 
     async def _write_approved_test_cases(self) -> None:
-        """Write all approved test cases to workspace/testcases/."""
+        """Write all approved test cases to project artifacts or workspace/testcases/."""
         from ai_qa.pipelines.models import OutputMetadata
+
+        if self.project_context is not None:
+            adapter = PipelineArtifactAdapter(self.project_context)
+            for test_case in self.test_cases:
+                try:
+                    filename = f"{test_case.filename}.json"
+                    adapter.save_test_case(filename, test_case.model_dump_json(indent=2))
+                    adapter.save_metadata(
+                        f"{test_case.filename}.metadata.json",
+                        {
+                            "source_url": "",
+                            "model": self.config.model_name,
+                            "confidence": 1.0,
+                            "test_case_title": test_case.title,
+                        },
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to save test case {test_case.title}: {e}")
+            return
 
         for test_case in self.test_cases:
             try:
@@ -301,3 +337,15 @@ class MaryAgent(BaseAgent):
 
             except Exception as e:
                 logger.error(f"Failed to write test case {test_case.title}: {e}")
+
+    def _materialize_requirement_artifacts(
+        self, requirement_artifacts: list[PipelineArtifact]
+    ) -> list[Path]:
+        """Create temporary markdown files for extractor compatibility."""
+        temp_dir = Path(tempfile.mkdtemp(prefix="aiqa-requirements-"))
+        materialized: list[Path] = []
+        for index, artifact in enumerate(requirement_artifacts, start=1):
+            path = temp_dir / f"requirement-{index:03d}.md"
+            path.write_text(artifact.content, encoding="utf-8")
+            materialized.append(path)
+        return materialized

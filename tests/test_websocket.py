@@ -9,14 +9,24 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ai_qa.api.app import create_app
+from ai_qa.api.auth.session import SessionManager
 from ai_qa.api.websocket import active_connections
 
 
 @pytest.fixture
 def client() -> TestClient:
-    """FastAPI test client with default settings."""
+    """FastAPI test client with default settings and a mock authenticated user."""
     app = create_app()
-    return TestClient(app)
+    client = TestClient(app)
+
+    # Create a mock session
+    settings = app.state.settings
+    session_manager = SessionManager(settings)
+    session = session_manager.create_session({"email": "test@example.com", "name": "Test User"})
+    token = session_manager.encode_session(session)
+
+    client.cookies.set(settings.session_cookie_name, token)
+    return client
 
 
 @pytest.fixture(autouse=True)
@@ -31,12 +41,15 @@ class TestWebSocketConnection:
     """Tests for WebSocket connection lifecycle."""
 
     def test_websocket_connects_successfully(self, client: TestClient) -> None:
-        with client.websocket_connect("/ws"):
-            # Connection established — no exception means success
-            pass
+        with client.websocket_connect("/ws", cookies=client.cookies) as websocket:
+            # Drain auth_status message
+            response = websocket.receive_json()
+            assert response["type"] == "auth_status"
 
     def test_websocket_send_receive_json(self, client: TestClient) -> None:
-        with client.websocket_connect("/ws") as websocket:
+        with client.websocket_connect("/ws", cookies=client.cookies) as websocket:
+            websocket.receive_json()  # Drain auth_status
+
             test_message = {"action": "test", "data": "hello"}
             websocket.send_json(test_message)
 
@@ -45,7 +58,9 @@ class TestWebSocketConnection:
             assert response["received"] == test_message
 
     def test_websocket_send_text_receive_json(self, client: TestClient) -> None:
-        with client.websocket_connect("/ws") as websocket:
+        with client.websocket_connect("/ws", cookies=client.cookies) as websocket:
+            websocket.receive_json()  # Drain auth_status
+
             test_message = {"action": "ping"}
             websocket.send_text(json.dumps(test_message))
 
@@ -54,7 +69,9 @@ class TestWebSocketConnection:
             assert response["received"]["action"] == "ping"
 
     def test_websocket_invalid_json_returns_error(self, client: TestClient) -> None:
-        with client.websocket_connect("/ws") as websocket:
+        with client.websocket_connect("/ws", cookies=client.cookies) as websocket:
+            websocket.receive_json()  # Drain auth_status
+
             websocket.send_text("not valid json{{{")
             response = websocket.receive_json()
             assert response["type"] == "error"
@@ -67,7 +84,9 @@ class TestWebSocketConnection:
             assert response2["received"]["action"] == "after_error"
 
     def test_websocket_multiple_messages(self, client: TestClient) -> None:
-        with client.websocket_connect("/ws") as websocket:
+        with client.websocket_connect("/ws", cookies=client.cookies) as websocket:
+            websocket.receive_json()  # Drain auth_status
+
             for i in range(3):
                 websocket.send_json({"count": i})
                 response = websocket.receive_json()
@@ -79,7 +98,13 @@ class TestWebSocketConnections:
     """Tests for multiple concurrent WebSocket connections."""
 
     def test_multiple_connections(self, client: TestClient) -> None:
-        with client.websocket_connect("/ws") as ws1, client.websocket_connect("/ws") as ws2:
+        with (
+            client.websocket_connect("/ws", cookies=client.cookies) as ws1,
+            client.websocket_connect("/ws", cookies=client.cookies) as ws2,
+        ):
+            ws1.receive_json()  # Drain auth_status
+            ws2.receive_json()  # Drain auth_status
+
             ws1.send_json({"source": "conn1"})
             ws2.send_json({"source": "conn2"})
 
@@ -94,7 +119,8 @@ class TestActiveConnections:
     """Tests for active_connections management."""
 
     def test_connection_added_on_connect(self, client: TestClient) -> None:
-        with client.websocket_connect("/ws"):
+        with client.websocket_connect("/ws", cookies=client.cookies) as websocket:
+            websocket.receive_json()  # Drain auth_status
             # Connection should be tracked
             assert len(active_connections) == 1
 
@@ -103,7 +129,8 @@ class TestActiveConnections:
         # In test context, the disconnect handler runs synchronously
 
     def test_connection_removed_on_disconnect(self, client: TestClient) -> None:
-        with client.websocket_connect("/ws") as ws:
+        with client.websocket_connect("/ws", cookies=client.cookies) as ws:
+            ws.receive_json()  # Drain auth_status
             ws.send_json({"test": "data"})
             ws.receive_json()
 

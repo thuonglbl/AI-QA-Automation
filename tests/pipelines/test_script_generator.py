@@ -359,8 +359,6 @@ class TestScriptGeneratorLLMIntegration:
         config = AppSettings(
             script_generation_model="claude-3-opus",
             script_generation_temperature=0.5,
-            on_premises_ai_server_url="http://localhost:8000",
-            on_premises_ai_server_key="test-key",
         )
         generator = ScriptGenerator(output_base_dir=temp_workspace, config=config)
 
@@ -374,7 +372,6 @@ class TestScriptGeneratorLLMIntegration:
             call_args = mock_client_class.call_args[0][0]
             assert call_args.model_name == "claude-3-opus"
             assert call_args.temperature == 0.5
-            assert call_args.base_url == "http://localhost:8000"
 
     async def test_llm_call_with_retry(
         self, temp_workspace: Path, sample_test_case: TestCase

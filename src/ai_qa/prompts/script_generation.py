@@ -131,6 +131,48 @@ LEAST STABLE (last resort):
 
 When generating scripts, always try the most stable options first before falling back to less stable selectors."""
 
+VISION_ASSISTED_SCRIPT_GENERATION_PROMPT = """Convert the following structured test case into a complete Playwright Python test script.
+
+Test Case (JSON format):
+{test_case}
+
+Visual Analysis Results:
+{vision_context}
+
+The vision model has analyzed the target application and identified the following UI elements:
+
+{locator_info}
+
+When generating the script:
+1. **PRIORITIZE** the vision-identified selectors - they have been verified against the actual DOM
+2. Use selectors in this order of preference:
+   - `data-testid` (most stable, if confidence > 0.8)
+   - `get_by_role()` with name (ARIA roles verified by vision)
+   - `get_by_text()` for elements with clear text labels
+   - CSS selectors only as fallback
+
+3. **Confidence-based decisions**:
+   - High confidence (>0.8): Use directly, add assertion
+   - Medium confidence (0.5-0.8): Use with wait or retry
+   - Low confidence (<0.5): Add comment, use alternative selector
+
+4. Include comments referencing the vision analysis for each element used.
+
+Generate complete, runnable Playwright Python code following standard patterns."""
+
+VISION_SCRIPT_GENERATION_SYSTEM_PROMPT = """You are an expert Playwright test automation engineer with access to visual analysis results.
+
+Your task is to convert test cases into executable Playwright Python scripts using vision-verified selectors.
+
+Key principles:
+1. Trust vision analysis results for accurate element identification
+2. Use the most stable selector with highest confidence from vision results
+3. Add appropriate waits for elements identified as potentially dynamic
+4. Include assertions that verify expected outcomes
+5. Comment each selector with its confidence score and source
+
+Output only valid Python code without markdown formatting."""
+
 ASSERTION_MAPPING_GUIDE = """Map expected results from test cases to Playwright assertions:
 
 Visibility and Display:
@@ -171,4 +213,6 @@ __all__ = [
     "SCRIPT_GENERATION_WITH_HINTS_PROMPT",
     "SELECTOR_GUIDANCE_PROMPT",
     "ASSERTION_MAPPING_GUIDE",
+    "VISION_ASSISTED_SCRIPT_GENERATION_PROMPT",
+    "VISION_SCRIPT_GENERATION_SYSTEM_PROMPT",
 ]

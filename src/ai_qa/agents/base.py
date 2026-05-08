@@ -24,13 +24,24 @@ from typing import Any
 # Local
 from ai_qa.exceptions import PipelineError
 from ai_qa.models import AgentMessage, StageResult
+from ai_qa.pipelines.context import PipelineContext
 
 logger = logging.getLogger(__name__)
 
 # Workspace root — relative to CWD (project root when using `uv run`)
 WORKSPACE_DIR = Path("workspace")
 
-# Workspace subdirectory names
+# Per-user workspace subdirectory names
+USER_WORKSPACE_SUBFOLDERS = [
+    "configuration",
+    "requirements",
+    "testcases",
+    "testscripts",
+    "report",
+    "audit",
+]
+
+# Legacy shared workspace subdirectory names (for backward compatibility)
 WORKSPACE_SUBFOLDERS = [
     "configuration",
     "requirements",
@@ -78,6 +89,7 @@ class BaseAgent(ABC):
         step_number: int,
         step_title: str,
         workspace_dir: Path | None = None,
+        user_email: str | None = None,
     ) -> None:
         self.name = name
         self.color = color
@@ -85,7 +97,19 @@ class BaseAgent(ABC):
         self.step_title = step_title
         self.state: AgentState = AgentState.START
         self._agent_config: dict[str, Any] = {}
-        self._workspace_dir: Path = workspace_dir if workspace_dir is not None else WORKSPACE_DIR
+        self._user_email: str | None = user_email
+        self.project_context: PipelineContext | None = None
+
+        # Use per-user workspace if user_email is provided, otherwise legacy shared workspace
+        if workspace_dir is not None:
+            self._workspace_dir: Path = workspace_dir
+        elif user_email is not None:
+            from ai_qa.config import get_user_workspace_dir
+
+            self._workspace_dir = get_user_workspace_dir(user_email)
+        else:
+            self._workspace_dir = WORKSPACE_DIR
+
         self._load_agent_config()
         self._create_workspace()
 
@@ -98,9 +122,41 @@ class BaseAgent(ABC):
 
         Safe to call repeatedly — uses ``exist_ok=True``.
         """
-        for folder in WORKSPACE_SUBFOLDERS:
+        folders = USER_WORKSPACE_SUBFOLDERS if self._user_email else WORKSPACE_SUBFOLDERS
+        for folder in folders:
             (self._workspace_dir / folder).mkdir(parents=True, exist_ok=True)
         logger.info("Workspace directories ensured at %s", self._workspace_dir.resolve())
+
+    def set_user_context(self, user_email: str | None) -> None:
+        """Set or update the user context for per-user workspace isolation.
+
+        This method allows switching from shared workspace to per-user workspace
+        when a user authenticates. Called by API routes when user context is available.
+
+        Args:
+            user_email: User's email address for per-user workspace, or None for shared workspace.
+        """
+        if user_email == self._user_email:
+            return  # No change needed
+
+        self._user_email = user_email
+
+        if user_email is not None:
+            from ai_qa.config import get_user_workspace_dir
+
+            self._workspace_dir = get_user_workspace_dir(user_email)
+            logger.info("Agent %s switched to per-user workspace for %s", self.name, user_email)
+        # else: keep existing workspace_dir (shared mode)
+
+        # Recreate workspace for new user
+        self._create_workspace()
+        self._load_agent_config()
+
+    def set_project_context(self, context: PipelineContext | None) -> None:
+        """Attach authorized project context for project-scoped execution."""
+        self.project_context = context
+        if context is not None:
+            self._user_email = context.user_email
 
     # ------------------------------------------------------------------
     # Agent configuration

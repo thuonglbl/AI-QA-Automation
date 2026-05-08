@@ -1,7 +1,7 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ReviewContent } from './ReviewContent';
 

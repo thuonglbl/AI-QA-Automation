@@ -1,0 +1,81 @@
+export type ApiErrorKind = "auth" | "forbidden" | "not_found" | "validation" | "network" | "server";
+
+export interface ApiRequestOptions extends RequestInit {
+  authRoute?: boolean;
+  safeMessage?: string;
+}
+
+export class ApiError extends Error {
+  kind: ApiErrorKind;
+  status?: number;
+  details?: unknown;
+
+  constructor(kind: ApiErrorKind, message: string, status?: number, details?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.kind = kind;
+    this.status = status;
+    this.details = details;
+  }
+}
+
+export const API_BASE_PATH = import.meta.env.VITE_API_BASE_PATH ?? "/api";
+
+function buildUrl(path: string, authRoute = false): string {
+  if (/^https?:\/\//.test(path)) return path;
+  if (authRoute) return path.startsWith("/auth") ? path : `/auth${path.startsWith("/") ? path : `/${path}`}`;
+  if (path.startsWith(API_BASE_PATH)) return path;
+  return `${API_BASE_PATH}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function safeMessage(kind: ApiErrorKind): string {
+  switch (kind) {
+    case "auth": return "Your session has expired. Please sign in again.";
+    case "forbidden": return "You do not have access to perform this action.";
+    case "not_found": return "The requested resource could not be found.";
+    case "validation": return "Please check the form and try again.";
+    case "network": return "Network connection failed. Please try again.";
+    default: return "Something went wrong. Please try again.";
+  }
+}
+
+function kindForStatus(status: number): ApiErrorKind {
+  if (status === 401) return "auth";
+  if (status === 403) return "forbidden";
+  if (status === 404) return "not_found";
+  if (status === 422 || status === 400) return "validation";
+  return "server";
+}
+
+export async function apiFetch<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const { authRoute = false, safeMessage: overrideMessage, headers, ...request } = options;
+  let response: Response;
+  try {
+    response = await fetch(buildUrl(path, authRoute), {
+      ...request,
+      credentials: "include",
+      headers: {
+        ...(request.body ? { "Content-Type": "application/json" } : {}),
+        ...headers,
+      },
+    });
+  } catch (error) {
+    throw new ApiError("network", overrideMessage ?? safeMessage("network"), undefined, error);
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  const hasJson = contentType.includes("application/json");
+  const payload = hasJson ? await response.json().catch(() => null) : await response.text().catch(() => "");
+
+  if (!response.ok) {
+    const kind = kindForStatus(response.status);
+    throw new ApiError(kind, overrideMessage ?? safeMessage(kind), response.status, payload);
+  }
+
+  return payload as T;
+}
+
+export function getSafeApiErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) return error.message;
+  return "Something went wrong. Please try again.";
+}

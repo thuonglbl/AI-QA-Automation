@@ -15,13 +15,16 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from ai_qa.ai_connection.client import LLMClient
 from ai_qa.ai_connection.config import LLMConfig
 from ai_qa.config import AppSettings
-from ai_qa.exceptions import ScriptGenerationError
+from ai_qa.exceptions import ScriptGenerationError, VisionError
 from ai_qa.models import StageResult, TestCase
 from ai_qa.pipelines.models import OutputMetadata
 from ai_qa.pipelines.output_writer import OutputWriter
+from ai_qa.pipelines.vision_locator import LocatorResult, VisionLocator
 from ai_qa.prompts.script_generation import (
     SCRIPT_GENERATION_PROMPT,
     SCRIPT_GENERATION_SYSTEM_PROMPT,
+    VISION_ASSISTED_SCRIPT_GENERATION_PROMPT,
+    VISION_SCRIPT_GENERATION_SYSTEM_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,7 @@ class ScriptGenerator:
         output_base_dir: Path,
         llm_config: LLMConfig | None = None,
         config: AppSettings | None = None,
+        vision_locator: VisionLocator | None = None,
     ) -> None:
         """Initialize the script generator.
 
@@ -46,17 +50,29 @@ class ScriptGenerator:
             output_base_dir: Base directory for script output (workspace/testscripts/)
             llm_config: Optional LLM configuration. If None, loads from agents.json.
             config: Optional AppSettings for script generation configuration.
+            vision_locator: Optional VisionLocator for vision-assisted generation.
         """
         self.output_base_dir = output_base_dir
         self._llm_config = llm_config
         self._config = config or AppSettings()
         self._output_writer = OutputWriter(output_base_dir)
+        self._vision_locator = vision_locator
+        self._vision_enabled = (
+            vision_locator is not None and getattr(config, "vision_enabled", True)
+            if config
+            else vision_locator is not None
+        )
 
-    async def generate(self, test_cases: list[TestCase]) -> StageResult:
+    async def generate(
+        self,
+        test_cases: list[TestCase],
+        target_url: str | None = None,
+    ) -> StageResult:
         """Generate Playwright scripts from test cases.
 
         Args:
             test_cases: List of structured test cases to convert to scripts.
+            target_url: Optional target application URL for vision-assisted generation.
 
         Returns:
             StageResult with list of generated script paths on success.
@@ -77,7 +93,7 @@ class ScriptGenerator:
 
         for test_case in test_cases:
             try:
-                result = await self._generate_single_script(test_case)
+                result = await self._generate_single_script(test_case, target_url)
                 if result["success"]:
                     generated_scripts.append(result)
                     total_confidence += result.get("confidence", 0.5)
@@ -116,18 +132,61 @@ class ScriptGenerator:
             confidence=avg_confidence if generated_scripts else 0.0,
         )
 
-    async def _generate_single_script(self, test_case: TestCase) -> dict[str, Any]:
+    async def _generate_single_script(
+        self,
+        test_case: TestCase,
+        target_url: str | None = None,
+    ) -> dict[str, Any]:
         """Generate a single Playwright script from a test case.
 
         Args:
             test_case: The test case to convert to a script.
+            target_url: Optional target URL for vision-assisted generation.
 
         Returns:
             Dictionary with script generation result including file path and confidence.
         """
+        locator_results: list[LocatorResult] = []
+
+        # Try vision-assisted generation if enabled and URL provided
+        if self._vision_enabled and target_url and self._vision_locator:
+            try:
+                vision_result = await self._vision_locator.identify_locators(test_case, target_url)
+                if vision_result.success and vision_result.data:
+                    locator_results = vision_result.data
+                    logger.info(
+                        f"Vision analysis completed for '{test_case.title}' with "
+                        f"{len(locator_results)} locators identified"
+                    )
+                else:
+                    warnings = vision_result.warnings or []
+                    errors = vision_result.errors or []
+                    logger.warning(
+                        f"Vision analysis for '{test_case.title}': "
+                        f"warnings={warnings}, errors={errors}"
+                    )
+                    if not getattr(self._config, "vision_fallback_on_error", True):
+                        return {
+                            "success": False,
+                            "error": f"Vision analysis failed: {errors}",
+                            "test_case_title": test_case.title,
+                        }
+            except VisionError as e:
+                logger.warning(f"Vision analysis failed for '{test_case.title}': {e}")
+                if not getattr(self._config, "vision_fallback_on_error", True):
+                    return {
+                        "success": False,
+                        "error": f"Vision error: {e.message}",
+                        "test_case_title": test_case.title,
+                    }
+                # Fall through to LLM-only generation
+
         try:
-            # Generate script via LLM
-            script_content = await self._call_llm(test_case)
+            # Generate script via LLM (with or without vision context)
+            if locator_results:
+                script_content = await self._call_llm_with_vision(test_case, locator_results)
+            else:
+                script_content = await self._call_llm(test_case)
 
             if not script_content or not script_content.strip():
                 return {
@@ -145,8 +204,8 @@ class ScriptGenerator:
                     "test_case_title": test_case.title,
                 }
 
-            # Calculate confidence based on script quality indicators
-            confidence = self._calculate_confidence(script_content, test_case)
+            # Calculate confidence based on script quality indicators and vision results
+            confidence = self._calculate_confidence(script_content, test_case, locator_results)
 
             # Write script to file
             file_path = await self._write_script(script_content, test_case, confidence)
@@ -242,6 +301,115 @@ class ScriptGenerator:
             logger.error(f"LLM call failed: {e}")
             raise ScriptGenerationError(f"LLM generation failed: {e}") from e
 
+    @retry(  # type: ignore[misc]
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
+    )
+    async def _call_llm_with_vision(
+        self,
+        test_case: TestCase,
+        locator_results: list[LocatorResult],
+    ) -> str:
+        """Call LLM to generate a Playwright script with vision context.
+
+        Args:
+            test_case: The test case to convert.
+            locator_results: Vision analysis results with identified locators.
+
+        Returns:
+            Generated Python script content.
+
+        Raises:
+            ScriptGenerationError: If LLM call fails after retries.
+        """
+        try:
+            llm_client = self._get_llm_client()
+
+            # Format the prompt with test case and vision data
+            test_case_json = test_case.model_dump_json(indent=2)
+            locator_info = self._format_locator_info(locator_results)
+            vision_context = "Vision-assisted analysis was performed on the target application."
+
+            prompt = VISION_ASSISTED_SCRIPT_GENERATION_PROMPT.format(
+                test_case=test_case_json,
+                vision_context=vision_context,
+                locator_info=locator_info,
+            )
+
+            # Create messages for LLM
+            from langchain_core.messages import HumanMessage, SystemMessage
+
+            messages = [
+                SystemMessage(content=VISION_SCRIPT_GENERATION_SYSTEM_PROMPT),
+                HumanMessage(content=prompt),
+            ]
+
+            # Call LLM
+            timeout = getattr(self._config, "script_generation_timeout", 120)
+            response = llm_client.invoke(messages, timeout=timeout)
+
+            # Extract script content from response
+            script_content = response.content
+
+            # Handle both string and list content types from LangChain
+            if isinstance(script_content, list):
+                parts: list[str] = []
+                for item in script_content:
+                    if isinstance(item, str):
+                        parts.append(item)
+                    elif isinstance(item, dict):
+                        text = item.get("text")
+                        if isinstance(text, str):
+                            parts.append(text)
+                        elif text is not None:
+                            parts.append(str(text))
+                    else:
+                        parts.append(str(item))
+                script_content = "\n".join(parts)
+
+            if not isinstance(script_content, str) or not script_content.strip():
+                raise ScriptGenerationError(
+                    "LLM returned empty response for vision-assisted generation"
+                )
+
+            return script_content.strip()
+
+        except Exception as e:
+            if isinstance(e, ScriptGenerationError):
+                raise
+            logger.error(f"Vision-assisted LLM call failed: {e}")
+            raise ScriptGenerationError(f"Vision-assisted LLM generation failed: {e}") from e
+
+    def _format_locator_info(self, locator_results: list[LocatorResult]) -> str:
+        """Format locator results for inclusion in LLM prompt.
+
+        Args:
+            locator_results: List of locator analysis results.
+
+        Returns:
+            Formatted string describing locators.
+        """
+        lines: list[str] = []
+
+        for result in locator_results:
+            lines.append(f"\nStep {result.step_number}: {result.element_description}")
+            lines.append(f"  Validation Status: {result.validation_status}")
+            lines.append(f"  Overall Confidence: {result.confidence:.2f}")
+
+            if result.selectors:
+                lines.append("  Identified Selectors (in priority order):")
+                for i, selector in enumerate(result.selectors[:3], 1):  # Top 3 selectors
+                    validated_mark = "[✓]" if selector.validated else "[ ]"
+                    lines.append(
+                        f"    {i}. {validated_mark} {selector.type}='{selector.value}' "
+                        f"(confidence: {selector.confidence:.2f})"
+                    )
+            else:
+                lines.append("  No selectors identified")
+
+        return "\n".join(lines)
+
     def _get_llm_client(self) -> LLMClient:
         """Get or create LLM client.
 
@@ -255,11 +423,18 @@ class ScriptGenerator:
         model = getattr(self._config, "script_generation_model", "sonnet")
         temperature = getattr(self._config, "script_generation_temperature", 0.0)
 
+        # TODO: Update ScriptGenerator to accept user_email and load UserConfig
+        # For now, safely access config attributes that may have been moved to per-user config
+        api_key = getattr(self._config, "on_premises_ai_server_key", "") or getattr(
+            self._config, "anthropic_api_key", ""
+        )
+        base_url = getattr(self._config, "on_premises_ai_server_url", "")
+
         llm_config = LLMConfig(
             model_name=model,
             temperature=temperature,
-            api_key=self._config.on_premises_ai_server_key or self._config.anthropic_api_key or "",
-            base_url=self._config.on_premises_ai_server_url or "",
+            api_key=api_key or "",
+            base_url=base_url or "",
         )
         return LLMClient(llm_config)
 
@@ -358,12 +533,18 @@ from playwright.sync_api import Page, expect
 '''
         return header
 
-    def _calculate_confidence(self, script_content: str, test_case: TestCase) -> float:
+    def _calculate_confidence(
+        self,
+        script_content: str,
+        test_case: TestCase,
+        locator_results: list[LocatorResult] | None = None,
+    ) -> float:
         """Calculate confidence score for generated script.
 
         Args:
             script_content: The generated script content.
             test_case: The source test case.
+            locator_results: Optional vision analysis results for accuracy adjustment.
 
         Returns:
             Confidence score between 0.0 and 1.0.
@@ -404,7 +585,36 @@ from playwright.sync_api import Page, expect
         if css_selectors > 3:
             score -= 0.02 * min(css_selectors - 3, 5)  # Max penalty 0.1
 
+        # Adjust score based on vision accuracy if available
+        if locator_results:
+            vision_confidence = self._calculate_vision_confidence(locator_results)
+            # Blend base score with vision confidence (60% base, 40% vision)
+            score = score * 0.6 + vision_confidence * 0.4
+
         return max(0.0, min(1.0, score))
+
+    def _calculate_vision_confidence(self, locator_results: list[LocatorResult]) -> float:
+        """Calculate confidence based on vision analysis accuracy.
+
+        Args:
+            locator_results: Vision analysis results.
+
+        Returns:
+            Average vision confidence score.
+        """
+        if not locator_results:
+            return 0.5
+
+        total_confidence = sum(r.confidence for r in locator_results)
+        avg_confidence = total_confidence / len(locator_results)
+
+        # Bonus for validated locators
+        validated_count = sum(1 for r in locator_results if r.validation_status == "valid")
+        if validated_count > 0:
+            validation_ratio = validated_count / len(locator_results)
+            avg_confidence += 0.1 * validation_ratio
+
+        return min(1.0, avg_confidence)
 
 
 async def process(
@@ -412,6 +622,8 @@ async def process(
     output_base_dir: Path,
     config: AppSettings | None = None,
     llm_config: LLMConfig | None = None,
+    vision_locator: VisionLocator | None = None,
+    target_url: str | None = None,
 ) -> StageResult:
     """Pipeline stage entry point for script generation.
 
@@ -420,6 +632,8 @@ async def process(
         output_base_dir: Base directory for script output.
         config: Optional AppSettings for configuration.
         llm_config: Optional LLM configuration.
+        vision_locator: Optional VisionLocator for vision-assisted generation.
+        target_url: Optional target application URL for vision analysis.
 
     Returns:
         StageResult with generated script paths and confidence score.
@@ -428,5 +642,6 @@ async def process(
         output_base_dir=output_base_dir,
         llm_config=llm_config,
         config=config,
+        vision_locator=vision_locator,
     )
-    return await generator.generate(test_cases)
+    return await generator.generate(test_cases, target_url)

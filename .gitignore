@@ -33,3 +33,7 @@ frontend/node_modules/
 /node_modules/
 /package.json
 /package-lock.json
+
+# Workspace runtime data (users.json, audit, reports, etc.)
+/workspace/
+*.log

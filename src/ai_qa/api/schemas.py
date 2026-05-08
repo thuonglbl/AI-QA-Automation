@@ -3,6 +3,10 @@
 These models define the structure of data exchanged between frontend and backend.
 """
 
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
@@ -18,6 +22,10 @@ class StartRequest(BaseModel):
     input_data: dict[str, object] = Field(
         default_factory=dict,
         description="Step-specific input data (e.g., Confluence URL for step 2)",
+    )
+    project_id: UUID | None = Field(
+        default=None,
+        description="Selected project for authenticated project-scoped pipeline execution",
     )
 
 
@@ -38,6 +46,10 @@ class ApproveRequest(BaseModel):
         default=None,
         description="Index of specific item being approved (for paginated review)",
     )
+    project_id: UUID | None = Field(
+        default=None,
+        description="Selected project for authenticated project-scoped pipeline execution",
+    )
 
 
 class RejectRequest(BaseModel):
@@ -53,9 +65,83 @@ class RejectRequest(BaseModel):
         default=None,
         description="Index of specific item being rejected (for paginated review)",
     )
+    project_id: UUID | None = Field(
+        default=None,
+        description="Selected project for authenticated project-scoped pipeline execution",
+    )
 
 
 class ContinueRequest(BaseModel):
     """Request body for /api/continue endpoint."""
 
     from_step: int = Field(ge=1, le=5, description="Step that was just completed")
+    project_id: UUID | None = Field(
+        default=None,
+        description="Selected project for authenticated project-scoped pipeline execution",
+    )
+
+
+class SkipRequest(BaseModel):
+    """Request body for /api/skip endpoint.
+
+    Used by Sarah agent to skip current script review
+    (hand off to automation engineer for manual review).
+    """
+
+    step: int = Field(ge=1, le=5, description="Step being processed")
+    item_index: int | None = Field(
+        default=None,
+        description="Index of specific item being skipped (for paginated review)",
+    )
+    project_id: UUID | None = Field(
+        default=None,
+        description="Selected project for authenticated project-scoped pipeline execution",
+    )
+
+
+class NavigateRequest(BaseModel):
+    """Request body for /api/navigate endpoint.
+
+    Used for navigating between items during review (Next/Previous).
+    """
+
+    step: int = Field(ge=1, le=5, description="Step being processed")
+    direction: str = Field(
+        pattern="^(next|previous)$",
+        description="Navigation direction: 'next' or 'previous'",
+    )
+    current_index: int = Field(ge=0, description="Current item index")
+    project_id: UUID | None = Field(
+        default=None,
+        description="Selected project for authenticated project-scoped pipeline execution",
+    )
+
+
+class ConversationMessage(BaseModel):
+    """Single message in the conversation history."""
+
+    id: str = Field(description="Unique message ID")
+    sender: Literal["agent", "user", "system"] = Field(description="Message sender type")
+    agent_name: str | None = Field(default=None, description="Agent name if sender is 'agent'")
+    content: str = Field(description="Message content (markdown supported)")
+    timestamp: datetime = Field(description="ISO 8601 timestamp")
+    message_type: str = Field(default="text", description="Message type for styling")
+    metadata: dict[str, object] | None = Field(default=None, description="Optional metadata")
+
+
+class ConversationData(BaseModel):
+    """Complete conversation data for persistence."""
+
+    messages: list[ConversationMessage] = Field(default_factory=list, description="Chat messages")
+    current_step: int = Field(default=1, ge=1, le=5, description="Current pipeline step")
+    status: str = Field(default="start", description="Current pipeline status")
+    current_agent: str = Field(default="Alice", description="Current agent name")
+    updated_at: datetime = Field(
+        default_factory=datetime.utcnow, description="Last update timestamp"
+    )
+
+
+class ConversationSaveRequest(BaseModel):
+    """Request to save conversation data."""
+
+    conversation: ConversationData = Field(description="Conversation data to save")

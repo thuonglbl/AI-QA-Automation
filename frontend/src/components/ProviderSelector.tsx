@@ -1,27 +1,14 @@
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import {
-  Shield,
-  Cloud,
-  Building2,
-  Lock,
-  Check,
-  Server,
-} from "lucide-react";
 import type {
   ProviderOption,
   ProviderCredentials,
-  SecurityLevel,
 } from "@/types/provider";
-import {
-  SECURITY_LEVEL_COLORS,
-  SECURITY_LEVEL_LABELS,
-  QUALITY_RANK_LABELS,
-} from "@/types/provider";
+
+interface SubmittedSelection {
+  providerId: string;
+  providerName: string;
+  credentials: Record<string, string>;
+}
 
 interface ProviderSelectorProps {
   options: ProviderOption[] | null;
@@ -31,19 +18,28 @@ interface ProviderSelectorProps {
   };
   onSelect: (providerId: string, credentials: Record<string, string>) => void;
   disabled?: boolean;
+  submittedSelection?: SubmittedSelection | null;
 }
 
-const SECURITY_ICONS: Record<SecurityLevel, React.ReactNode> = {
-  cloud: <Cloud className="h-4 w-4" />,
-  enterprise: <Building2 className="h-4 w-4" />,
-  highest: <Lock className="h-4 w-4" />,
+const RANK_ICONS: Record<number, string> = {
+  1: "☁️",
+  2: "🔷",
+  3: "🌐",
+  4: "🔒",
 };
 
-const RANK_ICONS: Record<number, string> = {
-  1: "🥇",
-  2: "🥈",
-  3: "🥉",
-  4: "🏠",
+const TAG_STYLES: Record<number, string> = {
+  1: "bg-[#f0fdf4] text-[#16a34a]",
+  2: "bg-[#fffbeb] text-[#d97706]",
+  3: "bg-[#f1f5f9] text-[#64748b]",
+  4: "bg-[#eff6ff] text-[#2563eb]",
+};
+
+const TAG_LABELS: Record<number, string> = {
+  1: "Best quality",
+  2: "Recommended",
+  3: "Good",
+  4: "Most secure",
 };
 
 export function ProviderSelector({
@@ -51,12 +47,17 @@ export function ProviderSelector({
   onPremDefaults,
   onSelect,
   disabled = false,
+  submittedSelection,
 }: ProviderSelectorProps) {
-  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
-  const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(submittedSelection?.providerId || null);
+  const [credentials, setCredentials] = useState<Record<string, string>>(submittedSelection?.credentials || {});
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const selectedOption = options?.find((p) => p.id === selectedProvider);
+  // Use submitted selection if available (read-only mode)
+  const isReadOnly = !!submittedSelection;
+  const displayProvider = submittedSelection?.providerId || selectedProvider;
+  const displayCredentials = submittedSelection?.credentials || credentials;
+  const selectedOption = options?.find((p) => p.id === displayProvider);
 
   const handleProviderClick = (providerId: string) => {
     setSelectedProvider(providerId);
@@ -115,117 +116,98 @@ export function ProviderSelector({
   };
 
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-surface-600 mb-3">
-        Select an AI provider below. Higher quality ranks offer better results,
-        while higher security levels keep your data more private.
-      </p>
+    <div className="w-full flex flex-col gap-3">
+      {/* Alice Provider Options - Left aligned */}
+      <div className="self-start w-[40%] min-w-0">
+        <div className="text-[11px] font-semibold text-[#3b82f6] mb-1">Alice</div>
+        <div className="p-4 bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-sm text-[#0f172a] leading-relaxed">
+        Which AI provider would you like to use? Each has different quality and security trade-offs:
 
-      {/* Provider Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {options?.map((provider) => (
-          <Card
-            key={provider.id}
-            className={`cursor-pointer transition-all hover:shadow-md ${
-              selectedProvider === provider.id
-                ? "ring-2 ring-primary border-primary"
-                : "border-surface-200"
-            } ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
-            onClick={() => !disabled && handleProviderClick(provider.id)}
-          >
-            <CardHeader className="pb-2">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg" aria-hidden="true">
-                    {RANK_ICONS[provider.qualityRank]}
-                  </span>
-                  <div>
-                    <h4 className="font-semibold text-surface-900">
-                      {provider.name}
-                    </h4>
-                    <p className="text-xs text-surface-500">
-                      {QUALITY_RANK_LABELS[provider.qualityRank]}
-                    </p>
-                  </div>
-                </div>
-                {selectedProvider === provider.id && (
-                  <Check className="h-5 w-5 text-primary" />
-                )}
-              </div>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <Badge
-                variant="secondary"
-                className={`text-xs ${SECURITY_LEVEL_COLORS[provider.securityLevel]}`}
-              >
-                <span className="mr-1">{SECURITY_ICONS[provider.securityLevel]}</span>
-                {SECURITY_LEVEL_LABELS[provider.securityLevel]}
-              </Badge>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {/* Credential Form */}
-      {selectedOption && (
-        <Card className="mt-4 border-surface-200">
-          <CardHeader className="pb-3">
-            <h4 className="font-medium text-surface-900">
-              Configure {selectedOption.name}
-            </h4>
-            <p className="text-sm text-surface-500">
-              Enter your credentials to connect to {selectedOption.name}
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {selectedOption.credentialFields.map((field) => (
-              <div key={field.name} className="space-y-2">
-                <Label
-                  htmlFor={field.name}
-                  className="text-sm font-medium text-surface-700"
-                >
-                  {field.label}
-                  {field.required && (
-                    <span className="text-error ml-1">*</span>
-                  )}
-                </Label>
-                <Input
-                  id={field.name}
-                  type={field.type}
-                  placeholder={field.placeholder || `Enter ${field.label}`}
-                  value={credentials[field.name] || ""}
-                  onChange={(e) =>
-                    handleCredentialChange(field.name, e.target.value)
-                  }
-                  disabled={disabled}
-                  className={errors[field.name] ? "border-error" : ""}
-                />
-                {errors[field.name] && (
-                  <p className="text-xs text-error">{errors[field.name]}</p>
-                )}
-              </div>
-            ))}
-
-            <Button
-              onClick={handleStart}
-              disabled={disabled}
-              className="w-full"
+        {/* Provider Options */}
+        <div className="flex flex-col gap-1.5 mt-2.5 mb-1">
+          {options?.map((provider) => (
+            <div
+              key={provider.id}
+              onClick={() => !disabled && handleProviderClick(provider.id)}
+              className={`border rounded-lg px-3.5 py-2.5 cursor-pointer transition-all flex justify-between items-center ${
+                selectedProvider === provider.id
+                  ? "border-[#3b82f6] bg-[#eff6ff]"
+                  : "border-[#e2e8f0] hover:border-[#3b82f6] hover:bg-[#eff6ff]"
+              } ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
             >
-              <Server className="h-4 w-4 mr-2" />
-              Test Connection & Continue
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Security Notice */}
-      <div className="flex items-start gap-2 p-3 bg-surface-50 rounded-lg text-xs text-surface-600">
-        <Shield className="h-4 w-4 mt-0.5 flex-shrink-0 text-surface-500" />
-        <p>
-          Your credentials are stored securely and only used to communicate with
-          the AI provider. API keys are never logged or shared.
-        </p>
+              <div className="flex flex-col gap-0.5">
+                <span className="font-semibold text-[13px]">
+                  {RANK_ICONS[provider.qualityRank]} {provider.name}
+                </span>
+                <span className="text-[11px] text-[#64748b]">
+                  {provider.description}
+                </span>
+              </div>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${TAG_STYLES[provider.qualityRank]}`}>
+                {TAG_LABELS[provider.qualityRank]}
+              </span>
+            </div>
+          ))}
+        </div>
+        </div>
       </div>
+
+      {/* Credential Form - Right aligned (User message style) */}
+      {selectedOption && (
+        <div className="self-end w-[40%] min-w-0">
+          <div className="text-[11px] font-semibold text-[#64748b] mb-1 text-right">You</div>
+          <div className={`p-4 rounded-2xl rounded-br-sm text-sm leading-relaxed ${isReadOnly ? 'bg-[#1e40af] text-white' : 'bg-[#3b82f6] text-white'}`}>
+            <div className="space-y-3">
+              {isReadOnly ? (
+                // Read-only display of submitted selection
+                <div className="space-y-2">
+                  <div className="font-medium">{submittedSelection?.providerName}</div>
+                  {selectedOption?.credentialFields?.map((field) => (
+                    <div key={field.name} className="text-xs text-white/80">
+                      <span className="text-white/60">{field.label}:</span>{" "}
+                      {field.type === "password" ? "••••••••" : displayCredentials[field.name]}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                // Editable form
+                <>
+                  {selectedOption.credentialFields?.map((field) => (
+                    <div key={field.name}>
+                      <input
+                        type={field.type}
+                        placeholder={field.placeholder || `Enter ${field.label}`}
+                        value={credentials[field.name] || ""}
+                        onChange={(e) => handleCredentialChange(field.name, e.target.value)}
+                        disabled={disabled}
+                        className={`w-full px-4 py-2.5 rounded-full border text-sm text-[#0f172a] placeholder:text-[#94a3b8] outline-none transition-all ${
+                          errors[field.name]
+                            ? "border-red-400 focus:border-red-500"
+                            : "border-[#e2e8f0] focus:border-[#3b82f6] focus:ring-2 focus:ring-[#3b82f6]/10"
+                        }`}
+                      />
+                      {errors[field.name] && (
+                        <p className="text-xs text-red-200 mt-1">{errors[field.name]}</p>
+                      )}
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          </div>
+          {!isReadOnly && (
+            <div className="flex justify-end mt-2">
+              <button
+                onClick={handleStart}
+                disabled={disabled}
+                className="px-5 py-2.5 rounded-full bg-[#2563eb] text-white text-sm font-medium hover:bg-[#1d4ed8] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              >
+                Start
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

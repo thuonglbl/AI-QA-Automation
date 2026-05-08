@@ -26,6 +26,7 @@ export interface CredentialField {
 export interface ProviderOption {
   id: ProviderId;
   name: string;
+  description: string;
   qualityRank: number;
   securityLevel: SecurityLevel;
   credentialFields: CredentialField[];

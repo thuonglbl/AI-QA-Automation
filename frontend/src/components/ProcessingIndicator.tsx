@@ -1,50 +1,29 @@
 import type { ProcessingIndicatorProps } from '@/types/pipeline';
-import { cn } from '@/lib/utils';
 
 export function ProcessingIndicator({
   message,
   isActive = true,
-  className,
 }: ProcessingIndicatorProps) {
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={cn('flex items-center gap-3', className)}
-    >
-      {/* Animated dots */}
-      <div className="flex items-center gap-1">
-        <span
-          className={cn(
-            'h-2 w-2 rounded-full bg-slate-400',
-            isActive && 'animate-bounce-dot',
-            'motion-reduce:animate-none'
-          )}
-          aria-hidden="true"
-        />
-        <span
-          className={cn(
-            'h-2 w-2 rounded-full bg-slate-400',
-            isActive && 'animate-bounce-dot-delay-1',
-            'motion-reduce:animate-none'
-          )}
-          aria-hidden="true"
-        />
-        <span
-          className={cn(
-            'h-2 w-2 rounded-full bg-slate-400',
-            isActive && 'animate-bounce-dot-delay-2',
-            'motion-reduce:animate-none'
-          )}
-          aria-hidden="true"
-        />
+    <div className="max-w-[600px] self-start">
+      <div className="text-[11px] font-semibold text-[#3b82f6] mb-1">Alice</div>
+      <div className="p-4 bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-sm text-[#0f172a] leading-relaxed">
+        <div className="flex items-center gap-1">
+          <span
+            className={`w-1.5 h-1.5 rounded-full bg-[#94a3b8] ${isActive ? 'animate-bounce' : ''}`}
+            style={{ animationDelay: '0s' }}
+          />
+          <span
+            className={`w-1.5 h-1.5 rounded-full bg-[#94a3b8] ${isActive ? 'animate-bounce' : ''}`}
+            style={{ animationDelay: '0.2s' }}
+          />
+          <span
+            className={`w-1.5 h-1.5 rounded-full bg-[#94a3b8] ${isActive ? 'animate-bounce' : ''}`}
+            style={{ animationDelay: '0.4s' }}
+          />
+        </div>
+        <span className="text-sm text-[#64748b] ml-2">{message}</span>
       </div>
-
-      {/* Status message */}
-      <span className="text-sm text-slate-600">{message}</span>
-
-      {/* Screen reader only text */}
-      <span className="sr-only">Processing: {message}</span>
     </div>
   );
 }

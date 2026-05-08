@@ -1,0 +1,42 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# IDE-specific files
+.vscode/
+.idea/
+.claude/
+_bmad/
+.agent/
+.gemini/
+.windsurf/
+.cline/
+.roo/
+
+# secret files
+.env
+config.yaml
+_bmad-output/planning-artifacts/secret-brief-internal.md
+
+# Frontend build artifacts
+frontend/dist/
+frontend/node_modules/
+
+# Root-level accidental node_modules (dependencies belong in frontend/)
+/node_modules/
+/package.json
+/package-lock.json
+
+# Workspace runtime data (users.json, audit, reports, etc.)
+/workspace/
+*.log
+
+# No need to build
+tests/

@@ -655,6 +655,127 @@ So that I can verify the script correctly implements the test case.
 **And** output saved to `workspace/testscripts/` with metadata per script (FR13)
 **Note (FR19 scope boundary):** This story delivers the base split-panel layout only — no selector highlighting, no assertion linking, no confidence score overlay. Those enhancements are deferred to Epic 8 Story 8.2. Do not over-engineer the panel here.
 
+## Epic 12: Decoupled Backend, Database, Auth, and Project Foundation
+
+This epic pivots the product from a single-user file-based workspace into a decoupled multi-user system. React remains the frontend, FastAPI remains the backend, PostgreSQL becomes the source of truth, and generated Markdown/Mermaid/script files are managed as project-scoped artifacts. This epic must be completed before resuming Epic 6+ execution, metrics, audit, or enterprise integrations.
+
+> **Dependencies:** Builds on Epic 1 (project structure), Epic 2 (FastAPI/React foundation), and the completed agent pipeline foundations from Epics 3–5.
+> **Course correction:** Azure Entra ID SSO is deferred to a later enterprise backlog item. R&D authentication uses local email/password accounts, with initial admin accounts seeded manually or via CLI.
+
+### Story 12.1: PostgreSQL Persistence Foundation with SQLAlchemy and Alembic
+
+As a R&D engineer,
+I want PostgreSQL persistence configured with SQLAlchemy models and Alembic migrations,
+So that backend data has a versioned, scalable source of truth instead of ad-hoc workspace files.
+
+**Acceptance Criteria:**
+
+**Given** the backend starts in development mode
+**When** database configuration is loaded
+**Then** the application connects to PostgreSQL using environment-driven settings
+**And** SQLAlchemy 2.x models are defined for `users`, `projects`, `project_memberships`, `pipeline_runs`, `artifacts`, `artifact_versions`, and `audit_events`
+**And** Alembic is configured with an initial migration for the core schema
+**And** `alembic upgrade head` creates or updates the schema successfully
+**And** database health is exposed through a backend health check endpoint
+**And** tests can run against an isolated test database or transaction-scoped test session
+
+### Story 12.2: Local Authentication and Admin Bootstrap
+
+As a project user,
+I want to register and log in with local email/password credentials during R&D,
+So that the system can support multiple users before enterprise SSO is approved.
+
+**Acceptance Criteria:**
+
+**Given** the backend auth module is available
+**When** a user registers with email and password
+**Then** the password is stored only as a secure hash
+**And** duplicate email registration is rejected
+**And** login returns an authenticated session or token suitable for protected API calls
+**And** current-user endpoint returns the authenticated user profile and role
+**And** an admin account can be seeded manually or via CLI without public self-service admin creation
+**And** Azure Entra ID SSO remains documented as a deferred production/enterprise backlog item
+
+### Story 12.3: Role-Based Access Control for Admin and Standard Users
+
+As an admin,
+I want role-based permissions enforced by the backend,
+So that only authorized users can manage users and projects.
+
+**Acceptance Criteria:**
+
+**Given** authenticated users have roles
+**When** an admin accesses admin APIs
+**Then** they can view the user list, create projects, and assign users to projects
+**And** standard users cannot access admin-only endpoints
+**And** all protected endpoints reject unauthenticated requests
+**And** authorization failures return consistent error responses without leaking sensitive details
+**And** RBAC checks are covered by API tests
+
+### Story 12.4: Project and Membership Management API
+
+As an admin,
+I want to create projects and assign users to them,
+So that project teams can share the same QA automation workspace and results.
+
+**Acceptance Criteria:**
+
+**Given** users and projects exist
+**When** an admin assigns users to a project
+**Then** `project_memberships` stores the many-to-many relationship between users and projects
+**And** assigned users can see the project in their project list after login
+**And** users only see projects where they are members unless they are admin
+**And** project-scoped endpoints validate membership before returning data
+**And** API schemas are documented automatically in OpenAPI/Swagger under `/docs`
+
+### Story 12.5: Project-Scoped Artifact Service
+
+As a project member,
+I want generated Markdown, Mermaid, and script files to be linked to a project,
+So that everyone in the same project can review and edit shared AI outputs.
+
+**Acceptance Criteria:**
+
+**Given** a pipeline stage produces Markdown, Mermaid, Playwright scripts, screenshots, or reports
+**When** the artifact service saves the output
+**Then** artifact metadata is stored in PostgreSQL with `project_id`, artifact type, owner, timestamps, and current version
+**And** large file content is stored through a local artifact storage abstraction rather than directly by agents
+**And** artifact versions preserve edit history for user-modified outputs
+**And** agents read and write artifacts through the artifact service, not by hard-coded `workspace/` paths
+**And** the storage abstraction can later be replaced by MinIO/S3-compatible object storage without rewriting agent logic
+
+### Story 12.6: Frontend Login, Project Selection, and API Client Foundation
+
+As a project member,
+I want to log in and select a project before running the agent pipeline,
+So that all generated results are scoped to the correct shared project.
+
+**Acceptance Criteria:**
+
+**Given** the React frontend starts
+**When** an unauthenticated user opens the app
+**Then** they see a login/register flow instead of the pipeline workspace
+**And** authenticated users see a project picker containing only accessible projects
+**And** the selected project ID is included in project-scoped API calls and WebSocket connections
+**And** admin users can access basic user/project management screens
+**And** API client code targets `/api/v1` endpoints and handles authentication errors consistently
+
+### Story 12.7: Refactor Existing Pipeline from Workspace Paths to Project Context
+
+As a R&D engineer,
+I want existing agents and stages to operate on project context instead of global local workspace folders,
+So that multi-user project collaboration works without breaking the current agent workflow.
+
+**Acceptance Criteria:**
+
+**Given** Bob, Mary, Sarah, and Jack run in sequence
+**When** they need previous-stage inputs or need to save new outputs
+**Then** they resolve inputs through project-scoped artifact queries
+**And** generated outputs are saved via the artifact service with versions and metadata
+**And** pipeline runs are recorded in `pipeline_runs` with project, triggering user, status, timestamps, and summary
+**And** legacy `workspace/` assumptions are isolated behind compatibility adapters or removed where safe
+**And** existing completed functionality from Epics 3–5 remains operational after the refactor
+
 ## Epic 6: Test Execution & Reporting (Agent Jack)
 
 Jack runs test scripts across Chrome/Firefox/Edge, generates execution reports with pass/fail per test per browser. Pipeline completes end-to-end. User sees final results.
@@ -975,3 +1096,48 @@ So that I can track ROI, adoption, and make data-driven decisions about the tool
 **And** data is presented with clear, at-a-glance summary cards and simple trend visualizations
 **And** dashboard data can be exported for reporting (CSV or JSON)
 **And** dashboard is accessible via the `/dashboard` route in the web UI
+
+## Epic 11: Azure Entra ID SSO Integration
+
+QA engineers authenticate using their existing Azure Entra ID (Azure AD) credentials through the company's SSO infrastructure. This replaces the insecure shared `.env` approach with proper per-user authentication and authorization.
+
+**FRs covered:** FR14 (security fix), NFR6 (credential isolation)
+
+### Story 11.1: Azure Entra ID SSO Authentication Foundation
+
+As a QA engineer (Minh),
+I want to authenticate via Azure Entra ID SSO instead of shared `.env` credentials,
+So that my API keys and access are isolated and secure per my corporate identity.
+
+**Acceptance Criteria:**
+
+**Given** the FastAPI server is running
+**When** an unauthenticated user accesses any protected endpoint
+**Then** they are redirected to Azure Entra ID login page
+
+**Given** a user completes Azure Entra ID authentication
+**When** the auth callback is processed
+**Then** a JWT session token is issued with user identity (email, name, groups)
+**And** the token expires after configurable duration (default: 8 hours)
+
+**Given** an authenticated user
+**When** they access protected API endpoints
+**Then** their identity is available to the pipeline via `request.state.user`
+**And** audit logs capture "who" performed each action (NFR9)
+
+**Given** the current `.env` configuration system
+**When** SSO is enabled
+**Then** per-user configuration is stored in isolated location: `workspace/users/{user_email}/`
+**And** API keys are no longer read from shared `.env` but from user-specific config
+
+**Given** the React frontend
+**When** SSO is integrated
+**Then** login page shows "Sign in with Microsoft" button
+**And** post-login, Agent Alice recognizes the user by name
+
+**Security Requirements:**
+- Use `fastapi-azure-auth` or `msal` library for Azure Entra ID integration
+- Token validation against Azure JWKS endpoint
+- No shared credentials in `.env` for user-isolated data
+- Session middleware with HttpOnly cookies
+- CSRF protection for authentication endpoints

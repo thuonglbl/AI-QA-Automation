@@ -1,5 +1,5 @@
 # generated: 2026-04-07T16:11:19+07:00
-# last_updated: 2026-04-19T01:55:00+0700
+# last_updated: 2026-05-06T10:34:00+0700
 # project: ai-qa-automation
 # project_key: NOKEY
 # tracking_system: file-system
@@ -22,6 +22,7 @@
 #   - in-progress: Developer actively working on implementation
 #   - review: Ready for code review (via Dev's code-review workflow)
 #   - done: Story completed
+#   - deferred: Intentionally moved out of current implementation sequence
 #
 # Retrospective Status:
 #   - optional: Can be completed but not required
@@ -33,9 +34,10 @@
 # - Stories can be worked in parallel if team capacity allows
 # - SM typically creates next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Course correction 2026-05-04: prioritize decoupled DB/Auth/Project foundation before Epic 6+.
 
 generated: 2026-04-07T16:11:19+07:00
-last_updated: 2026-04-19T02:46:00+0700
+last_updated: 2026-05-08T11:46:43+0700
 project: ai-qa-automation
 project_key: NOKEY
 tracking_system: file-system
@@ -71,12 +73,23 @@ development_status:
   4-2-test-case-extractor-pipeline-stage: done
   4-3-mary-agent-create-test-cases-with-per-item-review: done
   epic-4-retrospective: optional
-  epic-5: in-progress
+  epic-5: done
   5-1-browser-use-agent-configuration-and-session-management: done
   5-2-script-generator-pipeline-stage: done
-  5-3-vision-assisted-locator-identification: backlog
-  5-4-sarah-agent-generate-scripts-with-side-by-side-review: backlog
+  5-3-vision-assisted-locator-identification: done
+  5-4-sarah-agent-generate-scripts-with-side-by-side-review: done
   epic-5-retrospective: optional
+  epic-11: deferred
+  11-1-azure-entra-sso-authentication-foundation: deferred
+  epic-12: done
+  12-1-postgresql-persistence-foundation-with-sqlalchemy-and-alembic: done
+  12-2-local-authentication-and-admin-bootstrap: done
+  12-3-role-based-access-control-for-admin-and-standard-users: done
+  12-4-project-and-membership-management-api: done
+  12-5-project-scoped-artifact-service: done
+  12-6-frontend-login-project-selection-and-api-client-foundation: done
+  12-7-refactor-existing-pipeline-from-workspace-paths-to-project-context: done
+  epic-12-retrospective: done
   epic-6: backlog
   6-1-script-runner-pipeline-stage: backlog
   6-2-execution-report-generation: backlog

@@ -5,5 +5,9 @@ conversational chat UI pipeline.
 """
 
 from ai_qa.api.app import create_app
+from ai_qa.config import AppSettings
 
-__all__ = ["create_app"]
+# Create default app instance for uvicorn
+app = create_app(AppSettings())
+
+__all__ = ["create_app", "app"]

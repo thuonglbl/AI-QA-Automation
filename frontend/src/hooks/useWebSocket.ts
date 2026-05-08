@@ -18,7 +18,15 @@ export interface WebSocketActions {
 }
 
 /** WebSocket URL (Vite proxy handles routing) */
-const WS_URL = "ws://localhost:5173/ws";
+// const WS_URL = "ws://localhost:5173/ws";
+const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
+const WS_URL = `${wsScheme}://${window.location.host}/ws`;
+
+function buildWsUrl(projectId: string): string {
+  const url = new URL(WS_URL);
+  url.searchParams.set("project_id", projectId);
+  return url.toString();
+}
 
 /** Reconnection delay in ms */
 const RECONNECT_DELAY = 3000;
@@ -37,7 +45,7 @@ const MAX_RECONNECT_ATTEMPTS = 5;
  *
  * @returns WebSocket state and actions
  */
-export function useWebSocket(): WebSocketState & WebSocketActions {
+export function useWebSocket(projectId: string | null): WebSocketState & WebSocketActions {
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastMessage, setLastMessage] = useState<AgentMessage | null>(null);
@@ -54,12 +62,21 @@ export function useWebSocket(): WebSocketState & WebSocketActions {
       reconnectTimeoutRef.current = null;
     }
 
-    try {
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
+    // Don't create new connection if already connected
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
+      return;
+    }
 
+    if (!projectId) {
+      setIsConnected(false);
+      setError(null);
+      return;
+    }
+
+    try {
+      const ws = new WebSocket(buildWsUrl(projectId));
+      wsRef.current = ws;
       ws.onopen = () => {
-        console.log("WebSocket connected");
         setIsConnected(true);
         setError(null);
         reconnectAttemptsRef.current = 0;
@@ -116,15 +133,19 @@ export function useWebSocket(): WebSocketState & WebSocketActions {
     } catch (err) {
       setError(`Failed to create WebSocket: ${err}`);
     }
-  }, []);
+  }, [projectId]);
 
   const sendMessage = useCallback((message: unknown) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN && projectId) {
+      const payload = typeof message === "object" && message !== null
+        ? { ...message, projectId, project_id: projectId }
+        : message;
+      ws.send(JSON.stringify(payload));
     } else {
-      console.warn("WebSocket not connected, message not sent");
+      console.warn("WebSocket not connected");
     }
-  }, []);
+  }, [projectId]);
 
   const reconnect = useCallback(() => {
     reconnectAttemptsRef.current = 0;
@@ -138,20 +159,24 @@ export function useWebSocket(): WebSocketState & WebSocketActions {
     connect();
   }, [connect]);
 
-  // Connect on mount, disconnect on unmount
   useEffect(() => {
+    if (!projectId) {
+      intentionalCloseRef.current = true;
+      wsRef.current?.close();
+      wsRef.current = null;
+      setIsConnected(false);
+      return;
+    }
+
     connect();
 
     return () => {
       intentionalCloseRef.current = true;
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      wsRef.current?.close();
+      wsRef.current = null;
+      intentionalCloseRef.current = false;
     };
-  }, [connect]);
+  }, [connect, projectId]);
 
   return {
     isConnected,

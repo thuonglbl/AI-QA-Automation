@@ -1,8 +1,10 @@
 # Standard library
+import hashlib
 from pathlib import Path
+from urllib.parse import quote_plus, urlsplit, urlunsplit
 
 # Third-party
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -14,6 +16,62 @@ from pydantic_settings import (
 _PROJECT_ROOT = Path(__file__).parents[2]
 
 
+def get_user_workspace_dir(user_email: str) -> Path:
+    """Get per-user workspace directory path (hashed for filesystem safety).
+
+    Args:
+        user_email: User's email address.
+
+    Returns:
+        Path to user's workspace directory.
+    """
+    email_hash = hashlib.sha256(user_email.lower().encode()).hexdigest()[:16]
+    return _PROJECT_ROOT / "workspace" / "users" / f"{email_hash}_{user_email.split('@')[0]}"
+
+
+class UserConfig(BaseModel):
+    """Per-user configuration model.
+
+    Contains user-specific settings like API keys that were previously in shared .env.
+    """
+
+    anthropic_api_key: str = Field(default="", description="User's Claude API key")
+    on_premises_ai_server_url: str = Field(default="", description="User's on-prem LiteLLM proxy")
+    on_premises_ai_server_key: str = Field(
+        default="", description="User's on-prem AI server API key"
+    )
+    llm_model: str = Field(default="claude-sonnet-4-6", description="Preferred LLM model")
+    llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+
+    def save(self, user_email: str) -> None:
+        """Save user config to their workspace directory.
+
+        Args:
+            user_email: User's email address for directory resolution.
+        """
+        user_dir = get_user_workspace_dir(user_email)
+        config_dir = user_dir / "configuration"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_file = config_dir / "user_config.json"
+        config_file.write_text(self.model_dump_json(indent=2))
+
+    @classmethod
+    def load(cls, user_email: str) -> "UserConfig":
+        """Load user config from their workspace directory.
+
+        Args:
+            user_email: User's email address for directory resolution.
+
+        Returns:
+            UserConfig instance (empty defaults if not found).
+        """
+        user_dir = get_user_workspace_dir(user_email)
+        config_file = user_dir / "configuration" / "user_config.json"
+        if config_file.exists():
+            return cls.model_validate_json(config_file.read_text())
+        return cls()
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -23,17 +81,20 @@ class AppSettings(BaseSettings):
         str_strip_whitespace=True,
     )
 
-    # --- LLM Provider (FR14, FR15) ---
-    anthropic_api_key: str = Field(
-        default="", description="Claude API key (optional if using on-prem)"
+    # --- Session Security (Story 11-1) ---
+    session_secret_key: str = Field(
+        default="dev-secret-change-in-production",
+        description="Secret key for signing session cookies",
     )
-    on_premises_ai_server_url: str = Field(default="", description="On-prem LiteLLM proxy base URL")
-    on_premises_ai_server_key: str = Field(default="", description="On-prem AI server API key")
-
-    # --- LLM Parameters (FR15) ---
-    llm_model: str = Field(default="claude-sonnet-4-6", description="LLM model identifier")
-    llm_temperature: float = Field(
-        default=0.0, ge=0.0, le=2.0, description="LLM sampling temperature"
+    session_expire_hours: int = Field(
+        default=8, ge=1, le=24, description="Session expiration in hours"
+    )
+    session_cookie_name: str = Field(default="aiqa_session", description="Name of session cookie")
+    session_cookie_secure: bool = Field(
+        default=False, description="Use Secure flag for cookies (enable in production with HTTPS)"
+    )
+    session_cookie_samesite: str = Field(
+        default="Lax", description="SameSite attribute for cookies"
     )
 
     # --- Server ---
@@ -80,6 +141,58 @@ class AppSettings(BaseSettings):
         default=0.7, ge=0.0, le=1.0, description="Threshold to flag low confidence generations"
     )
 
+    # --- PostgreSQL Persistence (Story 12-1) ---
+    database_url: str = Field(default="", description="Full SQLAlchemy database URL")
+    database_host: str = Field(default="localhost", description="PostgreSQL host")
+    database_port: int = Field(default=5432, ge=1, le=65535, description="PostgreSQL port")
+    database_name: str = Field(default="ai_qa_automation", description="PostgreSQL database name")
+    database_user: str = Field(default="ai_qa", description="PostgreSQL username")
+    database_password: str = Field(default="", description="PostgreSQL password")
+    database_pool_size: int = Field(default=5, ge=1, description="SQLAlchemy pool size")
+    database_max_overflow: int = Field(default=10, ge=0, description="SQLAlchemy max overflow")
+    database_echo: bool = Field(
+        default=False, description="Echo SQL statements for local debugging"
+    )
+
+    @property
+    def sqlalchemy_database_url(self) -> str:
+        """Return a SQLAlchemy-compatible PostgreSQL URL from settings.
+
+        DATABASE_URL takes precedence. Otherwise individual DATABASE_* settings
+        are assembled with URL escaping so credentials are safe for special chars.
+        """
+        if self.database_url:
+            return self.database_url
+
+        user = quote_plus(self.database_user)
+        password = quote_plus(self.database_password)
+        auth = f"{user}:{password}@" if password else f"{user}@"
+        host = self.database_host
+        return f"postgresql+psycopg://{auth}{host}:{self.database_port}/{self.database_name}"
+
+    @property
+    def masked_database_url(self) -> str:
+        """Return the database URL with any password hidden for safe logging."""
+        return mask_database_url(self.sqlalchemy_database_url)
+
+    # --- Vision-Assisted Locator Identification (FR5, NFR1) ---
+    vision_enabled: bool = Field(
+        default=True, description="Enable vision-assisted locator identification"
+    )
+    vision_model: str = Field(default="sonnet", description="Vision model for element analysis")
+    vision_timeout: int = Field(
+        default=60, ge=10, le=300, description="Timeout in seconds for vision analysis"
+    )
+    vision_screenshot_quality: int = Field(
+        default=85, ge=1, le=100, description="JPEG quality for screenshots (1-100)"
+    )
+    locator_validation_enabled: bool = Field(
+        default=True, description="Validate locators against actual DOM"
+    )
+    vision_fallback_on_error: bool = Field(
+        default=True, description="Fallback to LLM-only when vision fails"
+    )
+
     @classmethod
     def settings_customise_sources(
         cls,
@@ -98,3 +211,23 @@ class AppSettings(BaseSettings):
         if config_yaml.exists():
             sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=config_yaml))
         return tuple(sources)
+
+
+def mask_database_url(database_url: str) -> str:
+    """Mask credentials in a SQLAlchemy database URL without leaking secrets."""
+    if not database_url:
+        return ""
+
+    parts = urlsplit(database_url)
+    if not parts.netloc or "@" not in parts.netloc:
+        return database_url
+
+    credentials, host = parts.netloc.rsplit("@", 1)
+    if ":" in credentials:
+        username, _password = credentials.split(":", 1)
+        credentials = f"{username}:***"
+    else:
+        credentials = "***"
+    return urlunsplit(
+        (parts.scheme, f"{credentials}@{host}", parts.path, parts.query, parts.fragment)
+    )

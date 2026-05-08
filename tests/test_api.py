@@ -8,13 +8,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ai_qa.api.app import create_app
+from ai_qa.api.auth.session import SessionManager
 
 
 @pytest.fixture
 def client() -> TestClient:
-    """FastAPI test client with default settings."""
+    """FastAPI test client with default settings and a mock authenticated user."""
     app = create_app()
-    return TestClient(app)
+    client = TestClient(app)
+
+    # Create a mock session
+    settings = app.state.settings
+    session_manager = SessionManager(settings)
+    session = session_manager.create_session({"email": "test@example.com", "name": "Test User"})
+    token = session_manager.encode_session(session)
+
+    client.cookies.set(settings.session_cookie_name, token)
+    return client
 
 
 # --- Health Check ---

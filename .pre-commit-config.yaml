@@ -28,3 +28,4 @@ repos:
           - pydantic>=2.4.0
           - pydantic-settings>=2.4.0
           - mcp>=1.6.0
+          - sqlalchemy>=2.0

@@ -1,15 +1,3 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Check, X, Server, Brain, Wrench, Sparkles } from "lucide-react";
 import type { ModelAssignment } from "@/types/provider";
 
 interface ModelAssignmentReviewProps {
@@ -21,121 +9,79 @@ interface ModelAssignmentReviewProps {
   disabled?: boolean;
 }
 
-const AGENT_ICONS: Record<string, React.ReactNode> = {
-  Bob: <Brain className="h-4 w-4" />,
-  Mary: <Sparkles className="h-4 w-4" />,
-  Sarah: <Wrench className="h-4 w-4" />,
-  Jack: <Check className="h-4 w-4" />,
-};
-
-const AGENT_COLORS: Record<string, string> = {
-  Bob: "bg-blue-100 text-blue-700",
-  Mary: "bg-green-100 text-green-700",
-  Sarah: "bg-purple-100 text-purple-700",
-  Jack: "bg-orange-100 text-orange-700",
+const AGENT_ICONS: Record<string, string> = {
+  Bob: "🔵",
+  Mary: "🟢",
+  Sarah: "🟣",
+  Jack: "🟠",
 };
 
 export function ModelAssignmentReview({
   provider,
-  endpoint,
   assignments,
   onApprove,
   onReject,
   disabled = false,
 }: ModelAssignmentReviewProps) {
   return (
-    <Card className="border-surface-200">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-lg font-semibold text-surface-900">
-          AI Provider Configuration Review
-        </CardTitle>
-        <div className="flex items-center gap-2 text-sm text-surface-600">
-          <Server className="h-4 w-4" />
-          <span className="font-medium">{provider}</span>
-          <span className="text-surface-400">•</span>
-          <code className="text-xs bg-surface-100 px-1.5 py-0.5 rounded">
-            {endpoint}
-          </code>
-        </div>
-      </CardHeader>
+    <div className="max-w-[600px] self-start">
+      {/* Alice Message */}
+      <div className="text-[11px] font-semibold text-[#3b82f6] mb-1">Alice</div>
+      <div className="p-4 bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-sm text-[#0f172a] leading-relaxed">
+        ✅ Connected successfully to <strong>{provider}</strong>!
+        <br /><br />
+        Here's how I'll assign models to each agent:
 
-      <CardContent className="space-y-4">
-        {/* Model Assignments Table */}
-        <div className="rounded-md border border-surface-200 overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-surface-50">
-                <TableHead className="font-medium text-surface-700">
-                  Agent
-                </TableHead>
-                <TableHead className="font-medium text-surface-700">
-                  Model
-                </TableHead>
-                <TableHead className="font-medium text-surface-700">
-                  Purpose
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {assignments?.map((assignment) => (
-                <TableRow key={assignment.agent}>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Badge
-                        variant="secondary"
-                        className={`${
-                          AGENT_COLORS[assignment.agent] ||
-                          "bg-surface-100 text-surface-700"
-                        }`}
-                      >
-                        <span className="mr-1">
-                          {AGENT_ICONS[assignment.agent]}
-                        </span>
-                        {assignment.agent}
-                      </Badge>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <code className="text-xs bg-surface-100 px-1.5 py-0.5 rounded font-mono">
-                      {assignment.model}
-                    </code>
-                  </TableCell>
-                  <TableCell className="text-sm text-surface-600">
-                    {assignment.purpose}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        {/* Model Table */}
+        <table className="w-full border-collapse my-2 text-xs">
+          <thead>
+            <tr>
+              <th className="text-left py-1.5 px-2 bg-[#f8fafc] border-b border-[#e2e8f0] font-semibold text-[#64748b]">Agent</th>
+              <th className="text-left py-1.5 px-2 bg-[#f8fafc] border-b border-[#e2e8f0] font-semibold text-[#64748b]">Role</th>
+              <th className="text-left py-1.5 px-2 bg-[#f8fafc] border-b border-[#e2e8f0] font-semibold text-[#64748b]">Model</th>
+            </tr>
+          </thead>
+          <tbody>
+            {assignments?.map((assignment) => (
+              <tr key={assignment.agent}>
+                <td className="py-1.5 px-2 border-b border-[#f1f5f9]">
+                  {AGENT_ICONS[assignment.agent]} {assignment.agent}
+                </td>
+                <td className="py-1.5 px-2 border-b border-[#f1f5f9] text-[#64748b]">
+                  {assignment.purpose}
+                </td>
+                <td className="py-1.5 px-2 border-b border-[#f1f5f9]">
+                  <strong>{assignment.model}</strong>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
 
-        {/* Action Buttons */}
-        <div className="flex items-center justify-end gap-3 pt-2">
-          <Button
-            variant="outline"
-            onClick={onReject}
-            disabled={disabled}
-            className="border-surface-300"
-          >
-            <X className="h-4 w-4 mr-2" />
-            Change Provider
-          </Button>
-          <Button
-            onClick={onApprove}
-            disabled={disabled}
-            className="bg-primary hover:bg-primary/90"
-          >
-            <Check className="h-4 w-4 mr-2" />
-            Approve & Continue
-          </Button>
-        </div>
+        <em className="text-xs text-[#64748b]">
+          Bob uses Opus (highest quality) for requirement extraction. Other agents use Sonnet for speed and cost efficiency.
+        </em>
+        <br /><br />
+        Does this look right to you?
+      </div>
 
-        {/* Info Note */}
-        <p className="text-xs text-surface-500 text-center">
-          These settings will be saved and used for all future sessions.
-          You can reconfigure at any time by returning to this step.
-        </p>
-      </CardContent>
-    </Card>
+      {/* Action Buttons */}
+      <div className="flex gap-2 mt-3">
+        <button
+          onClick={onApprove}
+          disabled={disabled}
+          className="flex-1 px-4 py-2.5 rounded-full bg-[#22c55e] text-white text-sm font-medium hover:bg-[#16a34a] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+        >
+          Approve ✓
+        </button>
+        <button
+          onClick={onReject}
+          disabled={disabled}
+          className="flex-1 px-4 py-2.5 rounded-full bg-white text-[#ef4444] border border-[#fca5a5] text-sm font-medium hover:bg-[#fef2f2] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+        >
+          Reject ✗
+        </button>
+      </div>
+    </div>
   );
 }

@@ -7,11 +7,17 @@ import { Loader2, Eye, Check } from 'lucide-react';
 interface AgentTopBarProps {
   agent: AgentConfig;
   status: AgentStatus;
+  userName?: string;
 }
 
-export function AgentTopBar({ agent, status }: AgentTopBarProps) {
+export function AgentTopBar({ agent, status, userName }: AgentTopBarProps) {
+  // Personalized greeting for Alice agent
+  const displayName = agent.name === 'alice' && userName
+    ? `Hello, ${userName}! I'm Alice`
+    : agent.displayName;
+
   return (
-    <div 
+    <div
       className="flex items-center justify-between p-4 border-b bg-background"
       role="banner"
     >
@@ -22,7 +28,7 @@ export function AgentTopBar({ agent, status }: AgentTopBarProps) {
           </AvatarFallback>
         </Avatar>
         <div>
-          <h2 className="text-lg font-semibold">{agent.displayName}</h2>
+          <h2 className="text-lg font-semibold">{displayName}</h2>
           <p className="text-sm text-muted-foreground">Step {agent.stepNumber} of 5</p>
         </div>
       </div>

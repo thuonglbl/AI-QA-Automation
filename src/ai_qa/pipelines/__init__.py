@@ -10,6 +10,7 @@ from ai_qa.pipelines.content_parser import ContentParser
 from ai_qa.pipelines.models import ConfluencePage, OutputMetadata, PageSummary, ParsedContent
 from ai_qa.pipelines.output_writer import OutputWriter
 from ai_qa.pipelines.test_case_extractor import TestCaseExtractor
+from ai_qa.pipelines.vision_locator import LocatorResult, SelectorInfo, VisionLocator
 
 __all__ = [
     "ConfluenceReader",
@@ -22,4 +23,7 @@ __all__ = [
     "TestCaseExtractor",
     "TestCase",
     "TestCaseStep",
+    "VisionLocator",
+    "LocatorResult",
+    "SelectorInfo",
 ]

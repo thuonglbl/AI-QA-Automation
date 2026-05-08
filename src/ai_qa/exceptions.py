@@ -9,6 +9,10 @@ Hierarchy:
     ├── LLMError         — LLM call failure (timeout, API error, parsing)
     ├── MCPError         — MCP server call failure
     ├── BrowserError     — browser automation failure
+    │   ├── SessionError          — SSO session management failure
+    │   ├── NavigationError       — page navigation failure
+    │   ├── VisionError           — vision model analysis failure
+    │   └── LocatorValidationError — DOM locator validation failure
     └── PipelineError    — pipeline orchestration failure
 """
 
@@ -116,6 +120,22 @@ class NavigationError(BrowserError):
     """Raised when page navigation fails.
 
     Examples: invalid URL, network error, page load timeout.
+    """
+
+
+class VisionError(BrowserError):
+    """Raised when vision model analysis fails.
+
+    Examples: screenshot capture failure, vision model timeout,
+    element identification error, invalid visual analysis response.
+    """
+
+
+class LocatorValidationError(BrowserError):
+    """Raised when DOM locator validation fails.
+
+    Examples: selector not found, ambiguous selector matches multiple elements,
+    selector validation timeout, invalid selector syntax.
     """
 
 

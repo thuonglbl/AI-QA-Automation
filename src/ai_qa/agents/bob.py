@@ -6,6 +6,7 @@ from ai_qa.agents.base import AgentState, BaseAgent
 from ai_qa.config import AppSettings
 from ai_qa.mcp.client import MCPClient
 from ai_qa.models import StageResult
+from ai_qa.pipelines.artifact_adapter import PipelineArtifactAdapter
 from ai_qa.pipelines.confluence_reader import ConfluenceReader, ConfluenceURLParser
 from ai_qa.pipelines.content_parser import ContentParser
 from ai_qa.pipelines.models import ConfluencePage, OutputMetadata
@@ -164,18 +165,32 @@ class BobAgent(BaseAgent):
         """Override to handle paginated approval."""
         current_page = self.pages[self.current_page_index]
 
-        # Use OutputWriter to save
-        writer = OutputWriter(self._workspace_dir / "requirements")
-        metadata = OutputMetadata(
-            source_url=current_page.source_url,
-            timestamp=datetime.now(UTC),
-            model="Gemini-3.1-Pro",  # Or loaded from config
-            confidence=1.0,
-        )
-        write_res = await writer.write(current_page.page_title, current_page.markdown, metadata)
-
-        if write_res.success:
+        if self.project_context is not None:
+            adapter = PipelineArtifactAdapter(self.project_context)
+            adapter.save_requirement_page(current_page.page_title, current_page.markdown)
+            adapter.save_metadata(
+                f"{current_page.page_title}.metadata.json",
+                {
+                    "source_url": current_page.source_url,
+                    "timestamp": datetime.now(UTC),
+                    "model": "Gemini-3.1-Pro",
+                    "confidence": 1.0,
+                },
+            )
             self.output_files_saved += 1
+        else:
+            # Use OutputWriter to save in legacy workspace mode.
+            writer = OutputWriter(self._workspace_dir / "requirements")
+            metadata = OutputMetadata(
+                source_url=current_page.source_url,
+                timestamp=datetime.now(UTC),
+                model="Gemini-3.1-Pro",  # Or loaded from config
+                confidence=1.0,
+            )
+            write_res = await writer.write(current_page.page_title, current_page.markdown, metadata)
+
+            if write_res.success:
+                self.output_files_saved += 1
 
         self.current_page_index += 1
 
@@ -206,8 +221,11 @@ class BobAgent(BaseAgent):
         else:
             # All pages reviewed
             await self.transition_to(AgentState.DONE)
+            destination = (
+                "project artifacts" if self.project_context is not None else "requirements/"
+            )
             await self.send_message(
-                content=f"{self.output_files_saved} files saved to requirements/",
+                content=f"{self.output_files_saved} requirement page(s) saved to {destination}",
                 message_type="success",
             )
 
