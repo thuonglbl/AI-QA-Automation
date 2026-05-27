@@ -31,6 +31,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/auth/login",
         "/auth/register",
         "/auth/callback",
+        "/auth/logout",
         "/auth/me",
         "/auth/status",
         "/api/health",

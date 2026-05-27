@@ -36,40 +36,14 @@ class UserConfig(BaseModel):
     """
 
     anthropic_api_key: str = Field(default="", description="User's Claude API key")
+    openai_api_key: str = Field(default="", description="User's OpenAI/Gemini API key")
+    browser_use_api_key: str = Field(default="", description="User's Browser Use Cloud API key")
     on_premises_ai_server_url: str = Field(default="", description="User's on-prem LiteLLM proxy")
     on_premises_ai_server_key: str = Field(
         default="", description="User's on-prem AI server API key"
     )
     llm_model: str = Field(default="claude-sonnet-4-6", description="Preferred LLM model")
     llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-
-    def save(self, user_email: str) -> None:
-        """Save user config to their workspace directory.
-
-        Args:
-            user_email: User's email address for directory resolution.
-        """
-        user_dir = get_user_workspace_dir(user_email)
-        config_dir = user_dir / "configuration"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_file = config_dir / "user_config.json"
-        config_file.write_text(self.model_dump_json(indent=2))
-
-    @classmethod
-    def load(cls, user_email: str) -> "UserConfig":
-        """Load user config from their workspace directory.
-
-        Args:
-            user_email: User's email address for directory resolution.
-
-        Returns:
-            UserConfig instance (empty defaults if not found).
-        """
-        user_dir = get_user_workspace_dir(user_email)
-        config_file = user_dir / "configuration" / "user_config.json"
-        if config_file.exists():
-            return cls.model_validate_json(config_file.read_text())
-        return cls()
 
 
 class AppSettings(BaseSettings):
@@ -101,11 +75,30 @@ class AppSettings(BaseSettings):
     server_host: str = Field(default="0.0.0.0", description="Server bind host")
     server_port: int = Field(default=8000, ge=1, le=65535, description="Server bind port")
 
+    # --- External Service URLs ---
+    browser_use_cloud_url: str = Field(
+        default="https://api.browser-use.com/api/v3", description="Browser Use Cloud API base URL"
+    )
+    claude_api_base_url: str = Field(
+        default="https://api.anthropic.com", description="Claude API base URL"
+    )
+    gemini_api_base_url: str = Field(
+        default="https://generativelanguage.googleapis.com", description="Gemini API base URL"
+    )
+    openai_api_base_url: str = Field(
+        default="https://api.openai.com", description="OpenAI API base URL"
+    )
+    on_premises_api_base_url: str = Field(default="", description="On-Premises API base URL")
+
     # --- MCP (FR14) ---
     mcp_server_url: str = Field(
         default="", description="MCP server URL for Confluence/Jira integration"
     )
     mcp_server_key: str = Field(default="", description="MCP server API key")
+    mcp_tool_prefix: str = Field(default="", description="Prefix for MCP tools")
+    mcp_use_streamable_http: bool = Field(
+        default=True, description="Use MCP Streamable HTTP transport instead of Legacy SSE"
+    )
     mcp_timeout: int = Field(
         default=30, ge=1, le=300, description="MCP connection timeout in seconds"
     )
@@ -153,6 +146,13 @@ class AppSettings(BaseSettings):
     database_echo: bool = Field(
         default=False, description="Echo SQL statements for local debugging"
     )
+
+    # --- MinIO Object Storage (Epic 13) ---
+    minio_endpoint: str = Field(default="localhost:9000", description="MinIO server endpoint")
+    minio_access_key: str = Field(default="minioadmin", description="MinIO access key")
+    minio_secret_key: str = Field(default="miniopassword", description="MinIO secret key")
+    minio_secure: bool = Field(default=False, description="Use HTTPS for MinIO")
+    minio_bucket: str = Field(default="ai-qa-artifacts", description="Bucket for storing artifacts")
 
     @property
     def sqlalchemy_database_url(self) -> str:

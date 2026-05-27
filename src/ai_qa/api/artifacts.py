@@ -16,7 +16,8 @@ from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.rbac import get_current_active_user
 from ai_qa.api.projects import RESOURCE_NOT_FOUND_DETAIL, ProjectAccessDependency
 from ai_qa.artifacts.service import ARTIFACT_KINDS, ArtifactService
-from ai_qa.artifacts.storage import ArtifactStorage, LocalArtifactStorage
+from ai_qa.artifacts.storage import ArtifactStorage, S3ArtifactStorage
+from ai_qa.config import AppSettings
 from ai_qa.db.models import Artifact, Project, User
 
 MAX_ARTIFACT_CONTENT_CHARS = 1_000_000
@@ -28,7 +29,14 @@ CurrentUserDependency = Depends(get_current_active_user)
 
 def get_artifact_storage() -> ArtifactStorage:
     """Return default artifact storage; tests may override this dependency."""
-    return LocalArtifactStorage()
+    settings = AppSettings()
+    return S3ArtifactStorage(
+        endpoint_url=settings.minio_endpoint,
+        access_key=settings.minio_access_key,
+        secret_key=settings.minio_secret_key,
+        bucket_name=settings.minio_bucket,
+        secure=settings.minio_secure,
+    )
 
 
 ArtifactStorageDependency = Depends(get_artifact_storage)

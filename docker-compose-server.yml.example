@@ -1,0 +1,106 @@
+services:
+  postgres:
+    image: url-to-postgres-18-docker
+    container_name: ai-qa-postgres
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: ai_qa_automation
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: '[PASSWORD]'
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_qa_automation"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: url-to-MinIO-server-docker
+    container_name: ai_qa_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: [PASSWORD]
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio-init:
+    image: url-to-MinIO-client-docker
+    container_name: ai_qa_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 admin 'admin-file-storage-password';
+      mc mb myminio/ai-qa-artifacts || true;
+      mc policy set public myminio/ai-qa-artifacts;
+      exit 0;
+      "
+
+  backend:
+    image: url-to-backend-docker
+    container_name: ai-qa-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ai_qa_automation
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: '[PASSWORD]'
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8000
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: '[PASSWORD]'
+      SESSION_SECRET_KEY: ${SESSION_SECRET_KEY}
+      SESSION_EXPIRE_HOURS: ${SESSION_EXPIRE_HOURS:-8}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-aiqa_session}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-Lax}
+      ON_PREMISES_API_BASE_URL: ${ON_PREMISES_API_BASE_URL}
+      BROWSER_USE_CLOUD_URL: ${BROWSER_USE_CLOUD_URL}
+      CLAUDE_API_BASE_URL: ${CLAUDE_API_BASE_URL}
+      GEMINI_API_BASE_URL: ${GEMINI_API_BASE_URL}
+      OPENAI_API_BASE_URL: ${OPENAI_API_BASE_URL}
+      MCP_SERVER_URL: ${MCP_SERVER_URL:-}
+      MCP_SERVER_KEY: ${MCP_SERVER_KEY:-}
+      MCP_TOOL_PREFIX: ${MCP_TOOL_PREFIX:-}
+      MCP_TIMEOUT: ${MCP_TIMEOUT:-30}
+      MCP_MAX_RETRIES: ${MCP_MAX_RETRIES:-3}
+      MCP_RETRY_BACKOFF: ${MCP_RETRY_BACKOFF:-1.0}
+      BROWSER_TIMEOUT: ${BROWSER_TIMEOUT:-30}
+    volumes:
+      - workspace:/app/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    image: url-to-frontend-docker
+    container_name: ai-qa-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  workspace:
+  postgres_data:
+  minio_data:

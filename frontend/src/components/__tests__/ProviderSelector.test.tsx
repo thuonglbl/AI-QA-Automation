@@ -17,7 +17,6 @@ const mockProviders: ProviderOption[] = [
     qualityRank: 4,
     securityLevel: "highest",
     credentialFields: [
-      { name: "server_url", label: "Server URL", type: "url", required: true, placeholder: "https://ai-server.company.com" },
       { name: "api_key", label: "API Key", type: "password", required: true },
     ],
   },
@@ -32,7 +31,7 @@ describe("ProviderSelector", () => {
       />
     );
 
-    expect(screen.getByText("Claude (Anthropic)")).toBeInTheDocument();
+    expect(screen.getByText(/Claude \(Anthropic\)/)).toBeInTheDocument();
     expect(screen.getByText("On-Premises LLM")).toBeInTheDocument();
     expect(screen.getByText("2nd Choice")).toBeInTheDocument();
     expect(screen.getByText("4th Choice")).toBeInTheDocument();
@@ -59,13 +58,13 @@ describe("ProviderSelector", () => {
     );
 
     // Click on Claude provider
-    fireEvent.click(screen.getByText("Claude (Anthropic)"));
+    fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
 
     // Should show credential form
     expect(screen.getByLabelText(/API Key/)).toBeInTheDocument();
   });
 
-  it("shows URL field for on-premises provider", () => {
+  it("shows credential fields for on-premises provider", () => {
     render(
       <ProviderSelector
         options={mockProviders}
@@ -76,14 +75,12 @@ describe("ProviderSelector", () => {
     // Click on On-Premises provider
     fireEvent.click(screen.getByText("On-Premises LLM"));
 
-    // Should show both URL and API key fields
-    expect(screen.getByLabelText(/Server URL/)).toBeInTheDocument();
+    // Should show API key field
     expect(screen.getByLabelText(/API Key/)).toBeInTheDocument();
   });
 
   it("pre-fills on-premises defaults when provided", () => {
     const onPremDefaults = {
-      server_url: "https://my-server.example.com",
       api_key: "default-key-123",
     };
 
@@ -99,8 +96,8 @@ describe("ProviderSelector", () => {
     fireEvent.click(screen.getByText("On-Premises LLM"));
 
     // Should pre-fill defaults
-    const urlInput = screen.getByLabelText(/Server URL/) as HTMLInputElement;
-    expect(urlInput.value).toBe("https://my-server.example.com");
+    const apiKeyInput = screen.getByLabelText(/API Key/) as HTMLInputElement;
+    expect(apiKeyInput.value).toBe("default-key-123");
   });
 
   it("validates required fields before submitting", async () => {
@@ -114,7 +111,7 @@ describe("ProviderSelector", () => {
     );
 
     // Click on Claude provider
-    fireEvent.click(screen.getByText("Claude (Anthropic)"));
+    fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
 
     // Click start without entering credentials
     fireEvent.click(screen.getByText(/Test Connection/));
@@ -139,7 +136,7 @@ describe("ProviderSelector", () => {
     );
 
     // Click on Claude provider
-    fireEvent.click(screen.getByText("Claude (Anthropic)"));
+    fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
 
     // Enter API key
     const apiKeyInput = screen.getByLabelText(/API Key/);
@@ -164,40 +161,9 @@ describe("ProviderSelector", () => {
     );
 
     // Cards should have disabled styling
-    const cards = screen.getAllByRole("article");
-    expect(cards[0]).toHaveClass("opacity-50");
+    const claudeCard = screen.getByText(/Claude \(Anthropic\)/).closest("div.border");
+    expect(claudeCard).toHaveClass("opacity-50");
   });
 
-  it("validates URL format for on-premises server_url", async () => {
-    const onSelect = vi.fn();
 
-    render(
-      <ProviderSelector
-        options={mockProviders}
-        onSelect={onSelect}
-      />
-    );
-
-    // Click on On-Premises provider
-    fireEvent.click(screen.getByText("On-Premises LLM"));
-
-    // Enter invalid URL
-    const urlInput = screen.getByLabelText(/Server URL/);
-    fireEvent.change(urlInput, { target: { value: "not-a-valid-url" } });
-
-    // Enter API key
-    const apiKeyInput = screen.getByLabelText(/API Key/);
-    fireEvent.change(apiKeyInput, { target: { value: "valid-api-key-12345" } });
-
-    // Click start
-    fireEvent.click(screen.getByText(/Test Connection/));
-
-    // Should show URL validation error
-    await waitFor(() => {
-      expect(screen.getByText(/Please enter a valid URL/)).toBeInTheDocument();
-    });
-
-    // onSelect should not have been called
-    expect(onSelect).not.toHaveBeenCalled();
-  });
 });

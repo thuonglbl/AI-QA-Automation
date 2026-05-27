@@ -38,6 +38,7 @@ class ProjectResponse(BaseModel):
     id: UUID
     name: str
     description: str | None
+    confluence_base_url: str | None
     created_by_user_id: UUID | None
     current_user_role: str | None
     membership_count: int
@@ -58,6 +59,7 @@ def _response_for_project(project: Project, current_user: User) -> ProjectRespon
         id=project.id,
         name=project.name,
         description=project.description,
+        confluence_base_url=project.confluence_base_url,
         created_by_user_id=project.created_by_user_id,
         current_user_role=current_membership.role if current_membership else None,
         membership_count=len(memberships),

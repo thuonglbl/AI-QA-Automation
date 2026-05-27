@@ -241,9 +241,11 @@ Frontend: npm (managed separately from uv)
 - **Communication:** WebSocket for live agent messages (Processing updates, Review presentations), REST for actions (Start, Approve, Reject, Continue)
 - **Rationale:** Manual QA testers cannot use CLI. Conversational UI is the most natural pattern for non-technical users (Teams-like). FastAPI is Python-native, async, and integrates seamlessly with existing pipeline code
 - **Frontend routes:**
-  - `/` — Main pipeline UI (5-step agent wizard, Alice → Jack)
+  - `/` — Main pipeline UI (5-step agent wizard, Alice → Jack). Standard users route here directly after login.
+  - `/admin` — Admin Dashboard for authenticated admin users.
   - `/dashboard` — Metrics dashboard for leadership (Epic 10)
   - Use React Router v6 for client-side routing
+  - Standard-user Project Workspace is removed from the happy path; project selection is handled inside Alice's configuration chat flow.
 - **Accessibility:** WCAG 2.1 AA required (per UX-DR15). Establish focus ring styles (`ring-2 ring-blue-500 ring-offset-2`), aria attributes, and 44px minimum click targets from Story 2.2 (React scaffold). All subsequent UI stories must maintain these standards. Consult UX-DR15 for full requirements.
 
 ### Agent Orchestration Layer
@@ -253,7 +255,8 @@ Frontend: npm (managed separately from uv)
 - **Pattern:** Each agent follows the same lifecycle: Start → Processing → Review Request → (Approve/Reject+feedback) → Done
 - **Human-in-the-loop:** Mandatory review gate at every step — no output advances without explicit user approval
 - **Reject flow:** User provides feedback → agent self-corrects → re-presents for review
-- **Alice (Step 1):** Guides AI provider selection (Browser Use Cloud / Claude / Gemini / ChatGPT / On-Premises). Provider choice determines which LLM models all subsequent agents use. Saves complete configuration to `configuration/` folder
+- **Alice (Step 1):** Resolves standard-user project context first, then guides AI provider selection (Browser Use Cloud / Claude / Gemini / ChatGPT / On-Premises). Provider choice determines which LLM models all subsequent agents use. Saves complete configuration to `configuration/` folder
+- **Alice project resolution:** For standard users, Alice loads accessible projects through the project list API before provider options are shown. Zero projects shows a no-access message and blocks provider selection. One project is auto-selected with a confirmation message. Multiple projects render a selectable list; choosing one adds a right-aligned user message with the selected project name. Admin routing remains dashboard-first and unchanged.
 - **Configuration output:** Alice writes `provider.json` (selected provider, credentials, endpoint) and `agents.json` (per-agent config: model, prompt template, tools/capabilities). All subsequent agents read their config from `configuration/agents.json` at startup
 - **Provider → Model mapping:** Claude: Bob→Opus, others→Sonnet. On-Prem: Bob→DeepSeek, others→Qwen. See UX spec for full mapping table
 - **File pipeline:** `configuration/` → `requirements/` → `testcases/` → `testscripts/` → `report/`
@@ -302,24 +305,20 @@ Frontend: npm (managed separately from uv)
 
 ### Output & Storage
 
-- **Decision:** Hybrid file-based output + JSON metadata
-- **Playwright scripts:** Standalone `.py` files, directly runnable
-- **Metadata:** `metadata.json` per test case (source URL, timestamp, model used, confidence score)
-- **Audit trail:** `audit_log.jsonl` append-only (JSONL format)
-- **Rationale:** Scripts coexist with Gatling suites, metadata supports human-in-the-loop review
+- **Decision:** Database + S3-compatible Object Storage (MinIO)
+- **Database:** PostgreSQL stores all project configurations (`User` settings), conversation states (`Project` state), and artifact metadata (`ArtifactVersion`).
+- **File Storage:** MinIO (or any S3-compatible service) stores the actual file bytes (Markdown, JSON, Python scripts, images) via `S3ArtifactStorage`. The database only stores the S3 URI (`storage_path`).
+- **Audit trail:** `audit_log.jsonl` append-only (JSONL format), can also be pushed to MinIO or logged directly.
+- **Rationale:** Separating file storage from the application server ensures high availability, scalability, and allows the web server to remain stateless.
 
-**Output Structure:**
+**Output Structure (MinIO bucket `ai-qa-artifacts`):**
 
 ```text
-output/
-  test_login_flow/
-    test_login.py           # Playwright script (runnable directly)
-    metadata.json           # Source URL, timestamp, model, confidence
-  test_search/
-    test_search.py
-    metadata.json
-  audit/
-    audit_log.jsonl         # Append-only audit trail
+ai-qa-artifacts/
+  projects/
+    {project_id}/
+      test_login_flow.py      # Playwright script
+      metadata.json           # Source URL, timestamp, model, confidence
 ```
 
 ### Security Architecture
@@ -694,44 +693,44 @@ ai-qa-automation/
        │     ├──→ Test connection to selected provider
        │     ├──→ WebSocket: present provider + model assignment for review ──→ [Frontend]
        │     │                 ← approve/reject ←
-       │     └──→ Save config files ──→ [workspace/configuration/]
-       │           ├── provider.json   (provider, endpoint, credential ref)
-       │           └── agents.json     (per-agent: model, prompt, tools)
+       │     └──→ Save config files ──→ [PostgreSQL `User` Table]
+       │           ├── ai_provider_config   (provider, endpoint, credential ref)
+       │           └── ai_agents_config     (per-agent: model, prompt, tools)
        │
        ├── bob.py (Step 2: Extract Requirements)
-       │     ├──→ reads [workspace/configuration/agents.json] → loads model + prompt + tools
+       │     ├──→ reads [PostgreSQL `User` Table] → loads model + prompt + tools
        │     ├──→ pipelines/confluence_reader.py ──→ mcp/confluence.py ──→ [MCP Server]
        │     ├──→ pipelines/content_parser.py (MD, Mermaid, images)
-       │     ├──→ pipelines/output_writer.py ──→ [workspace/requirements/]
+       │     ├──→ artifacts/service.py ──→ [MinIO `ai-qa-artifacts` bucket]
        │     └──→ WebSocket: present pages for review ──→ [Frontend]
        │                      ← approve/reject+feedback ←
        │
        ├── mary.py (Step 3: Create Test Cases)
-       │     ├──→ reads [workspace/configuration/agents.json] → loads model + prompt + tools
-       │     ├──→ reads [workspace/requirements/]
+       │     ├──→ reads [PostgreSQL `User` Table] → loads model + prompt + tools
+       │     ├──→ reads requirements from [MinIO / PostgreSQL Metadata]
        │     ├──→ pipelines/test_case_extractor.py ──→ ai_connection/client.py ──→ [LiteLLM]
-       │     ├──→ pipelines/output_writer.py ──→ [workspace/testcases/]
+       │     ├──→ artifacts/service.py ──→ [MinIO `ai-qa-artifacts` bucket]
        │     └──→ WebSocket: present test cases for review ──→ [Frontend]
        │                      ← approve/reject+feedback ←
        │
        ├── sarah.py (Step 4: Create Test Scripts)
-       │     ├──→ reads [workspace/configuration/agents.json] → loads model + prompt + tools
-       │     ├──→ reads [workspace/testcases/]
+       │     ├──→ reads [PostgreSQL `User` Table] → loads model + prompt + tools
+       │     ├──→ reads testcases from [MinIO / PostgreSQL Metadata]
        │     ├──→ pipelines/script_generator.py ──→ ai_connection/client.py ──→ [LiteLLM]
        │     │                                     browser/agent.py ──→ [Chrome via SSO]
-       │     ├──→ pipelines/output_writer.py ──→ [workspace/testscripts/]
+       │     ├──→ artifacts/service.py ──→ [MinIO `ai-qa-artifacts` bucket]
        │     └──→ WebSocket: present TC+script pairs for review ──→ [Frontend]
        │                      ← approve/reject+feedback ←
        │
        └── jack.py (Step 5: Run Test Scripts)
-             ├──→ reads [workspace/configuration/agents.json] → loads model + prompt + tools
-             ├──→ reads [workspace/testscripts/]
+             ├──→ reads [PostgreSQL `User` Table] → loads model + prompt + tools
+             ├──→ reads testscripts from [MinIO / PostgreSQL Metadata]
              ├──→ pipelines/script_runner.py ──→ [Chrome/Firefox/Edge]
-             ├──→ pipelines/output_writer.py ──→ [workspace/report/]
+             ├──→ artifacts/service.py ──→ [MinIO `ai-qa-artifacts` bucket]
              └──→ WebSocket: present execution report ──→ [Frontend]
                               ← approve/reject+feedback ←
 
-  audit/logger.py ──→ [workspace/audit/audit_log.jsonl] (cross-cutting, all agents)
+  audit/logger.py ──→ [PostgreSQL / MinIO] (cross-cutting, all agents)
 ```
 
 ### Development Workflow
@@ -959,3 +958,102 @@ cd frontend && npm run lint        # ESLint + TypeScript check
 7. `frontend/` scaffold with Vite + React + Shadcn/ui + core chat components
 8. First agent (Alice) end-to-end: API → Agent → WebSocket → Frontend (config + provider selection)
 9. Second agent (Bob) end-to-end: API → Agent → Pipeline → WebSocket → Frontend (extract requirements)
+
+## Corrective Addendum: Alice Provider Configuration and Dynamic Model Discovery
+
+### Alice Provider Configuration and Dynamic Model Discovery
+
+Alice owns the provider configuration flow for each authenticated user.
+
+The system must not rely on static provider-to-model mappings for downstream agents. Instead, Alice performs a runtime model-selection pipeline:
+
+1. Load provider base URL from environment configuration.
+2. Collect provider API key from the authenticated user.
+3. Validate provider connection using the selected provider credentials.
+4. Discover available models from the selected provider/server where supported.
+5. Normalize discovered model identifiers into a provider-neutral structure.
+6. Score available models against downstream agent needs.
+7. Select one valid discovered model for each downstream agent.
+8. Emit a user-reviewable reasoning trace.
+9. Persist only validated selected model IDs for the authenticated user/account.
+
+If connection validation fails, model discovery fails, or no usable models are returned, Alice must not create a successful model assignment review and must not persist agent model configuration.
+
+### Configuration Ownership Boundary
+
+System-level URLs and base endpoints are deployment configuration and must be loaded from `.env` or equivalent environment settings:
+
+- Browser Use Cloud base URL
+- Claude API base URL
+- Gemini API base URL
+- ChatGPT/OpenAI API base URL
+- On-Premises API base URL
+- MCP server URL
+
+User-specific secrets must not be stored in `.env`. They must be collected from user input and stored securely per authenticated user/account:
+
+- Browser Use Cloud API key
+- Claude API key
+- Gemini API key
+- OpenAI API key
+- On-Premises API key
+- MCP API key
+
+Workflow-specific targets must remain runtime user inputs:
+
+- target page URL
+- SSO options
+- project-specific login/runtime parameters
+
+### Provider Model Discovery Contract
+
+Each provider adapter should expose a model discovery capability:
+
+- `validate_connection(credentials, base_url) -> ConnectionResult`
+- `list_models(credentials, base_url) -> list[DiscoveredModel]`
+
+`DiscoveredModel` should include at minimum:
+
+- `id`
+- `display_name`
+- `provider`
+- optional `capability_hints`
+- optional `context_window`
+- optional `supports_tools`
+- optional `supports_vision`
+- optional `cost_tier`
+- optional `latency_tier`
+
+For OpenAI-compatible providers, including On-Premises deployments, model discovery should use the configured base URL and the provider's model listing endpoint where available.
+
+Alice must treat static model names only as ranking hints after verifying availability. Static names must never be persisted unless returned by discovery.
+
+### Agent Model Selection Heuristics
+
+Alice scores discovered models against each downstream agent's needs:
+
+- Bob:
+  - strong reasoning
+  - long-context extraction
+  - structured requirement extraction
+  - tool-compatible responses where available
+
+- Mary:
+  - strong instruction following
+  - structured output
+  - test design reasoning
+  - consistency across many test cases
+
+- Sarah:
+  - code generation strength
+  - browser automation/tool-use compatibility
+  - framework-aware output
+  - optional vision/multimodal capability if available
+
+- Jack:
+  - execution analysis
+  - concise summarization
+  - speed and cost efficiency
+  - reliable structured reporting
+
+If capability metadata is unavailable, Alice may infer capability hints from model IDs, but must document uncertainty in the reasoning trace.

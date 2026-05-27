@@ -682,18 +682,18 @@ So that backend data has a versioned, scalable source of truth instead of ad-hoc
 ### Story 12.2: Local Authentication and Admin Bootstrap
 
 As a project user,
-I want to register and log in with local email/password credentials during R&D,
+I want to log in with local email/password credentials during R&D,
 So that the system can support multiple users before enterprise SSO is approved.
 
 **Acceptance Criteria:**
 
 **Given** the backend auth module is available
-**When** a user registers with email and password
+**When** an admin creates a user account
 **Then** the password is stored only as a secure hash
-**And** duplicate email registration is rejected
+**And** duplicate email creation is rejected
 **And** login returns an authenticated session or token suitable for protected API calls
 **And** current-user endpoint returns the authenticated user profile and role
-**And** an admin account can be seeded manually or via CLI without public self-service admin creation
+**And** an admin account can be seeded manually or via CLI (no self-service registration allowed)
 **And** Azure Entra ID SSO remains documented as a deferred production/enterprise backlog item
 
 ### Story 12.3: Role-Based Access Control for Admin and Standard Users
@@ -754,7 +754,7 @@ So that all generated results are scoped to the correct shared project.
 
 **Given** the React frontend starts
 **When** an unauthenticated user opens the app
-**Then** they see a login/register flow instead of the pipeline workspace
+**Then** they see a login flow (without self-registration) instead of the pipeline workspace
 **And** authenticated users see a project picker containing only accessible projects
 **And** the selected project ID is included in project-scoped API calls and WebSocket connections
 **And** admin users can access basic user/project management screens
@@ -775,6 +775,58 @@ So that multi-user project collaboration works without breaking the current agen
 **And** pipeline runs are recorded in `pipeline_runs` with project, triggering user, status, timestamps, and summary
 **And** legacy `workspace/` assumptions are isolated behind compatibility adapters or removed where safe
 **And** existing completed functionality from Epics 3–5 remains operational after the refactor
+
+### Story 12.8: Bugfix - Admin Routing and Dashboard Enhancements
+
+As an admin,
+I want to be routed directly to an administrative dashboard when logging in,
+So that I can bypass project selection and manage users and projects effectively.
+
+**Acceptance Criteria:**
+
+**Given** an authenticated user with the 'admin' role logs in
+**When** the frontend routes the user
+**Then** the admin bypasses the Project Picker and goes straight to the Admin Dashboard
+**Given** the admin is on the Admin Dashboard
+**When** they view the interface
+**Then** there is a functional "Logout" button
+**And** the admin's email, display name, and role are displayed next to the "Logout" button
+**And** there is a vertical list on the left showing projects with create, edit name, and delete buttons
+**And** there is a vertical list on the right showing users and the projects they belong to
+**And** there are buttons to assign projects to members and remove users from projects
+
+### Story 12.9: Admin Dashboard Refinement and Fixes
+
+As an admin,
+I want the dashboard UI and APIs to be fully functional and streamlined,
+So that I can effectively manage users and projects.
+
+**Acceptance Criteria:**
+
+- **Given** an admin is on the dashboard, **when** they click Edit or Delete on a project, **then** the action calls the implemented backend API (`PUT /projects/{id}`, `DELETE /projects/{id}`) and updates the UI successfully.
+- **Given** a success notification appears, **then** it automatically hides after 3 seconds.
+- **Given** the user management area, **then** the "Manage Membership" section is replaced by a "Create User" form (with Email, Display Name, Initial Password fields).
+- **Given** the "Create User" form, **then** there is a disabled button "Sync existing company's users" that displays "This feature is not available at the moment, please add manually." on hover.
+- **Given** the user list, **then** the UI is restructured so each user card has a "Projects" section with a "+" button to assign a project and an "x" button on assigned projects to unassign them.
+- **Given** the login screen, **then** the "Need an account? Create one" link is removed, enforcing that only admins can create new accounts.
+
+### Story 12.10: User Project Selection in Alice Configuration Flow
+
+As a project member,
+I want project selection to happen inside Alice's configuration chat flow,
+So that I can start the pipeline directly after login without a separate Project Workspace screen.
+
+**Acceptance Criteria:**
+
+- **Given** a standard user logs in successfully, **when** routing completes, **then** the frontend bypasses the Project Workspace screen and opens the Home pipeline UI at Alice — Config.
+- **Given** Alice starts for an authenticated standard user, **when** the user's accessible projects are loaded, **then** Alice determines whether the user has zero, one, or multiple projects.
+- **Given** the user has zero accessible projects, **then** Alice shows: "You do not have access to any project yet. Please contact an administrator to assign you to a project." and does not show AI provider selection.
+- **Given** the user has exactly one accessible project, **then** Alice shows: "You have only one project called <project name>. Auto proceed with this project.", automatically selects that project, and then shows the AI provider selection message.
+- **Given** the user has two or more accessible projects, **then** Alice shows: "Please select one project to proceed" and renders a selectable list of project names.
+- **Given** the user clicks one project from the list, **then** the chat adds a right-aligned user message containing the selected project name.
+- **Given** a project has been selected manually or automatically, **then** all subsequent project-scoped API calls and WebSocket connections use the selected project ID.
+- **Given** Alice has not resolved a selected project yet, **then** Alice does not show "Which AI provider would you like to use?..." or provider options.
+- **Given** an admin logs in, **then** the existing admin dashboard routing remains unchanged.
 
 ## Epic 6: Test Execution & Reporting (Agent Jack)
 
@@ -1141,3 +1193,15 @@ So that my API keys and access are isolated and secure per my corporate identity
 - No shared credentials in `.env` for user-isolated data
 - Session middleware with HttpOnly cookies
 - CSRF protection for authentication endpoints
+
+### Story 11.2: Sync Company Users via Oracle sharedERP
+
+As an admin,
+I want to synchronize the company's user list from Oracle sharedERP,
+So that I don't have to manually create every user account for production use.
+
+**Acceptance Criteria:**
+
+- System connects to Oracle sharedERP to fetch the active user list.
+- Users are automatically provisioned in the AI QA Automation database.
+- Admin can trigger the sync manually from the Admin Dashboard via the "Sync existing company's users" button.

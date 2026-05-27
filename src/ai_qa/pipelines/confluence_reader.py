@@ -11,7 +11,7 @@ import json
 import re
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 from ai_qa.exceptions import MCPConnectionError, MCPToolError
 from ai_qa.mcp.client import MCPClient
@@ -147,6 +147,26 @@ class ConfluenceURLParser:
         return None
 
     @staticmethod
+    def extract_page_title(url: str) -> str | None:
+        """Extract page title from Confluence URL if present in path."""
+        if not url:
+            return None
+
+        parsed = urlparse(url)
+        path = parsed.path
+
+        # Server format: /display/SPACE_KEY/Page+Title
+        display_match = _DISPLAY_SPACE_RE.search(path)
+        if display_match:
+            parts = path.split(display_match.group(0))
+            if len(parts) > 1 and parts[1]:
+                title_part = parts[1].lstrip("/")
+                if title_part:
+                    return unquote_plus(title_part)
+
+        return None
+
+    @staticmethod
     def normalize_url(url: str) -> str:
         """Normalize various Confluence URL formats to standard form.
 
@@ -248,9 +268,18 @@ class ConfluenceReader:
         if mcp_client is None:
             raise ValueError("MCP client is required")
         self._mcp_client = mcp_client
+        self._tool_prefix = (
+            getattr(mcp_client._settings, "mcp_tool_prefix", "")
+            if hasattr(mcp_client, "_settings")
+            else ""
+        )
         self._confluence_base_url = confluence_base_url
         self._max_concurrent_requests = max_concurrent_requests
         self._url_parser = ConfluenceURLParser()
+
+    def _get_tool_name(self, base_name: str) -> str:
+        """Get the full tool name including any configured prefix."""
+        return f"{self._tool_prefix}{base_name}"
 
     async def read_page(self, page_url: str) -> StageResult:
         """Read a single Confluence page.
@@ -304,7 +333,7 @@ class ConfluenceReader:
         try:
             # Call MCP tool to get page
             tool_result = await self._mcp_client.call_tool(
-                "confluence_get_page",
+                self._get_tool_name("confluence_get_page"),
                 {"page_id": page_id},
             )
 
@@ -413,38 +442,18 @@ class ConfluenceReader:
                 confidence=0.0,
             )
 
-    async def list_pages_in_space(self, space_key: str) -> StageResult:
-        """List all pages in a Confluence space.
+    async def read_page_by_id(self, page_id: str) -> StageResult:
+        """Read a single Confluence page directly by its numeric page ID.
+
+        This is the preferred method when a page_id is available from the URL,
+        because it works with any Confluence URL format regardless of path structure.
 
         Args:
-            space_key: Confluence space key (e.g., "TEST")
+            page_id: Numeric Confluence page ID (e.g. "1238866187")
 
         Returns:
-            StageResult with list of page summaries
+            StageResult with ConfluencePage data or error details
         """
-        if not space_key:
-            return StageResult(
-                success=False,
-                data=None,
-                errors=["Space key is required"],
-                warnings=[],
-                confidence=0.0,
-            )
-
-        # Validate space_key format to prevent CQL injection
-        # Space keys should be alphanumeric with optional hyphens/underscores
-        if not re.match(r"^[A-Z0-9_-]+$", space_key.upper()):
-            return StageResult(
-                success=False,
-                data=None,
-                errors=[
-                    f"Invalid space key format: {space_key}",
-                    "Space keys should contain only letters, numbers, hyphens, and underscores.",
-                ],
-                warnings=[],
-                confidence=0.0,
-            )
-
         if not self._mcp_client.is_connected:
             return StageResult(
                 success=False,
@@ -455,111 +464,75 @@ class ConfluenceReader:
             )
 
         try:
-            # Try to get space info first
-            space_result = await self._mcp_client.call_tool(
-                "confluence_get_space",
-                {"space_key": space_key},
+            tool_result = await self._mcp_client.call_tool(
+                self._get_tool_name("confluence_get_page"),
+                {"page_id": page_id},
             )
 
-            if not space_result.success:
+            if not tool_result.success:
                 return StageResult(
                     success=False,
                     data=None,
-                    errors=[f"Space not found or inaccessible: {space_key}"],
+                    errors=[f"Failed to retrieve page {page_id}: {tool_result.error}"],
                     warnings=[],
                     confidence=0.0,
                 )
 
-            # Search for all pages in space with pagination
-            all_pages: list[dict[str, Any]] = []
-            start = 0
-            has_more = True
-
-            while has_more:
-                search_result = await self._mcp_client.call_tool(
-                    "confluence_search",
-                    {
-                        "cql": f"space = {space_key} AND type = page",
-                        "limit": DEFAULT_PAGE_LIMIT,
-                        "start": start,
-                    },
-                )
-
-                if not search_result.success:
+            page_data = tool_result.data
+            if isinstance(page_data, str):
+                try:
+                    page_data = json.loads(page_data)
+                except json.JSONDecodeError:
                     return StageResult(
                         success=False,
                         data=None,
-                        errors=[f"Failed to search pages in space: {search_result.error}"],
+                        errors=["Invalid response format from MCP server"],
                         warnings=[],
                         confidence=0.0,
                     )
 
-                # Parse results
-                search_data = search_result.data
-                if isinstance(search_data, str):
-                    try:
-                        search_data = json.loads(search_data)
-                    except json.JSONDecodeError:
-                        return StageResult(
-                            success=False,
-                            data=None,
-                            errors=["Invalid search response format from MCP server"],
-                            warnings=[],
-                            confidence=0.0,
-                        )
-
-                pages = (
-                    search_data.get("results", []) if isinstance(search_data, dict) else search_data
+            # Extract space_key from MCP response fields
+            space_key = _safe_get(page_data, "space_key", "")
+            if not space_key:
+                space_data = _safe_get(page_data, "space", {})
+                space_key = (
+                    _safe_get(space_data, "key", "UNKNOWN")
+                    if isinstance(space_data, dict)
+                    else "UNKNOWN"
                 )
-                if not isinstance(pages, list):
-                    pages = []
 
-                all_pages.extend(pages)
+            warnings: list[str] = []
+            content = _safe_get(page_data, "content", "") or _safe_get(page_data, "body", "")
+            if not content:
+                warnings.append("Page has no content")
 
-                # Check if there are more results
-                total_size = (
-                    search_data.get("size", 0) if isinstance(search_data, dict) else len(pages)
-                )
-                has_more = len(pages) == DEFAULT_PAGE_LIMIT and len(all_pages) < total_size
-                start += len(pages)
-
-            # Build PageSummary list
-            summaries = []
-            warnings = []
-
-            for page_data in all_pages:
-                if not isinstance(page_data, dict):
-                    continue
-
-                page_id = str(page_data.get("id", ""))
-                if not page_id:
-                    # Skip pages without IDs - they can't be properly referenced
-                    warnings.append("Skipping page without ID in search results")
-                    continue
-
-                # Build URL
-                page_url = (
-                    page_data.get("_links", {}).get("webui", "")
-                    if isinstance(page_data.get("_links"), dict)
+            page = ConfluencePage(
+                page_id=page_id,
+                title=_safe_get(page_data, "title", "Untitled"),
+                content=content,
+                space_key=space_key,
+                url=_safe_get(page_data, "url", "")
+                or (
+                    f"{self._confluence_base_url}/pages/{page_id}"
+                    if self._confluence_base_url
                     else ""
-                )
-                if page_url and self._confluence_base_url:
-                    page_url = f"{self._confluence_base_url}{page_url}"
-
-                summary = PageSummary(
-                    page_id=page_id,
-                    title=page_data.get("title", "Untitled"),
-                    url=page_url,
-                    last_modified=None,  # Not always available in search results
-                )
-                summaries.append(summary)
+                ),
+                retrieved_at=datetime.now(UTC),
+                author=_safe_get(_safe_get(page_data, "author", {}), "displayName")
+                if isinstance(_safe_get(page_data, "author"), dict)
+                else _safe_get(page_data, "author"),
+                version=_safe_get(_safe_get(page_data, "version", {}), "number")
+                if isinstance(_safe_get(page_data, "version"), dict)
+                else _safe_get(page_data, "version_number"),
+                labels=_safe_get(page_data, "labels", []),
+            )
 
             return StageResult(
                 success=True,
-                data=summaries,
+                data=page,
                 errors=[],
-                warnings=warnings if warnings else [],
-                confidence=0.9 if summaries else 0.5,  # Lower confidence if no results
+                warnings=warnings,
+                confidence=1.0,
             )
 
         except MCPConnectionError as e:
@@ -574,11 +547,104 @@ class ConfluenceReader:
                 warnings=[],
                 confidence=0.0,
             )
-        except MCPToolError as e:
+        except Exception as e:
             return StageResult(
                 success=False,
                 data=None,
-                errors=[f"MCP tool error: {e.message}"],
+                errors=[f"Unexpected error reading page {page_id}: {str(e)}"],
+                warnings=[],
+                confidence=0.0,
+            )
+
+    async def get_children_by_id(self, page_id: str) -> StageResult:
+        """Get all child pages of a Confluence page by its page_id via MCP.
+
+        Returns a StageResult whose .data is a list of PageSummary objects,
+        matching the contract of get_descendants_by_title().
+
+        Args:
+            page_id: Numeric Confluence page ID
+
+        Returns:
+            StageResult with list[PageSummary] or error
+        """
+        if not self._mcp_client.is_connected:
+            return StageResult(
+                success=False,
+                data=None,
+                errors=_MCP_NOT_CONNECTED_ERROR,
+                warnings=[],
+                confidence=0.0,
+            )
+
+        try:
+            tool_result = await self._mcp_client.call_tool(
+                self._get_tool_name("confluence_get_children"),
+                {"page_id": page_id},
+            )
+
+            if not tool_result.success:
+                return StageResult(
+                    success=False,
+                    data=None,
+                    errors=[f"Failed to get children of page {page_id}: {tool_result.error}"],
+                    warnings=[],
+                    confidence=0.0,
+                )
+
+            children_data = tool_result.data
+            if isinstance(children_data, str):
+                try:
+                    children_data = json.loads(children_data)
+                except json.JSONDecodeError:
+                    return StageResult(
+                        success=False,
+                        data=None,
+                        errors=["Invalid JSON response from MCP for children"],
+                        warnings=[],
+                        confidence=0.0,
+                    )
+
+            # MCP may return {"results": [...]} or a plain list
+            if isinstance(children_data, dict):
+                children_list = children_data.get("results", [])
+            elif isinstance(children_data, list):
+                children_list = children_data
+            else:
+                children_list = []
+
+            from ai_qa.pipelines.models import PageSummary
+
+            summaries: list[PageSummary] = []
+            for child in children_list:
+                if not isinstance(child, dict):
+                    continue
+                child_id = str(child.get("id", child.get("page_id", "")))
+                title = child.get("title", "Untitled")
+                url = child.get("url", "") or (
+                    f"{self._confluence_base_url}/pages/{child_id}"
+                    if self._confluence_base_url and child_id
+                    else ""
+                )
+                summaries.append(PageSummary(page_id=child_id, title=title, url=url))
+
+            return StageResult(
+                success=True,
+                data=summaries,
+                errors=[],
+                warnings=[],
+                confidence=1.0,
+            )
+
+        except MCPConnectionError as e:
+            return StageResult(
+                success=False,
+                data=None,
+                errors=[
+                    _MCP_UNAVAILABLE_ERROR_TEMPLATE.format(self._mcp_client.server_url),
+                    f"Details: {e.message}",
+                ]
+                + _MCP_UNAVAILABLE_CHECKS,
                 warnings=[],
                 confidence=0.0,
             )
@@ -586,10 +652,198 @@ class ConfluenceReader:
             return StageResult(
                 success=False,
                 data=None,
-                errors=[f"Unexpected error listing pages: {str(e)}"],
+                errors=[f"Unexpected error getting children of page {page_id}: {str(e)}"],
                 warnings=[],
                 confidence=0.0,
             )
+
+    async def find_parent_pages(self, space_key: str) -> StageResult:
+        """Find candidate parent pages containing 'requirement' or 'plan' in their title."""
+        if not self._mcp_client.is_connected:
+            return StageResult(
+                success=False,
+                data=None,
+                errors=_MCP_NOT_CONNECTED_ERROR,
+                warnings=[],
+                confidence=0.0,
+            )
+
+        # Search for pages that might contain requirements using targeted CQL
+        search_result = await self._mcp_client.call_tool(
+            self._get_tool_name("confluence_search"),
+            {
+                "cql": f'space = {space_key} AND type = page AND (title ~ "requirement" OR title ~ "requirements" OR title ~ "FR")',
+                "limit": 5,
+            },
+        )
+
+        if not search_result.success:
+            return StageResult(
+                success=False,
+                data=None,
+                errors=[search_result.error or "Unknown error"],
+                warnings=[],
+                confidence=0.0,
+            )
+
+        search_data = search_result.data
+        if isinstance(search_data, str):
+            try:
+                search_data = json.loads(search_data)
+            except json.JSONDecodeError:
+                return StageResult(
+                    success=False,
+                    data=None,
+                    errors=["Invalid JSON from MCP"],
+                    warnings=[],
+                    confidence=0.0,
+                )
+
+        pages = search_data.get("results", []) if isinstance(search_data, dict) else search_data
+        if not isinstance(pages, list):
+            pages = []
+
+        parent_pages = []
+        for page_data in pages:
+            if not isinstance(page_data, dict):
+                continue
+            title = page_data.get("title", "")
+            if title:
+                parent_pages.append(title)
+
+        return StageResult(
+            success=True,
+            data=parent_pages,
+            errors=[],
+            warnings=[],
+            confidence=1.0,
+        )
+
+    async def get_descendants_by_title(self, space_key: str, parent_title: str) -> StageResult:
+        """Find the page by title and then retrieve all its descendants."""
+        if not self._mcp_client.is_connected:
+            return StageResult(
+                success=False,
+                data=None,
+                errors=_MCP_NOT_CONNECTED_ERROR,
+                warnings=[],
+                confidence=0.0,
+            )
+
+        # 1. Search for the parent page by title exactly
+        # CQL: space = SPACE AND type = page AND title = "parent_title"
+        # We escape the title to be safe
+        safe_title = parent_title.replace('"', '\\"')
+        search_result = await self._mcp_client.call_tool(
+            self._get_tool_name("confluence_search"),
+            {
+                "cql": f'space = {space_key} AND type = page AND title = "{safe_title}"',
+                "limit": 10,
+            },
+        )
+        if not search_result.success:
+            return StageResult(
+                success=False,
+                data=None,
+                errors=[search_result.error or "Unknown error"],
+                warnings=[],
+                confidence=0.0,
+            )
+
+        search_data = search_result.data
+        if isinstance(search_data, str):
+            search_data = json.loads(search_data)
+
+        pages = search_data.get("results", []) if isinstance(search_data, dict) else search_data
+        if not pages or not isinstance(pages, list):
+            return StageResult(
+                success=False,
+                data=None,
+                errors=[f"Could not find a page with title '{parent_title}'"],
+                warnings=[],
+                confidence=0.0,
+            )
+
+        parent_page = pages[0]
+        parent_id = str(parent_page.get("id", ""))
+
+        if not parent_id:
+            return StageResult(
+                success=False,
+                data=None,
+                errors=["Parent page has no ID"],
+                warnings=[],
+                confidence=0.0,
+            )
+
+        # 2. Search for descendants
+        target_pages_dict = {parent_id: parent_page}
+        desc_start = 0
+        desc_has_more = True
+        warnings = []
+
+        while desc_has_more:
+            desc_search = await self._mcp_client.call_tool(
+                self._get_tool_name("confluence_search"),
+                {
+                    "cql": f"space = {space_key} AND type = page AND ancestor IN ({parent_id})",
+                    "limit": DEFAULT_PAGE_LIMIT,
+                    "start": desc_start,
+                },
+            )
+
+            if not desc_search.success:
+                warnings.append(f"Failed to fetch descendants: {desc_search.error}")
+                break
+
+            desc_data = desc_search.data
+            if isinstance(desc_data, str):
+                try:
+                    desc_data = json.loads(desc_data)
+                except json.JSONDecodeError:
+                    warnings.append("Invalid descendant search response format")
+                    break
+
+            desc_pages = desc_data.get("results", []) if isinstance(desc_data, dict) else desc_data
+            if not isinstance(desc_pages, list):
+                desc_pages = []
+
+            for p_data in desc_pages:
+                if not isinstance(p_data, dict):
+                    continue
+                p_id = str(p_data.get("id", ""))
+                if p_id:
+                    target_pages_dict[p_id] = p_data
+
+            desc_has_more = len(desc_pages) == DEFAULT_PAGE_LIMIT
+            desc_start += len(desc_pages)
+
+        # 3. Build PageSummary list
+        summaries = []
+        for page_id, page_data in target_pages_dict.items():
+            page_url = (
+                page_data.get("_links", {}).get("webui", "")
+                if isinstance(page_data.get("_links"), dict)
+                else ""
+            )
+            if page_url and self._confluence_base_url:
+                page_url = f"{self._confluence_base_url}{page_url}"
+
+            summary = PageSummary(
+                page_id=page_id,
+                title=page_data.get("title", "Untitled"),
+                url=page_url,
+                last_modified=None,
+            )
+            summaries.append(summary)
+
+        return StageResult(
+            success=True,
+            data=summaries,
+            errors=[],
+            warnings=warnings if warnings else [],
+            confidence=0.9 if summaries else 0.5,
+        )
 
     async def read_multiple_pages(self, page_urls: list[str]) -> StageResult:
         """Read multiple pages with progress tracking.

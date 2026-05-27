@@ -58,7 +58,7 @@ def sample_agent_message() -> AgentMessage:
         agent_name="Bob",
         content="Extracted 3 requirements from Confluence",
         timestamp=datetime(2026, 4, 10, 9, 0, 0, tzinfo=UTC),
-        message_type="success",
+        messageType="success",
     )
 
 
@@ -70,5 +70,5 @@ def processing_message() -> AgentMessage:
         agent_name="Mary",
         content="Generating test case 2 of 5...",
         timestamp=datetime(2026, 4, 10, 9, 30, 0, tzinfo=UTC),
-        message_type="info",
+        messageType="info",
     )

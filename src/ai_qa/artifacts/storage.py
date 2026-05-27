@@ -18,6 +18,7 @@ class ArtifactStorage(Protocol):
         project_id: UUID,
         artifact_id: UUID,
         version: int,
+        kind: str,
         name: str,
         content: str | bytes,
     ) -> str:
@@ -42,12 +43,13 @@ class LocalArtifactStorage:
         project_id: UUID,
         artifact_id: UUID,
         version: int,
+        kind: str,
         name: str,
         content: str | bytes,
     ) -> str:
         """Write content via temp file then atomic replace and return relative key."""
         safe_name = sanitize_artifact_name(name)
-        storage_path = self._build_storage_path(project_id, artifact_id, version, safe_name)
+        storage_path = self._build_storage_path(project_id, artifact_id, version, kind, safe_name)
         target_path = self._resolve_storage_path(storage_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -76,8 +78,12 @@ class LocalArtifactStorage:
             return
 
     def _build_storage_path(
-        self, project_id: UUID, artifact_id: UUID, version: int, safe_name: str
+        self, project_id: UUID, artifact_id: UUID, version: int, kind: str, safe_name: str
     ) -> str:
+        if kind == "requirements":
+            return f"projects/{project_id}/requirement/{safe_name}"
+        if kind == "raw_html":
+            return f"projects/{project_id}/mcp/confluence/{safe_name}"
         return f"projects/{project_id}/artifacts/{artifact_id}/v{version}/{safe_name}"
 
     def _resolve_storage_path(self, storage_path: str) -> Path:
@@ -91,15 +97,90 @@ class LocalArtifactStorage:
         return resolved
 
 
+class S3ArtifactStorage:
+    """S3/MinIO artifact storage backend."""
+
+    def __init__(
+        self,
+        endpoint_url: str,
+        access_key: str,
+        secret_key: str,
+        bucket_name: str,
+        secure: bool = False,
+    ) -> None:
+        import boto3
+        from botocore.config import Config
+
+        self.bucket_name = bucket_name
+        self.s3 = boto3.client(
+            "s3",
+            endpoint_url=f"{'https' if secure else 'http'}://{endpoint_url}",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version="s3v4"),
+        )
+
+    def write(
+        self,
+        *,
+        project_id: UUID,
+        artifact_id: UUID,
+        version: int,
+        kind: str,
+        name: str,
+        content: str | bytes,
+    ) -> str:
+        """Upload content to S3 bucket and return object key."""
+        safe_name = sanitize_artifact_name(name)
+        if kind == "requirements":
+            object_key = f"projects/{project_id}/requirement/{safe_name}"
+        elif kind == "raw_html":
+            object_key = f"projects/{project_id}/mcp/confluence/{safe_name}"
+        else:
+            object_key = f"projects/{project_id}/artifacts/{artifact_id}/v{version}/{safe_name}"
+
+        body = content.encode("utf-8") if isinstance(content, str) else content
+        self.s3.put_object(Bucket=self.bucket_name, Key=object_key, Body=body)
+
+        return object_key
+
+    def read(self, storage_path: str) -> bytes:
+        """Download content from S3 bucket."""
+        from typing import cast
+
+        response = self.s3.get_object(Bucket=self.bucket_name, Key=storage_path)
+        return cast(bytes, response["Body"].read())
+
+    def delete(self, storage_path: str) -> None:
+        """Best-effort S3 object deletion."""
+        try:
+            self.s3.delete_object(Bucket=self.bucket_name, Key=storage_path)
+        except Exception:
+            pass
+
+
 def sanitize_artifact_name(name: str) -> str:
-    """Return a safe filename derived from untrusted artifact names."""
-    candidate = Path(name.replace("\\", "/")).name.strip()
-    candidate = re.sub(r"[^A-Za-z0-9._-]+", "-", candidate).strip(".-_")
-    if not candidate:
-        candidate = "artifact"
-    if len(candidate) > 180:
-        path = Path(candidate)
-        suffix = path.suffix[:20]
-        stem_limit = 180 - len(suffix)
-        candidate = f"{path.stem[:stem_limit]}{suffix}"
-    return candidate
+    """Return a safe filename derived from untrusted artifact names.
+
+    Supports subdirectory paths like 'page-id/raw.html' by sanitizing
+    each path segment individually.
+    """
+    normalized = name.replace("\\", "/")
+    parts = normalized.split("/")
+
+    safe_parts = []
+    for part in parts:
+        part = part.strip()
+        candidate = re.sub(r"[^A-Za-z0-9._-]+", "-", part).strip(".-_")
+        if not candidate:
+            continue
+        if len(candidate) > 180:
+            p = Path(candidate)
+            suffix = p.suffix[:20]
+            stem_limit = 180 - len(suffix)
+            candidate = f"{p.stem[:stem_limit]}{suffix}"
+        safe_parts.append(candidate)
+
+    if not safe_parts:
+        return "artifact"
+    return "/".join(safe_parts)

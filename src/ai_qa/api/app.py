@@ -87,9 +87,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     if _DIST_DIR.is_dir():
         app.mount("/", StaticFiles(directory=str(_DIST_DIR), html=True), name="static")
 
-    # Register Alice agent (Step 1) as a template
+    # Register agents as templates
     # Per-user instances are created on-demand in routes.py via _get_agent_for_user
-    alice = AliceAgent()
-    register_agent(alice)
+    from ai_qa.agents import BobAgent, MaryAgent, SarahAgent
+
+    register_agent(AliceAgent())
+    register_agent(BobAgent())
+    register_agent(MaryAgent())
+    register_agent(SarahAgent())
 
     return app

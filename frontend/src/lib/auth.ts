@@ -35,7 +35,7 @@ interface AuthProfileResponse {
   is_active?: boolean;
 }
 
-function normalizeUser(data: AuthProfileResponse | AuthStatusResponse): AuthUser | null {
+export function normalizeUser(data: AuthProfileResponse | AuthStatusResponse): AuthUser | null {
   if (!data.email) return null;
   const displayName = "display_name" in data ? data.display_name : data.name;
   return {

@@ -27,15 +27,21 @@ class LLMClient:
 
         # Configure ChatOpenAI to talk to LiteLLM Proxy or direct provider
         # Uses max_retries=0 internally as we handle retries via tenacity.
+        import httpx
+
+        verify_ssl = self._config.provider != "on-premises"
+
         self._chat_model = ChatOpenAI(
             model=self._config.model_name,
             temperature=self._config.temperature,
             api_key=SecretStr(self._config.api_key or "sk-dummy"),  # Some proxies need a dummy key
             base_url=self._config.base_url if self._config.base_url else None,
             max_retries=0,
+            http_client=httpx.Client(verify=verify_ssl, follow_redirects=True),
+            http_async_client=httpx.AsyncClient(verify=verify_ssl, follow_redirects=True),
         )
 
-    @retry(  # type: ignore
+    @retry(  # type: ignore[misc]
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type(LLMError),
@@ -76,3 +82,26 @@ class LLMClient:
             LLMError: If the call fails after maximum retries.
         """
         return self._invoke_with_retry(messages, **kwargs)
+
+    async def invoke_vision(
+        self, prompt: str, image_base64: str, mime_type: str = "image/png"
+    ) -> str:
+        """Send image + text prompt to a vision-capable LLM.
+
+        Returns text response. Raises if model doesn't support vision.
+        """
+        from langchain_core.messages import HumanMessage
+
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime_type};base64,{image_base64}"},
+                },
+            ]
+        )
+
+        # We use aync invoke for vision
+        response = await self._chat_model.ainvoke([message])
+        return str(response.content)

@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ai_qa.agents.base import (
-    WORKSPACE_SUBFOLDERS,
     AgentState,
     BaseAgent,
 )
@@ -132,20 +131,10 @@ class TestBaseAgentInit:
 class TestCreateWorkspace:
     """Verify workspace directory structure is created correctly."""
 
-    def test_create_workspace_creates_all_subfolders(self, tmp_path: Path) -> None:
-        """All 6 required subdirectories must be created under workspace_dir."""
-        make_agent(workspace_dir=tmp_path)
-        for folder in WORKSPACE_SUBFOLDERS:
-            assert (tmp_path / folder).is_dir(), (
-                f"Expected workspace subdirectory '{folder}' to exist"
-            )
-
-    def test_create_workspace_is_idempotent(self, tmp_path: Path) -> None:
-        """Calling _create_workspace twice must not raise any error."""
+    def test_workspace_dir_is_assigned(self, tmp_path: Path) -> None:
+        """Agent should store the workspace dir correctly."""
         agent = make_agent(workspace_dir=tmp_path)
-        agent._create_workspace()  # second call — must not raise
-        for folder in WORKSPACE_SUBFOLDERS:
-            assert (tmp_path / folder).is_dir()
+        assert agent.workspace_dir == tmp_path
 
 
 # ---------------------------------------------------------------------------

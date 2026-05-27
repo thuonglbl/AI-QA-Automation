@@ -1,73 +1,116 @@
-import React from 'react';
+import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { ExternalLink } from 'lucide-react';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { ReviewContent } from './ReviewContent';
+import { ExternalLink, Check, X } from 'lucide-react';
+
+interface ExtractedPage {
+  page_id: string;
+  page_title: string;
+  source_url: string;
+  raw_html: string;
+  requirement_md: string;
+}
 
 interface SplitPanelProps {
-  sourceUrl: string;
-  markdownContent: string;
-  currentPage: number;
+  pages: ExtractedPage[];
+  currentIndex: number;
   totalPages: number;
+  onApprove: (pageId: string, updatedMarkdown: string) => void;
+  onSkip: (pageId: string) => void;
+  disabled?: boolean;
   className?: string;
 }
 
 export function SplitPanel({
-  sourceUrl,
-  markdownContent,
-  currentPage,
+  pages,
+  currentIndex,
   totalPages,
+  onApprove,
+  onSkip,
+  disabled,
   className
 }: SplitPanelProps) {
+  const page = pages[currentIndex];
+  const [markdownContent, setMarkdownContent] = useState('');
+
+  // Reset local state when page changes
+  useEffect(() => {
+    if (page) {
+      setMarkdownContent(page.requirement_md);
+    }
+  }, [page]);
+
+  if (!page) {
+    return <div className="p-4 text-center text-slate-500">No page selected.</div>;
+  }
+
   return (
-    <div className={cn("flex flex-col h-[500px] border rounded-md overflow-hidden bg-white", className)}>
-      {/* Header with pagination */}
-      <div className="flex items-center justify-between border-b px-4 py-2 bg-slate-50">
+    <div className={cn("flex flex-col h-[700px] border rounded-md overflow-hidden bg-white shadow-sm", className)}>
+      {/* Header */}
+      <div className="flex items-center justify-between border-b px-4 py-3 bg-slate-50">
         <div className="font-medium text-sm text-slate-700">
-          Reviewing Page {currentPage} of {totalPages}
+          Review Requirement Page ({currentIndex + 1} of {totalPages}) — <span className="font-semibold">{page.page_title}</span>
         </div>
         <div className="flex items-center gap-2">
-          {/* We only render indicators for pagination here, actual buttons can be synced with ChatInputArea if needed,
-              but AC says 'Next/Previous buttons navigate between pages'. 
-              Since Approve/Reject handles progression for Bob, maybe we just show the state. */}
-          <span className="text-xs text-slate-500">
-            Click "Approve" below to advance.
-          </span>
+          <a href={page.source_url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+            Open Original <ExternalLink className="w-3 h-3" />
+          </a>
         </div>
       </div>
       
       {/* Split layout */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left Side: Source URL Link/Iframe */}
+        {/* Left Side: Source HTML */}
         <div className="w-1/2 border-r flex flex-col bg-slate-50">
           <div className="py-2 px-3 border-b text-xs font-medium text-slate-500 uppercase tracking-wider flex justify-between items-center bg-slate-100">
-            <span>Source Document</span>
-            <a href={sourceUrl} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline flex items-center gap-1">
-              Open Original <ExternalLink className="w-3 h-3" />
-            </a>
+            <span>Raw Source (Read-only)</span>
           </div>
-          <div className="flex-1 p-4 flex items-center justify-center text-slate-500 text-sm">
-            <div className="text-center">
-              <p className="mb-2">Due to Confluence security settings, the page cannot be displayed directly inside this iframe.</p>
-              <Button asChild variant="outline">
-                <a href={sourceUrl} target="_blank" rel="noopener noreferrer">
-                  Open in New Tab <ExternalLink className="w-4 h-4 ml-2" />
-                </a>
-              </Button>
-            </div>
+          <div className="flex-1 overflow-hidden bg-white">
+            <iframe 
+              srcDoc={page.raw_html} 
+              className="w-full h-full border-none"
+              sandbox="" 
+              title={`Source HTML for ${page.page_title}`}
+            />
           </div>
         </div>
         
-        {/* Right Side: Parsed Markdown */}
+        {/* Right Side: Editable Markdown */}
         <div className="w-1/2 flex flex-col bg-white">
           <div className="py-2 px-3 border-b text-xs font-medium text-slate-500 uppercase tracking-wider bg-slate-100">
-            Extracted Content
+            Requirement Markdown (Editable)
           </div>
-          <ScrollArea className="flex-1 p-4">
-            <ReviewContent content={markdownContent} />
-          </ScrollArea>
+          <div className="flex-1 p-0 flex">
+            <textarea
+              className="w-full h-full p-4 resize-none border-none focus:outline-none focus:ring-0 font-mono text-sm text-slate-800 bg-slate-50"
+              value={markdownContent}
+              onChange={(e) => setMarkdownContent(e.target.value)}
+              disabled={disabled}
+            />
+          </div>
         </div>
+      </div>
+
+      {/* Footer Buttons */}
+      <div className="flex items-center justify-end gap-3 px-4 py-3 bg-slate-50 border-t">
+        <Button 
+          variant="outline" 
+          onClick={() => onSkip(page.page_id)}
+          disabled={disabled}
+          className="text-slate-600"
+        >
+          <X className="w-4 h-4 mr-2" />
+          Not requirement
+        </Button>
+        <Button 
+          variant="default" 
+          onClick={() => onApprove(page.page_id, markdownContent)}
+          disabled={disabled}
+          className="bg-blue-600 hover:bg-blue-700"
+        >
+          <Check className="w-4 h-4 mr-2" />
+          Approved
+        </Button>
       </div>
     </div>
   );

@@ -2,19 +2,19 @@ import { useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/hooks/useAuth";
 import { Loader2 } from "lucide-react";
-import { fetchWithAuth } from "@/lib/auth";
+import { apiFetch } from "@/lib/api";
+import type { AuthUser } from "@/lib/auth";
+import { normalizeUser } from "@/lib/auth";
 
 interface LoginPageProps {
   onLoginSuccess?: () => void;
 }
 
 export function LoginPage({ onLoginSuccess }: LoginPageProps) {
-  const { isAuthenticated, isLoading, error: authError, refresh } = useAuth();
+  const { isAuthenticated, isLoading, error: authError, logout, setAuthStatus } = useAuth();
   
-  const [isRegistering, setIsRegistering] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -31,43 +31,22 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
     setFormError(null);
 
     try {
-      const endpoint = isRegistering ? "/auth/register" : "/auth/login";
-      const payload = isRegistering 
-        ? { email, name, password }
-        : { email, password };
-
-      const response = await fetchWithAuth(endpoint, {
+      await logout();
+      const loginResult = await apiFetch<{ user?: AuthUser }>("/login", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
+        authRoute: true,
+        safeMessage: "Invalid username or password.",
+        body: JSON.stringify({ email, password }),
       });
 
-      // Check if response is JSON
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        const text = await response.text();
-        console.error("Non-JSON response:", text.substring(0, 200));
-        throw new Error(`Server error: ${response.status} ${response.statusText}`);
+      if (!loginResult.user?.email) {
+        throw new Error("Login response did not include a user profile.");
       }
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.detail || data.message || "Authentication failed");
-      }
-
-      if (isRegistering) {
-        // Automatically login or switch to login page after register
-        setIsRegistering(false);
-        setFormError("Registration successful. Please log in.");
-      } else {
-        // Success login, refresh auth status
-        await refresh();
-      }
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "An error occurred");
+      setAuthStatus({ authenticated: true, user: normalizeUser(loginResult.user) });
+    } catch {
+      setAuthStatus({ authenticated: false, user: null });
+      setFormError("Invalid username or password.");
     } finally {
       setIsSubmitting(false);
     }
@@ -109,22 +88,6 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
-              {isRegistering && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-surface-700" htmlFor="name">
-                    Name
-                  </label>
-                  <input
-                    id="name"
-                    type="text"
-                    required
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="w-full px-3 py-2 border rounded-md border-surface-300 focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                </div>
-              )}
-              
               <div className="space-y-2">
                 <label className="text-sm font-medium text-surface-700" htmlFor="email">
                   Email
@@ -165,23 +128,8 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                 className="w-full py-2 px-4 bg-primary text-white rounded-md hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 flex items-center justify-center"
               >
                 {isSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                {isRegistering ? "Create Account" : "Sign In"}
+                Sign In
               </button>
-
-              <div className="text-center mt-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsRegistering(!isRegistering);
-                    setFormError(null);
-                  }}
-                  className="text-sm text-primary hover:underline focus:outline-none"
-                >
-                  {isRegistering
-                    ? "Already have an account? Sign in"
-                    : "Need an account? Create one"}
-                </button>
-              </div>
             </form>
           )}
         </CardContent>

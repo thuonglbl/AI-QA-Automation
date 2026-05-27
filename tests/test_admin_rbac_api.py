@@ -293,3 +293,135 @@ def test_inactive_user_with_old_token_cannot_pass_rbac(admin_client: TestClient)
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Not authenticated"
+
+
+def test_admin_can_update_and_delete_project(admin_client: TestClient) -> None:
+    admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
+    project_response = admin_client.post(
+        "/api/admin/projects",
+        headers=_auth_headers(admin_client, admin),
+        json={"name": "Original Project", "description": "Original description"},
+    )
+    project_id = project_response.json()["id"]
+
+    updated = admin_client.put(
+        f"/api/admin/projects/{project_id}",
+        headers=_auth_headers(admin_client, admin),
+        json={"name": "  Updated Project  ", "description": "  Updated description  "},
+    )
+    blank = admin_client.put(
+        f"/api/admin/projects/{project_id}",
+        headers=_auth_headers(admin_client, admin),
+        json={"name": "   "},
+    )
+    deleted = admin_client.delete(
+        f"/api/admin/projects/{project_id}",
+        headers=_auth_headers(admin_client, admin),
+    )
+    missing = admin_client.delete(
+        f"/api/admin/projects/{project_id}",
+        headers=_auth_headers(admin_client, admin),
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "Updated Project"
+    assert updated.json()["description"] == "Updated description"
+    assert blank.status_code == 422
+    assert deleted.status_code == 204
+    assert missing.status_code == 404
+
+
+def test_standard_user_cannot_update_or_delete_project(admin_client: TestClient) -> None:
+    admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
+    standard = _create_user(admin_client, "standard@example.com", STANDARD_ROLE)
+    project_response = admin_client.post(
+        "/api/admin/projects",
+        headers=_auth_headers(admin_client, admin),
+        json={"name": "Quality Workspace"},
+    )
+    project_id = project_response.json()["id"]
+
+    updated = admin_client.put(
+        f"/api/admin/projects/{project_id}",
+        headers=_auth_headers(admin_client, standard),
+        json={"name": "Denied"},
+    )
+    deleted = admin_client.delete(
+        f"/api/admin/projects/{project_id}", headers=_auth_headers(admin_client, standard)
+    )
+
+    assert updated.status_code == 403
+    assert deleted.status_code == 403
+
+
+def test_admin_can_create_standard_user_without_leaking_password_hash(
+    admin_client: TestClient,
+) -> None:
+    admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
+
+    created = admin_client.post(
+        "/api/admin/users",
+        headers=_auth_headers(admin_client, admin),
+        json={
+            "email": "  new.user@example.com  ",
+            "display_name": "  New User  ",
+            "initial_password": "initial-secret",
+        },
+    )
+    duplicate = admin_client.post(
+        "/api/admin/users",
+        headers=_auth_headers(admin_client, admin),
+        json={
+            "email": "new.user@example.com",
+            "display_name": "Duplicate",
+            "initial_password": "initial-secret",
+        },
+    )
+    short_password = admin_client.post(
+        "/api/admin/users",
+        headers=_auth_headers(admin_client, admin),
+        json={
+            "email": "another@example.com",
+            "display_name": "Another",
+            "initial_password": "short",
+        },
+    )
+
+    assert created.status_code == 200
+    user = created.json()
+    assert user["email"] == "new.user@example.com"
+    assert user["display_name"] == "New User"
+    assert user["role"] == STANDARD_ROLE
+    assert user["is_active"] is True
+    assert "password_hash" not in user
+    assert duplicate.status_code == 409
+    assert short_password.status_code == 422
+
+
+def test_admin_can_remove_project_membership(admin_client: TestClient) -> None:
+    admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
+    standard = _create_user(admin_client, "standard@example.com", STANDARD_ROLE)
+    project_response = admin_client.post(
+        "/api/admin/projects",
+        headers=_auth_headers(admin_client, admin),
+        json={"name": "Quality Workspace"},
+    )
+    project_id = project_response.json()["id"]
+    assigned = admin_client.post(
+        f"/api/admin/projects/{project_id}/memberships",
+        headers=_auth_headers(admin_client, admin),
+        json={"user_id": str(standard.id)},
+    )
+
+    removed = admin_client.delete(
+        f"/api/admin/projects/{project_id}/memberships/{standard.id}",
+        headers=_auth_headers(admin_client, admin),
+    )
+    missing = admin_client.delete(
+        f"/api/admin/projects/{project_id}/memberships/{standard.id}",
+        headers=_auth_headers(admin_client, admin),
+    )
+
+    assert assigned.status_code == 200
+    assert removed.status_code == 204
+    assert missing.status_code == 404

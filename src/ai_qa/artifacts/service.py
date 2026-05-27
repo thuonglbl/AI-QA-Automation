@@ -14,9 +14,11 @@ from ai_qa.db.models import Artifact, ArtifactVersion, PipelineRun
 ARTIFACT_KINDS = frozenset(
     {
         "configuration",
+        "image",
         "markdown",
         "mermaid",
         "playwright_script",
+        "raw_html",
         "report",
         "requirements",
         "screenshot",
@@ -67,6 +69,7 @@ class ArtifactService:
                 project_id=project_id,
                 artifact_id=artifact.id,
                 version=1,
+                kind=kind,
                 name=clean_name,
                 content=content,
             )
@@ -116,6 +119,7 @@ class ArtifactService:
                 project_id=artifact.project_id,
                 artifact_id=artifact.id,
                 version=next_version,
+                kind=artifact.kind,
                 name=artifact.name,
                 content=content,
             )

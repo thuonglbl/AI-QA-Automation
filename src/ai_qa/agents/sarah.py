@@ -18,7 +18,6 @@ from ai_qa.browser.agent import BrowserAgent
 from ai_qa.config import AppSettings
 from ai_qa.models import StageResult, TestCase
 from ai_qa.pipelines.artifact_adapter import PipelineArtifactAdapter
-from ai_qa.pipelines.output_writer import OutputWriter
 from ai_qa.pipelines.script_generator import ScriptGenerator
 from ai_qa.pipelines.vision_locator import VisionLocator
 
@@ -96,45 +95,35 @@ class SarahAgent(BaseAgent):
 
         self.app_settings = AppSettings()
 
-        # Initialize ScriptGenerator (VisionLocator injected during process)
         self._script_generator: ScriptGenerator | None = None
         self._vision_locator: VisionLocator | None = None
         self._browser_agent: BrowserAgent | None = None
-
-        # Writer for output files
-        self._writer = OutputWriter(output_base_dir=self._workspace_dir / "testscripts")
 
     # -------------------------------------------------------------------------
     # Chrome Path Persistence
     # -------------------------------------------------------------------------
 
     def _load_chrome_path(self) -> None:
-        if self.project_context is not None:
-            try:
-                adapter = PipelineArtifactAdapter(self.project_context)
-                configuration_artifacts = adapter.service.list_artifacts(
-                    project_id=self.project_context.project_id,
-                    kind="configuration",
-                )
-                for artifact in configuration_artifacts:
-                    if artifact.name != "chrome_path.json":
-                        continue
-                    content = adapter.service.read_current_content(artifact)
-                    data = json.loads(content.decode("utf-8"))
-                    self._chrome_path = data.get("chrome_path")
-                    logger.info("Loaded Chrome path from project artifacts")
-                    return
-            except Exception as exc:
-                logger.warning("Failed to load project Chrome path: %s", exc)
+        """Load Chrome path from project context."""
+        if self.project_context is None:
+            return
 
-        chrome_path_file = self._workspace_dir / "configuration" / "chrome_path.json"
-        if chrome_path_file.exists():
-            try:
-                data = json.loads(chrome_path_file.read_text())
+        try:
+            adapter = PipelineArtifactAdapter(self.project_context)
+            configuration_artifacts = adapter.service.list_artifacts(
+                project_id=self.project_context.project_id,
+                kind="configuration",
+            )
+            for artifact in configuration_artifacts:
+                if artifact.name != "chrome_path.json":
+                    continue
+                content = adapter.service.read_current_content(artifact)
+                data = json.loads(content.decode("utf-8"))
                 self._chrome_path = data.get("chrome_path")
-                logger.info("Loaded Chrome path from storage")
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Failed to load Chrome path: %s", exc)
+                logger.info("Loaded Chrome path from project artifacts")
+                return
+        except Exception as exc:
+            logger.warning("Failed to load project Chrome path: %s", exc)
 
     async def _store_chrome_path(self, chrome_path: str) -> None:
         """Store Chrome path for future sessions.
@@ -154,25 +143,15 @@ class SarahAgent(BaseAgent):
         if "/" not in chrome_path and "\\" not in chrome_path and not chrome_path.endswith(".exe"):
             raise ValueError("Chrome path appears invalid (expected path with separators or .exe)")
 
-        if self.project_context is not None:
-            PipelineArtifactAdapter(self.project_context).save_metadata(
-                "chrome_path.json", {"chrome_path": chrome_path}
-            )
-            self._chrome_path = chrome_path
-            logger.info("Chrome path saved to project artifacts")
-            return
+        if self.project_context is None:
+            raise ValueError("SarahAgent requires an active project context.")
 
-        chrome_path_file = self._workspace_dir / "configuration" / "chrome_path.json"
-        chrome_path_file.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            chrome_path_file.write_text(
-                json.dumps({"chrome_path": chrome_path}, indent=2),
-                encoding="utf-8",
-            )
-            self._chrome_path = chrome_path
-            logger.info("Chrome path saved to storage")
-        except OSError as exc:
-            logger.warning("Failed to save Chrome path: %s", exc)
+        PipelineArtifactAdapter(self.project_context).save_metadata(
+            "chrome_path.json", {"chrome_path": chrome_path}
+        )
+        self._chrome_path = chrome_path
+        logger.info("Chrome path saved to project artifacts")
+        return
 
     # -------------------------------------------------------------------------
     # BaseAgent Interface
@@ -242,83 +221,38 @@ class SarahAgent(BaseAgent):
 
     async def _load_test_cases(self) -> StageResult:
         """Load test cases from project artifacts or workspace/testcases/."""
-        if self.project_context is not None:
-            adapter = PipelineArtifactAdapter(self.project_context)
-            test_case_artifacts = adapter.load_test_cases()
-            if not test_case_artifacts:
-                return StageResult(
-                    success=False,
-                    data=None,
-                    errors=["No test case artifacts found for this project"],
-                    warnings=[],
-                    confidence=0.0,
-                )
-
-            test_cases: list[TestCase] = []
-            errors: list[str] = []
-            for artifact in test_case_artifacts:
-                try:
-                    data = json.loads(artifact.content)
-                    if isinstance(data, list):
-                        for item in data:
-                            test_cases.append(TestCase(**item))
-                    else:
-                        test_cases.append(TestCase(**data))
-                except (json.JSONDecodeError, TypeError, ValueError) as e:
-                    errors.append(f"Failed to parse {artifact.name}: {e}")
-
-            return StageResult(
-                success=len(test_cases) > 0,
-                data=test_cases,
-                errors=errors if errors else [],
-                warnings=[f"Loaded {len(test_cases)} test case artifact(s)"] if test_cases else [],
-                confidence=1.0 if test_cases else 0.0,
-            )
-
-        testcases_dir = self._workspace_dir / "testcases"
-
-        if not testcases_dir.exists():
+        if self.project_context is None:
+            raise ValueError("SarahAgent requires an active project context.")
+        adapter = PipelineArtifactAdapter(self.project_context)
+        test_case_artifacts = adapter.load_test_cases()
+        if not test_case_artifacts:
             return StageResult(
                 success=False,
                 data=None,
-                errors=["Test cases directory not found: workspace/testcases/"],
+                errors=["No test case artifacts found for this project"],
                 warnings=[],
                 confidence=0.0,
             )
 
-        # Look for JSON test case files
-        test_case_files = list(testcases_dir.glob("*.json"))
-
-        if not test_case_files:
-            return StageResult(
-                success=False,
-                data=None,
-                errors=["No test case files found in workspace/testcases/"],
-                warnings=[],
-                confidence=0.0,
-            )
-
-        legacy_test_cases: list[TestCase] = []
-        legacy_errors: list[str] = []
-
-        for tc_file in test_case_files:
+        test_cases: list[TestCase] = []
+        errors: list[str] = []
+        for artifact in test_case_artifacts:
             try:
-                data = json.loads(tc_file.read_text())
-                # Handle both single test case and list of test cases
+                data = json.loads(artifact.content)
                 if isinstance(data, list):
                     for item in data:
-                        legacy_test_cases.append(TestCase(**item))
+                        test_cases.append(TestCase(**item))
                 else:
-                    legacy_test_cases.append(TestCase(**data))
+                    test_cases.append(TestCase(**data))
             except (json.JSONDecodeError, TypeError, ValueError) as e:
-                legacy_errors.append(f"Failed to parse {tc_file.name}: {e}")
+                errors.append(f"Failed to parse {artifact.name}: {e}")
 
         return StageResult(
-            success=len(legacy_test_cases) > 0,
-            data=legacy_test_cases,
-            errors=legacy_errors if legacy_errors else [],
-            warnings=[f"Loaded {len(legacy_test_cases)} test case(s)"] if legacy_test_cases else [],
-            confidence=1.0 if legacy_test_cases else 0.0,
+            success=len(test_cases) > 0,
+            data=test_cases,
+            errors=errors if errors else [],
+            warnings=[f"Loaded {len(test_cases)} test case artifact(s)"] if test_cases else [],
+            confidence=1.0 if test_cases else 0.0,
         )
 
     async def _initialize_vision_components(self, chrome_path: str | None, target_url: str) -> None:
@@ -362,7 +296,7 @@ class SarahAgent(BaseAgent):
 
         # Initialize script generator with vision locator if available
         script_generator = ScriptGenerator(
-            output_base_dir=self._workspace_dir / "testscripts",
+            output_base_dir=Path("/dev/null"),  # output_base_dir no longer used for writing
             llm_config=self.config,
             config=self.app_settings,
             vision_locator=self._vision_locator,
@@ -391,10 +325,17 @@ class SarahAgent(BaseAgent):
 
                 if result.success and result.data:
                     script_data = result.data[0]
+                    # Prepend header here since generator doesn't do it anymore
+                    header = script_generator._generate_script_header(test_case)
+                    full_script_content = header + "\n\n" + script_data.get("script_content", "")
+
+                    # Generate filename for artifact
+                    filename = script_generator._generate_filename(test_case.title)
+
                     generated_script = GeneratedScript(
                         test_case=test_case,
-                        script_content=self._read_script_content(script_data.get("file_path", "")),
-                        file_path=script_data.get("file_path", ""),
+                        script_content=full_script_content,
+                        file_path=filename,
                         confidence=script_data.get("confidence", 0.5),
                     )
                     self._generated_scripts.append(generated_script)
@@ -440,32 +381,7 @@ class SarahAgent(BaseAgent):
         )
 
     def _read_script_content(self, file_path: str) -> str:
-        """Read script content from file with retry for race conditions.
-
-        Args:
-            file_path: Path to script file
-
-        Returns:
-            Script content as string
-        """
-        if not file_path:
-            return ""
-        path = Path(file_path)
-
-        # Retry loop for race condition with ScriptGenerator
-        for attempt in range(3):
-            try:
-                if path.exists():
-                    return path.read_text(encoding="utf-8")
-                # File doesn't exist yet, wait and retry
-                import time
-
-                time.sleep(0.1 * (attempt + 1))
-            except OSError as e:
-                if attempt == 2:  # Last attempt
-                    logger.warning(f"Failed to read script content after retries: {e}")
-                else:
-                    time.sleep(0.1)
+        # Not needed anymore
         return ""
 
     async def _regenerate_current_script(self, feedback: str) -> StageResult:
@@ -497,7 +413,7 @@ class SarahAgent(BaseAgent):
         # For now, re-generate using the same process but with feedback context
         # In a more sophisticated implementation, we'd incorporate feedback into the prompt
         script_generator = ScriptGenerator(
-            output_base_dir=self._workspace_dir / "testscripts",
+            output_base_dir=Path("/dev/null"),
             llm_config=self.config,
             config=self.app_settings,
             vision_locator=self._vision_locator,
@@ -513,11 +429,15 @@ class SarahAgent(BaseAgent):
 
             if result.success and result.data:
                 script_data = result.data[0]
+                header = script_generator._generate_script_header(test_case)
+                full_script_content = header + "\n\n" + script_data.get("script_content", "")
+                filename = script_generator._generate_filename(test_case.title)
+
                 # Replace current script
                 self._generated_scripts[self._current_review_index] = GeneratedScript(
                     test_case=test_case,
-                    script_content=self._read_script_content(script_data.get("file_path", "")),
-                    file_path=script_data.get("file_path", ""),
+                    script_content=full_script_content,
+                    file_path=filename,
                     confidence=script_data.get("confidence", 0.5),
                 )
 
@@ -607,7 +527,7 @@ class SarahAgent(BaseAgent):
                 message_type="error",
             )
 
-    async def handle_approve(self) -> None:
+    async def handle_approve(self, data: dict[str, Any] | None = None) -> None:
         """Handle approval of current script.
 
         Saves the approved script and advances to next script or DONE.
@@ -622,12 +542,13 @@ class SarahAgent(BaseAgent):
         # Mark current script as approved and persist in project mode.
         current_script = self._generated_scripts[self._current_review_index]
         current_script.approved = True
-        if self.project_context is not None:
-            PipelineArtifactAdapter(self.project_context).save_script(
-                Path(current_script.file_path).name
-                or f"{current_script.test_case.filename}.spec.ts",
-                current_script.script_content,
-            )
+        if self.project_context is None:
+            raise ValueError("SarahAgent requires an active project context.")
+
+        PipelineArtifactAdapter(self.project_context).save_script(
+            Path(current_script.file_path).name or f"{current_script.test_case.filename}.spec.ts",
+            current_script.script_content,
+        )
 
         await self.send_message(
             f"Script '{current_script.test_case.title}' approved and saved.",
@@ -649,9 +570,7 @@ class SarahAgent(BaseAgent):
 
             # Transition to DONE
             await self.transition_to(AgentState.DONE)
-            destination = (
-                "project artifacts" if self.project_context is not None else "testscripts/"
-            )
+            destination = "project artifacts"
             await self.send_message(
                 f"{len(self._generated_scripts)} scripts saved to {destination}",
                 message_type="success",
@@ -745,9 +664,7 @@ class SarahAgent(BaseAgent):
             # Transition to DONE
             await self.transition_to(AgentState.DONE)
             approved_count = sum(1 for s in self._generated_scripts if s.approved)
-            destination = (
-                "project artifacts" if self.project_context is not None else "testscripts/"
-            )
+            destination = "project artifacts"
             await self.send_message(
                 f"Review complete. {approved_count} of {len(self._generated_scripts)} "
                 f"scripts approved and saved to {destination}",
@@ -830,47 +747,23 @@ class SarahAgent(BaseAgent):
 
     async def _write_approved_scripts_metadata(self) -> None:
         """Write metadata for all approved scripts."""
-        from ai_qa.pipelines.models import OutputMetadata
+        if self.project_context is None:
+            raise ValueError("SarahAgent requires an active project context.")
 
-        approved_scripts = [s for s in self._generated_scripts if s.approved]
-
-        if self.project_context is not None:
-            adapter = PipelineArtifactAdapter(self.project_context)
-            for script in approved_scripts:
-                try:
-                    adapter.save_metadata(
-                        f"{script.test_case.filename}.metadata.json",
-                        {
-                            "source_url": script.test_case.filename,
-                            "model": self.config.model_name,
-                            "confidence": script.confidence,
-                            "test_case_title": script.test_case.title,
-                        },
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to save metadata for {script.test_case.title}: {e}")
-            return
-
-        for script in approved_scripts:
+        adapter = PipelineArtifactAdapter(self.project_context)
+        for script in self._generated_scripts:
             try:
-                metadata = OutputMetadata(
-                    source_url=str(
-                        (
-                            self._workspace_dir / "testcases" / f"{script.test_case.filename}.json"
-                        ).resolve()
-                    ),
-                    model=self.config.model_name,
-                    confidence=script.confidence,
-                )
-
-                # Write metadata alongside script
-                metadata_path = Path(script.file_path).with_suffix(".metadata.json")
-                metadata_path.write_text(
-                    metadata.model_dump_json(indent=2),
-                    encoding="utf-8",
+                adapter.save_metadata(
+                    f"{script.test_case.filename}.metadata.json",
+                    {
+                        "source_url": script.test_case.filename,
+                        "model": self.config.model_name,
+                        "confidence": script.confidence,
+                        "test_case_title": script.test_case.title,
+                    },
                 )
             except Exception as e:
-                logger.error(f"Failed to write metadata for {script.test_case.title}: {e}")
+                logger.error(f"Failed to save metadata for {script.test_case.title}: {e}")
 
     def _format_review_content(self, result: StageResult) -> str:
         """Format review content for display.

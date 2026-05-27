@@ -206,7 +206,40 @@ class MCPClient:
 
         try:
             result = await self._call_tool_with_retry(name, params)
-            return ToolResult.from_data(result)
+
+            # Check for tool execution errors wrapped in the response
+            if getattr(result, "isError", False):
+                error_msg = ""
+                content_list = getattr(result, "content", [])
+                if content_list:
+                    error_msg = "\n".join(
+                        getattr(c, "text", "") for c in content_list if hasattr(c, "text")
+                    )
+                if not error_msg:
+                    error_msg = f"Tool '{name}' executed with error flag set."
+                return ToolResult.from_error(error_msg)
+
+            # Extract content data from CallToolResult
+            data = None
+            content_list = getattr(result, "content", [])
+            if content_list:
+                first_content = content_list[0]
+                if hasattr(first_content, "text"):
+                    import json
+
+                    text_data = first_content.text
+                    try:
+                        data = json.loads(text_data)
+                    except Exception:
+                        data = text_data
+                elif hasattr(first_content, "json_"):
+                    data = first_content.json_
+                else:
+                    data = result
+            else:
+                data = result
+
+            return ToolResult.from_data(data)
         except MCPToolError:
             raise
         except Exception as e:

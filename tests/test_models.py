@@ -164,7 +164,7 @@ def test_agent_message_creation() -> None:
         agent_name="Bob",
         content="Parsed 5 requirements from Confluence",
         timestamp=now,
-        message_type="info",
+        messageType="info",  # type: ignore
     )
     assert msg.sender == "agent"
     assert msg.agent_name == "Bob"
@@ -181,7 +181,7 @@ def test_agent_message_timestamp_with_datetime() -> None:
         agent_name="Mary",
         content="Generated 3 test cases",
         timestamp=now,
-        message_type="success",
+        messageType="success",
     )
     assert isinstance(msg.timestamp, datetime)
     assert msg.timestamp == now
@@ -194,7 +194,7 @@ def test_agent_message_json_serialization_iso8601() -> None:
         agent_name="Sarah",
         content="Script generation complete",
         timestamp=datetime(2026, 4, 8, 10, 30, 45, 123456, tzinfo=UTC),
-        message_type="success",
+        messageType="success",
     )
     json_str = msg.model_dump_json(by_alias=True)
     data = json.loads(json_str)
@@ -227,30 +227,30 @@ def test_agent_message_json_deserialization() -> None:
 def test_agent_message_validation_sender_required() -> None:
     """AgentMessage sender is required."""
     with pytest.raises(ValidationError):
-        AgentMessage(
+        AgentMessage(  # type: ignore
             content="test",
             timestamp=datetime.now(UTC),
-            message_type="info",
+            messageType="info",  # type: ignore
         )
 
 
 def test_agent_message_validation_content_required() -> None:
     """AgentMessage content is required."""
     with pytest.raises(ValidationError):
-        AgentMessage(
+        AgentMessage(  # type: ignore
             sender="agent",
             timestamp=datetime.now(UTC),
-            message_type="info",
+            messageType="info",  # type: ignore
         )
 
 
 def test_agent_message_validation_message_type_required() -> None:
     """AgentMessage message_type is required."""
     with pytest.raises(ValidationError):
-        AgentMessage(
+        AgentMessage(  # type: ignore
             sender="agent",
             content="test",
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(UTC),  # type: ignore
         )
 
 
@@ -258,10 +258,10 @@ def test_agent_message_validation_sender_type() -> None:
     """AgentMessage sender must be a string."""
     with pytest.raises(ValidationError):
         AgentMessage(
-            sender=123,  # Invalid: not a string
+            sender=123,  # type: ignore # Invalid: not a string
             content="test",
             timestamp=datetime.now(UTC),
-            message_type="info",
+            messageType="info",  # type: ignore
         )
 
 
@@ -269,10 +269,10 @@ def test_agent_message_validation_sender_value() -> None:
     """AgentMessage sender must be one of the known sender types."""
     with pytest.raises(ValidationError) as exc_info:
         AgentMessage(
-            sender="unknown_sender",  # Invalid: not in allowed list
+            sender="unknown_sender",  # type: ignore # Invalid: not in allowed list
             content="test",
             timestamp=datetime.now(UTC),
-            message_type="info",
+            messageType="info",  # type: ignore
         )
     assert "Input should be 'agent', 'user' or 'system'" in str(exc_info.value)
 
@@ -284,7 +284,7 @@ def test_agent_message_validation_message_type_type() -> None:
             sender="agent",
             content="test",
             timestamp=datetime.now(UTC),
-            message_type=42,  # Invalid: not a string
+            messageType=42,  # type: ignore # Invalid: not a string
         )
 
 
@@ -295,7 +295,7 @@ def test_agent_message_validation_message_type_value() -> None:
             sender="agent",
             content="test",
             timestamp=datetime.now(UTC),
-            message_type="invalid_type",  # Invalid: not in allowed list
+            messageType="invalid_type",  # type: ignore # Invalid: not in allowed list
         )
     assert "Input should be 'text', 'code', 'error', 'success', 'warning' or 'info'" in str(
         exc_info.value
@@ -309,7 +309,7 @@ def test_agent_message_validation_naive_timestamp() -> None:
             sender="agent",
             content="test",
             timestamp=datetime(2026, 4, 8, 10, 30, 45),  # Naive datetime
-            message_type="info",
+            messageType="info",  # type: ignore
         )
     assert "timezone-aware" in str(exc_info.value)
 
@@ -324,7 +324,7 @@ def test_stage_result_with_agent_message_in_data() -> None:
         agent_name="Bob",
         content="Processing complete",
         timestamp=datetime.now(UTC),
-        message_type="success",
+        messageType="success",
     )
     result = StageResult(
         success=True,
@@ -332,6 +332,7 @@ def test_stage_result_with_agent_message_in_data() -> None:
         confidence=0.9,
     )
     assert result.success is True
+    assert result.data is not None
     assert result.data["message"]["sender"] == "agent"
     assert result.data["message"]["agentName"] == "Bob"
 
@@ -368,7 +369,7 @@ def test_agent_message_with_markdown_content() -> None:
         agent_name="Jack",
         content=markdown_content,
         timestamp=datetime.now(UTC),
-        message_type="text",
+        messageType="text",
     )
     assert "# Test Report" in msg.content
     assert "Passed: 4" in msg.content
@@ -382,7 +383,7 @@ def test_agent_message_with_json_content() -> None:
         agent_name="Sarah",
         content=json_content,
         timestamp=datetime.now(UTC),
-        message_type="code",
+        messageType="code",
     )
     assert '"status": "passed"' in msg.content
     assert json.loads(msg.content)["count"] == 5
@@ -410,6 +411,8 @@ def test_stage_result_round_trip_with_complex_data() -> None:
     json_str = original.model_dump_json()
     reconstructed = StageResult.model_validate_json(json_str)
 
+    assert reconstructed.data is not None
+
     assert reconstructed.data["requirements"][0]["id"] == 1
     assert reconstructed.data["metrics"]["confidence"] == 0.95
     assert reconstructed.confidence == 0.92
@@ -423,14 +426,14 @@ def test_multiple_agent_messages_in_list() -> None:
             agent_name="Alice",
             content="Starting pipeline",
             timestamp=datetime(2026, 4, 8, 10, 0, 0, tzinfo=UTC),
-            message_type="info",
+            messageType="info",
         ),
         AgentMessage(
             sender="agent",
             agent_name="Bob",
             content="Requirements extracted",
             timestamp=datetime(2026, 4, 8, 10, 5, 0, tzinfo=UTC),
-            message_type="success",
+            messageType="success",
         ),
     ]
 

@@ -19,7 +19,6 @@ Per-User Workspace:
     instead of shared workspace directories.
 """
 
-import json
 import logging
 from uuid import UUID
 
@@ -47,7 +46,7 @@ from ai_qa.artifacts.service import ArtifactService
 from ai_qa.artifacts.storage import ArtifactStorage
 from ai_qa.config import AppSettings
 from ai_qa.db.health import check_database_health
-from ai_qa.db.models import User
+from ai_qa.db.models import Project, User
 from ai_qa.pipelines.context import PipelineContext
 from ai_qa.pipelines.run_service import PipelineRunService
 
@@ -79,13 +78,9 @@ def _clone_agent_for_workspace(step: int, user_email: str | None) -> BaseAgent |
     if template is None:
         return None
 
-    from ai_qa.config import get_user_workspace_dir
-
     agent_class = template.__class__
     if user_email:
-        user_dir = get_user_workspace_dir(user_email)
-        user_dir.mkdir(parents=True, exist_ok=True)
-        user_agent = agent_class(workspace_dir=user_dir)  # type: ignore[call-arg]
+        user_agent = agent_class()  # type: ignore[call-arg]
         user_agent.set_user_context(user_email)
         return user_agent
     return template
@@ -332,7 +327,7 @@ async def start_step(
             success=True,
             message=f"Step {request.step} started",
             current_step=request.step,
-            status="processing",
+            status=_project_status_for_agent(agent),
         )
 
     # Stub behaviour: no concrete agent registered for this step yet
@@ -568,57 +563,44 @@ async def health_check(http_request: Request) -> dict[str, object]:
     return {"status": status, "version": "0.1.0", "database": database.as_dict()}
 
 
-@router.get("/conversation", response_model=ConversationData)
-async def get_conversation(http_request: Request) -> ConversationData:
-    """Get user's saved conversation history.
+@router.get("/projects/{project_id}/conversation", response_model=ConversationData)
+async def get_conversation(
+    project_id: UUID,
+    project: Project = Depends(require_project_member_or_admin),  # noqa: B008
+) -> ConversationData:
+    """Get project's saved conversation history from database.
 
-    Loads conversation from workspace/users/{email_hash}/conversation.json
-    Returns empty conversation if file doesn't exist.
+    Loads conversation from Project.conversation_data.
+    Returns empty conversation if null.
     """
-    user = getattr(http_request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
 
-    from ai_qa.config import get_user_workspace_dir
-
-    user_dir = get_user_workspace_dir(user.email)
-    conversation_file = user_dir / "conversation.json"
-
-    if not conversation_file.exists():
+    if not project.conversation_data:
         return ConversationData()
 
     try:
-        with open(conversation_file, encoding="utf-8") as f:
-            data = json.load(f)
-        return ConversationData(**data)
-    except (json.JSONDecodeError, Exception) as e:
-        logger.error("Failed to load conversation for %s: %s", user.email, e)
+        return ConversationData.model_validate(project.conversation_data)
+    except Exception as e:
+        logger.error("Failed to load conversation for project %s: %s", project_id, e)
         return ConversationData()
 
 
-@router.post("/conversation", response_model=ActionResponse)
+@router.post("/projects/{project_id}/conversation", response_model=ActionResponse)
 async def save_conversation(
+    project_id: UUID,
     request: ConversationSaveRequest,
-    http_request: Request,
+    project: Project = Depends(require_project_member_or_admin),  # noqa: B008
+    db: Session = DbSessionDependency,
 ) -> ActionResponse:
-    """Save user's conversation history to file.
+    """Save project's conversation history to database.
 
-    Saves to workspace/users/{email_hash}/conversation.json
-    Creates directory if it doesn't exist.
+    Saves to Project.conversation_data, updates status and current_step.
     """
-    user = getattr(http_request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
-    from ai_qa.config import get_user_workspace_dir
-
-    user_dir = get_user_workspace_dir(user.email)
-    user_dir.mkdir(parents=True, exist_ok=True)
-    conversation_file = user_dir / "conversation.json"
 
     try:
-        with open(conversation_file, "w", encoding="utf-8") as f:
-            json.dump(request.conversation.model_dump(), f, indent=2, default=str)
+        project.conversation_data = request.conversation.model_dump(mode="json")
+        project.current_step = request.conversation.current_step
+        project.status = request.conversation.status
+        db.commit()
         return ActionResponse(
             success=True,
             message="Conversation saved",
@@ -626,5 +608,6 @@ async def save_conversation(
             status=request.conversation.status,
         )
     except Exception as e:
-        logger.error("Failed to save conversation for %s: %s", user.email, e)
+        db.rollback()
+        logger.error("Failed to save conversation for project %s: %s", project_id, e)
         raise HTTPException(status_code=500, detail=f"Failed to save conversation: {e}") from e

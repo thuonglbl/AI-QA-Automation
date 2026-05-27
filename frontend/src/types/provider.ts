@@ -60,9 +60,24 @@ export interface ProviderOptionsMessage {
   type: "provider_options";
   options: ProviderOption[];
   onPremDefaults?: {
-    server_url: string;
     api_key: string;
   };
+}
+
+/** Thinking trace data from Alice */
+export interface ThinkingTrace {
+  connection_status?: "success" | "failed";
+  available_models?: { id: string; name: string }[];
+  bootstrap_model?: string | null;
+  agent_needs?: Record<string, string>;
+  assignments?: { agent: string; model: string; rationale: string }[];
+  chain_of_thought?: string[];
+}
+
+/** Thinking trace message */
+export interface ThinkingTraceMessage {
+  type: "thinking_trace";
+  trace: ThinkingTrace;
 }
 
 /** Model assignment message from backend */

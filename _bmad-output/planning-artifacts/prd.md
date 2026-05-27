@@ -356,14 +356,22 @@ This is a strategic response to competitive pressure: competitors are already ap
 
 ### Configuration
 
-- FR14: Engineer can configure the pipeline via a `.env` file (API keys, MCP server URL, target page URL, SSO options)
-- FR15: Engineer can set LLM parameters including model selection and temperature
+- FR14: System-level service URLs must be configured through environment variables, including Browser Use Cloud URL, Claude API base URL, Gemini API base URL, ChatGPT/OpenAI API base URL, On-Premises API base URL, and MCP server URL. Provider API keys and MCP API keys must not be stored in `.env`; they must be collected from the user and stored securely per user account. Target page URL and SSO options are workflow inputs provided by the user and must not be stored in `.env`.
+- FR15: Alice must dynamically validate the selected AI provider and discover available models from the selected provider/server where supported. Engineer-managed LLM parameter tuning is not part of the MVP because available models are dynamic and cannot be safely predetermined.
+- FR15a: Alice must only assign downstream agent models from the provider's discovered available model list. If model discovery fails, returns no models, or cannot verify a selected model exists, Alice must block successful configuration review and show an actionable recovery message.
+- FR15b: Alice must provide a user-reviewable model-selection rationale for each downstream agent, including provider connection status, discovered models, agent model needs, selected model, and selection rationale.
 
-### LLM Management (Milestone 1)
+### Administration
 
-- FR16: Admin can switch between LLM providers (Claude, DeepSeek, Qwen) via configuration
-- FR17: Admin can run comparison tests between LLM providers to evaluate script quality
-- FR18: Admin can tune prompt templates to optimize generation quality per LLM
+- FR16: Admin can manage users and projects. Admin is not responsible for switching LLM providers for users in the MVP.
+
+### Backlog
+
+- FR17: User can run comparison tests between LLM providers to evaluate output quality. This is deferred to backlog and is not required for the current MVP.
+
+### Removed from MVP
+
+- FR18: Admin prompt-template tuning is removed from the MVP because dynamic provider/model selection makes centralized prompt tuning too complex for this phase.
 
 ### Human-in-the-Loop Review (Milestone 1)
 

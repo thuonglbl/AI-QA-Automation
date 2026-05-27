@@ -4,7 +4,6 @@ import { cn } from '@/lib/utils';
 import { ReviewContent } from './ReviewContent';
 import { ProcessingIndicator } from './ProcessingIndicator';
 import { ErrorFeedback } from './ErrorFeedback';
-import { SplitPanel } from './SplitPanel';
 
 export interface ChatMessageProps {
   message: AgentMessage;
@@ -116,16 +115,7 @@ export function ChatMessage({
                 <ReviewContent content={message.content} />
               )
             ) : isAgent || isSystem ? (
-              message.metadata?.is_paginated ? (
-                <SplitPanel 
-                  sourceUrl={message.metadata.result?.data?.source_url || ""}
-                  markdownContent={message.metadata.result?.data?.markdown || message.content}
-                  currentPage={(message.metadata.current_index as number) + 1}
-                  totalPages={message.metadata.total_pages as number}
-                />
-              ) : (
-                <ReviewContent content={message.content} />
-              )
+              <ReviewContent content={message.content} />
             ) : (
               <p className="whitespace-pre-wrap break-words break-all">{message.content}</p>
             )}

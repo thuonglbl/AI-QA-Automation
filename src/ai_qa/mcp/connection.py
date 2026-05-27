@@ -43,6 +43,7 @@ class MCPConnection:
         server_url: str,
         auth_token: str | None = None,
         timeout: float = 30.0,
+        use_streamable_http: bool = True,
     ) -> None:
         """Initialize connection configuration.
 
@@ -50,14 +51,18 @@ class MCPConnection:
             server_url: MCP server URL (http://, https://, or stdio command)
             auth_token: Optional authentication token
             timeout: Connection timeout in seconds
+            use_streamable_http: Whether to use Streamable HTTP transport
         """
         self.server_url = server_url
         self.auth_token = auth_token
         self.timeout = timeout
+        self.use_streamable_http = use_streamable_http
         self._state = ConnectionState.DISCONNECTED
         self._session: ClientSession | None = None
-        self._transport_context = None
-        self._transport = None
+        self._session_context: ClientSession | None = None
+        self._transport_context: Any = None
+        self._transport: Any = None
+        self._http_client: Any = None
 
     @property
     def state(self) -> str:
@@ -102,29 +107,82 @@ class MCPConnection:
             ) from e
         except Exception as e:
             self._state = ConnectionState.ERROR
-            if "auth" in str(e).lower() or "unauthorized" in str(e).lower():
+            error_msg = str(e)
+
+            # Handle Python 3.11+ ExceptionGroup which wraps the actual httpx errors
+            if isinstance(e, BaseExceptionGroup):
+                sub_msgs = []
+                for exc in e.exceptions:
+                    msg = str(exc)
+                    if hasattr(exc, "response") and exc.response is not None:
+                        try:
+                            await exc.response.aread()
+                            msg += f" - Response body: {exc.response.text}"
+                        except Exception:
+                            pass
+                    sub_msgs.append(msg)
+                error_msg = " | ".join(sub_msgs)
+
+            if (
+                "auth" in error_msg.lower()
+                or "unauthorized" in error_msg.lower()
+                or "401" in error_msg
+            ):
                 raise MCPAuthenticationError(
                     "Failed to authenticate with MCP server",
-                    details=str(e),
+                    details=error_msg,
                 ) from e
             raise MCPConnectionError(
                 f"Failed to connect to MCP server at {self.server_url}",
-                details=str(e),
+                details=error_msg,
             ) from e
 
     async def _connect_sse(self) -> None:
-        """Connect using SSE transport."""
+        """Connect using SSE transport.
+
+        If use_streamable_http is set, it will use the Streamable HTTP transport
+        instead of the Legacy SSE transport.
+        """
+
+        if self.use_streamable_http:
+            import httpx
+            from mcp.client.streamable_http import streamable_http_client
+            from mcp.shared._httpx_utils import create_mcp_http_client
+
+            headers = {}
+            if self.auth_token:
+                headers["Authorization"] = f"Bearer {self.auth_token}"
+
+            # Create standard MCP client with appropriate timeouts
+            timeout = httpx.Timeout(self.timeout, read=300.0)
+            self._http_client = create_mcp_http_client(headers=headers, timeout=timeout)
+            await self._http_client.__aenter__()
+
+            self._transport_context = streamable_http_client(
+                self.server_url, http_client=self._http_client
+            )
+            transport_tuple = await self._transport_context.__aenter__()
+            if transport_tuple is None:
+                raise MCPConnectionError("Failed to establish Streamable HTTP transport")
+            read_stream, write_stream, _get_session_id = transport_tuple
+
+            self._session_context = ClientSession(read_stream, write_stream)
+            self._session = await self._session_context.__aenter__()
+            await asyncio.wait_for(self._session.initialize(), timeout=self.timeout)
+            return
+
         headers = {}
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
 
-        self._transport_context = sse_client(self.server_url, headers=headers)  # type: ignore
-        self._transport = await self._transport_context.__aenter__()  # type: ignore
+        self._transport_context = sse_client(self.server_url, headers=headers)
+        self._transport = await self._transport_context.__aenter__()
         if self._transport is None:
             raise MCPConnectionError("Failed to establish SSE transport")
         read_stream, write_stream = self._transport
 
-        self._session = ClientSession(read_stream, write_stream)
+        self._session_context = ClientSession(read_stream, write_stream)
+        self._session = await self._session_context.__aenter__()
         await asyncio.wait_for(self._session.initialize(), timeout=self.timeout)
 
     async def _connect_stdio(self) -> None:
@@ -141,17 +199,24 @@ class MCPConnection:
         from mcp import StdioServerParameters
 
         server_params = StdioServerParameters(command=parts[0], args=parts[1:])
-        self._transport_context = stdio_client(server_params)  # type: ignore
-        self._transport = await self._transport_context.__aenter__()  # type: ignore
+        self._transport_context = stdio_client(server_params)
+        self._transport = await self._transport_context.__aenter__()
         if self._transport is None:
             raise MCPConnectionError("Failed to establish stdio transport")
         read_stream, write_stream = self._transport
 
-        self._session = ClientSession(read_stream, write_stream)
+        self._session_context = ClientSession(read_stream, write_stream)
+        self._session = await self._session_context.__aenter__()
         await asyncio.wait_for(self._session.initialize(), timeout=self.timeout)
 
     async def disconnect(self) -> None:
         """Close connection to MCP server."""
+        if self._session_context:
+            try:
+                await self._session_context.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._session_context = None
         self._session = None
 
         if self._transport_context:
@@ -161,6 +226,13 @@ class MCPConnection:
                 pass
             self._transport_context = None
             self._transport = None
+
+        if self._http_client:
+            try:
+                await self._http_client.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._http_client = None
 
         self._state = ConnectionState.DISCONNECTED
 
@@ -296,10 +368,12 @@ class ConnectionManager:
         key = f"{url}:{token or 'noauth'}"
 
         if key not in self._connections:
+            use_streamable_http = self._settings.mcp_use_streamable_http if self._settings else True
             self._connections[key] = MCPConnection(
                 server_url=url,
                 auth_token=token,
                 timeout=timeout,
+                use_streamable_http=use_streamable_http,
             )
 
         return self._connections[key]

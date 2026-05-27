@@ -30,6 +30,11 @@ class AIQAError(Exception):
         self.message = message
         self.details = details
 
+    def __str__(self) -> str:
+        if self.details:
+            return f"{self.message} - Details: {self.details}"
+        return self.message
+
     def __repr__(self) -> str:
         if self.details:
             return f"{type(self).__name__}(message={self.message!r}, details={self.details!r})"

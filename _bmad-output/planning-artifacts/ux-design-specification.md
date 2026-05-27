@@ -484,7 +484,12 @@ The individual patterns are all proven:
 **Initiation:**
 
 - Alice greets the user and explains the tool's purpose
-- Alice presents AI provider options with clear comparison:
+- Before presenting AI provider options, Alice resolves the authenticated user's project context:
+  - If the user has zero accessible projects, Alice says: "You do not have access to any project yet. Please contact an administrator to assign you to a project." Alice does not show AI provider selection.
+  - If the user has exactly one accessible project, Alice says: "You have only one project called <project name>. Auto proceed with this project." Alice automatically selects that project.
+  - If the user has two or more accessible projects, Alice says: "Please select one project to proceed" and renders a selectable list of project names.
+  - When the user clicks a project, the chat adds a right-aligned user message with the selected project name.
+- After project context has been resolved, Alice presents AI provider options with clear comparison:
   - **Browser Use Cloud** — "Highest quality (78% benchmark), but uses cloud servers. Requires personal API key — company doesn't have a license. Security not enterprise-grade."
   - **Claude** — "Second highest quality (62% benchmark). Needs API key — limited accounts, IT may restrict access. SSO enterprise login may be available."
   - **Gemini / ChatGPT** — "Good quality. Requires personal API key from Google or OpenAI."
@@ -1659,3 +1664,93 @@ System message (centered, no agent avatar):
 ```css
 font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 ```
+
+## Corrective Addendum: Alice Provider Configuration UX
+
+### Alice Thinking Bubble
+
+When Alice validates a provider and selects models, the chat UI must display a collapsible/expandable thinking bubble.
+
+The thinking bubble must include:
+
+1. Provider connection status
+2. Model discovery status
+3. Discovered model list
+4. Per-agent model needs
+5. Selected model per agent
+6. Selection rationale
+7. Failure reason and recovery guidance, when applicable
+
+Behavior:
+
+- While Alice is processing, the bubble may show live progress or step-by-step updates.
+- After completion, the bubble should default to collapsed.
+- The user can expand the bubble to inspect Alice's reasoning.
+- The bubble must not display API keys, tokens, or secret values.
+- The bubble must be keyboard-accessible and screen-reader friendly.
+
+### Provider Credential Input Rules
+
+Provider base URLs are not entered in Alice's credential form. They are deployment-level environment configuration.
+
+Alice's credential form must collect only the selected provider's user-specific API key.
+
+| Provider | Inputs | Placeholder |
+| --- | --- | --- |
+| Browser Use Cloud | API key only | Enter your Browser Use Cloud API key... |
+| Claude | API key only | Enter your Claude API key... |
+| Gemini / ChatGPT | API key only | Enter your Gemini or OpenAI API key... |
+| On-Premises | API key only | Enter your on-premises API key... |
+
+For On-Premises:
+
+- Do not show a Server URL input.
+- Do not show copy that says "Server URL + API key".
+- Use copy that explains the private endpoint is configured by deployment.
+
+### On-Premises Provider Card Copy
+
+Replace problematic On-Premises copy:
+
+```text
+Highest security • All data stays on your infrastructure • Server URL + API key
+```
+
+With:
+
+```text
+Highest security • Private endpoint configured by deployment • Personal API key required
+```
+
+### Connected Successfully Review Message
+
+After provider validation and model assignment succeed, Alice shows a concise review message:
+
+```text
+Connected successfully to [Provider].
+```
+
+The review content should show only:
+
+- selected provider
+- selected valid model per downstream agent
+- optional compact status metadata
+
+The review message must not include hardcoded provider recommendations such as:
+
+```text
+Bob uses Opus (highest quality) for requirement extraction.
+Other agents use Sonnet for speed and cost efficiency.
+```
+
+### Returning User Behavior
+
+If a saved provider configuration exists, Alice may use it silently to initialize the pipeline state.
+
+Alice must not automatically emit a chat message such as:
+
+```text
+Welcome back! I'm Alice. Using your saved...
+```
+
+The user may inspect or change provider configuration through an explicit UI action.

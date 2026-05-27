@@ -14,7 +14,6 @@ Usage:
 """
 
 # Standard library
-import json
 import logging
 from abc import ABC, abstractmethod
 from enum import StrEnum
@@ -22,34 +21,10 @@ from pathlib import Path
 from typing import Any
 
 # Local
-from ai_qa.exceptions import PipelineError
 from ai_qa.models import AgentMessage, StageResult
 from ai_qa.pipelines.context import PipelineContext
 
 logger = logging.getLogger(__name__)
-
-# Workspace root — relative to CWD (project root when using `uv run`)
-WORKSPACE_DIR = Path("workspace")
-
-# Per-user workspace subdirectory names
-USER_WORKSPACE_SUBFOLDERS = [
-    "configuration",
-    "requirements",
-    "testcases",
-    "testscripts",
-    "report",
-    "audit",
-]
-
-# Legacy shared workspace subdirectory names (for backward compatibility)
-WORKSPACE_SUBFOLDERS = [
-    "configuration",
-    "requirements",
-    "testcases",
-    "testscripts",
-    "report",
-    "audit",
-]
 
 
 class AgentState(StrEnum):
@@ -100,83 +75,50 @@ class BaseAgent(ABC):
         self._user_email: str | None = user_email
         self.project_context: PipelineContext | None = None
 
-        # Use per-user workspace if user_email is provided, otherwise legacy shared workspace
-        if workspace_dir is not None:
-            self._workspace_dir: Path = workspace_dir
-        elif user_email is not None:
-            from ai_qa.config import get_user_workspace_dir
-
-            self._workspace_dir = get_user_workspace_dir(user_email)
-        else:
-            self._workspace_dir = WORKSPACE_DIR
-
-        self._load_agent_config()
-        self._create_workspace()
-
     # ------------------------------------------------------------------
-    # Workspace helpers
+    # Context helpers
     # ------------------------------------------------------------------
-
-    def _create_workspace(self) -> None:
-        """Create the workspace directory tree if not already present.
-
-        Safe to call repeatedly — uses ``exist_ok=True``.
-        """
-        folders = USER_WORKSPACE_SUBFOLDERS if self._user_email else WORKSPACE_SUBFOLDERS
-        for folder in folders:
-            (self._workspace_dir / folder).mkdir(parents=True, exist_ok=True)
-        logger.info("Workspace directories ensured at %s", self._workspace_dir.resolve())
 
     def set_user_context(self, user_email: str | None) -> None:
-        """Set or update the user context for per-user workspace isolation.
-
-        This method allows switching from shared workspace to per-user workspace
-        when a user authenticates. Called by API routes when user context is available.
-
-        Args:
-            user_email: User's email address for per-user workspace, or None for shared workspace.
-        """
-        if user_email == self._user_email:
-            return  # No change needed
-
+        """Set or update the user context (legacy support)."""
         self._user_email = user_email
-
-        if user_email is not None:
-            from ai_qa.config import get_user_workspace_dir
-
-            self._workspace_dir = get_user_workspace_dir(user_email)
-            logger.info("Agent %s switched to per-user workspace for %s", self.name, user_email)
-        # else: keep existing workspace_dir (shared mode)
-
-        # Recreate workspace for new user
-        self._create_workspace()
-        self._load_agent_config()
 
     def set_project_context(self, context: PipelineContext | None) -> None:
         """Attach authorized project context for project-scoped execution."""
         self.project_context = context
         if context is not None:
             self._user_email = context.user_email
+            self._load_agent_config()
 
     # ------------------------------------------------------------------
     # Agent configuration
     # ------------------------------------------------------------------
 
     def _load_agent_config(self) -> None:
-        """Load per-agent config from ``workspace/configuration/agents.json``.
+        """Load per-agent config from database.
 
-        If the file is absent or malformed the agent silently uses empty defaults.
-        Keys in ``agents.json`` are agent names in **lowercase**.
+        Keys in `ai_agents_config` are agent names in **lowercase**.
         """
-        agents_json = self._workspace_dir / "configuration" / "agents.json"
-        if agents_json.exists():
-            try:
-                with agents_json.open() as fh:
-                    all_config: dict[str, Any] = json.load(fh)
-                self._agent_config = all_config.get(self.name.lower(), {})
-                logger.info("Loaded agent config for %s from agents.json", self.name)
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Failed to load agents.json: %s — using defaults", exc)
+        if not self.project_context or not self.project_context.artifact_service:
+            return
+
+        db = self.project_context.artifact_service.db
+
+        # Lazy import to avoid circular dependency
+        from ai_qa.db.models import User
+
+        user = db.get(User, self.project_context.user_id)
+        if user and user.ai_agents_config:
+            from typing import cast
+
+            self._agent_config = cast(
+                dict[str, Any], user.ai_agents_config.get(self.name.lower(), {})
+            )
+            logger.info("Loaded agent config for %s from database", self.name)
+        else:
+            logger.info(
+                "No ai_agents_config found in database for user, using defaults for %s", self.name
+            )
 
     # ------------------------------------------------------------------
     # Messaging
@@ -274,8 +216,8 @@ class BaseAgent(ABC):
         await self.transition_to(AgentState.PROCESSING)
         try:
             result = await self.process(input_data, feedback=None)
-        except PipelineError as exc:
-            logger.error("Agent %s raised PipelineError: %s", self.name, exc)
+        except Exception as exc:
+            logger.error("Agent %s raised error: %s", self.name, exc, exc_info=True)
             await self.transition_to(AgentState.ERROR)
             await self.send_message(
                 content=self._format_error_message([str(exc)]),
@@ -297,7 +239,7 @@ class BaseAgent(ABC):
                 message_type="error",
             )
 
-    async def handle_approve(self) -> None:
+    async def handle_approve(self, data: dict[str, Any] | None = None) -> None:
         """Called by ``POST /api/approve``.  Transitions to DONE."""
         await self.transition_to(AgentState.DONE)
         await self.send_message(
@@ -320,8 +262,8 @@ class BaseAgent(ABC):
         await self.transition_to(AgentState.PROCESSING)
         try:
             result = await self.process(input_data={}, feedback=feedback)
-        except PipelineError as exc:
-            logger.error("Agent %s raised PipelineError during reject: %s", self.name, exc)
+        except Exception as exc:
+            logger.error("Agent %s raised error during reject: %s", self.name, exc, exc_info=True)
             await self.transition_to(AgentState.ERROR)
             await self.send_message(
                 content=self._format_error_message([str(exc)]),

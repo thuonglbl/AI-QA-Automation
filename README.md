@@ -56,7 +56,8 @@ flowchart TD
     SARAH --> BROWSER[browser-use / Playwright]
     SARAH --> LLM
 
-    ARTIFACTS --> STORAGE[LocalArtifactStorage]
+    ARTIFACTS --> STORAGE[S3ArtifactStorage]
+    STORAGE --> MINIO[(MinIO Object Storage)]
     BOB --> ADAPTER[PipelineArtifactAdapter]
     MARY --> ADAPTER
     SARAH --> ADAPTER
@@ -183,11 +184,26 @@ OpenAPI documentation is available at:
 
 ### Prerequisites
 
-- Python 3.12+
-- Node.js 20+
-- PostgreSQL
-- `uv`
-- Playwright browser dependencies
+- Python 3.14.5
+- Node.js 26.1.0
+- Docker (prefer Rancher Desktop 1.22.2)
+- `uv` 0.11.13
+- PostgreSQL 18 with pgAdmin 4 9.15
+
+### Database & File Storage Setup
+
+We recommend running PostgreSQL and MinIO via Docker to avoid local environment conflicts. We have provided a `docker-compose.yml` for this purpose. Ensure Docker (or Rancher Desktop) is running, then execute:
+
+```powershell
+docker compose up -d
+docker ps
+```
+
+This will spin up:
+
+- PostgreSQL on port `5432`
+- MinIO (S3-compatible storage) on port `9000` (Console on `9001`)
+- An initialization container that automatically creates the `ai-qa-artifacts` bucket.
 
 ### Backend Setup
 
@@ -198,26 +214,13 @@ uv sync
 uv run playwright install
 
 copy .env.example .env
-uv run alembic upgrade head
 ```
 
-Configure database and session settings in `.env`. You may use `DATABASE_URL` or the individual database settings supported by `src/ai_qa/config.py`.
-
-Common settings:
-
-```env
-DATABASE_HOST=localhost
-DATABASE_PORT=5432
-DATABASE_NAME=ai_qa_automation
-DATABASE_USER=<db-user>
-DATABASE_PASSWORD=<db-password>
-SESSION_EXPIRE_HOURS=8
-SESSION_COOKIE_NAME=aiqa_session
-```
+Configure your .env file to connect to the local Docker database
 
 ### Bootstrap an Admin
 
-Interactive password prompt:
+Interactive password prompt (cd to repo root directory):
 
 ```powershell
 uv run alembic upgrade head
@@ -243,9 +246,37 @@ The frontend API client defaults protected API calls to `/api`. To target a diff
 
 ### Run Locally
 
+PostgreSQL:
+
+Start Docker or Rancher Desktop first. If this is your first local run, start the required services via Docker Compose:
+
+```powershell
+docker compose up -d
+```
+
+For later runs, if the containers are stopped, start them again:
+
+```powershell
+docker compose start
+docker compose ps
+```
+
+Optional connection check:
+
+```powershell
+uv run python -c "from sqlalchemy import create_engine, text; from ai_qa.config import AppSettings; s=AppSettings(); e=create_engine(s.sqlalchemy_database_url, connect_args={'connect_timeout': 3}); c=e.connect(); print(c.execute(text('select 1')).scalar()); c.close()"
+```
+
+Then apply migrations before starting the backend:
+
+```powershell
+uv run alembic upgrade head
+```
+
 Backend:
 
 ```powershell
+.venv\Scripts\activate
 npx kill-port 8000
 uv run uvicorn ai_qa.api:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -264,6 +295,134 @@ Default local URLs:
 - OpenAPI schema: `http://localhost:8000/openapi.json`
 - Frontend: `http://localhost:5173`
 - WebSocket: `ws://localhost:8000/ws`
+- FileStorage: `http://localhost:9001/`
+
+## Docker Build, Push, and UAT Deployment
+
+The production deployment now uses separate images for frontend and backend:
+
+| Component | Image path |
+| --- | --- |
+| Backend | ai-qa-backend:v0.2.2 |
+| Frontend | ai-qa-frontend:v0.2.2 |
+| Database | ai-qa-db:18 |
+| Storage Server | minio/minio:RELEASE.2025-09-07T16-13-09Z |
+| Storage Client | minio/mc:RELEASE.2025-08-13T08-35-41Z |
+
+### Configure deployment variables
+
+On server, copy `.env.example` to `.env` and update
+On server, copy `docker-compose-server.yml.example` to `docker-compose.yml` and update
+
+Do not commit `.env` and `docker-compose-server.yml`. They are ignored by Git and contain credentials.
+
+### Build images locally
+
+Need to input the newest version number from your local development environment in .env file e.g v0.2.0
+
+```powershell
+.\scripts\build-docker-images.ps1 -Version v0.2.0
+```
+
+Confirm image files exist
+
+```powershell
+docker images | findstr ai-qa
+```
+
+Backend smoke test
+
+```powershell
+docker run --rm --name ai-qa-backend-test -p 8000:8000 --env-file .env <register-url>/<repository-url>/ai-qa-backend:v0.2.0
+curl -UseBasicParsing http://localhost:8000/openapi.json
+docker stop ai-qa-backend-test
+```
+
+Frontend smoke test
+
+```powershell
+docker run --rm --name ai-qa-frontend-test -p 8080:80 <register-url>/<repository-url>/ai-qa-frontend:v0.2.0
+http://localhost:8080
+docker stop ai-qa-frontend-test
+```
+
+DB and MinIO images (update only when version change)
+
+```powershell
+docker pull postgres:18-alpine
+docker pull minio/minio:RELEASE.2025-09-07T16-13-09Z
+docker pull minio/mc:RELEASE.2025-08-13T08-35-41Z
+# Tag and push to your private registry if necessary
+```
+
+### Push images to Artifactory
+
+Automation login using ARTIFACTORY_USERNAME and ARTIFACTORY_PASSWORD in `.env` file:
+
+```powershell
+.\scripts\build-docker-images.ps1 -Version v0.2.0 -Login -Push
+```
+
+### Deploy on UAT web server
+
+Connect to the UAT server:
+
+```bash
+ssh <user>@<server>
+```
+
+Optional environment checks:
+
+```bash
+free -h
+df -h
+git --version
+docker --version
+docker compose version
+```
+
+For Docker deployment, the server does not need the same Python or Node.js versions as local development. Python `3.14.5`, Node.js `26.1.0`, uv `0.11.13`, and Nginx `1.27` are already inside the Docker images. The UAT server mainly needs Docker Engine and Docker Compose.
+
+Find the existing Compose file:
+
+```bash
+pwd
+ls -la
+find . -maxdepth 3 -iname 'docker-compose*.yml' -o -iname 'compose*.yml'
+cd project-folder
+```
+
+Edit the Compose file and .env file with one of these commands:
+
+```bash
+nano .env
+nano docker-compose.yml
+```
+
+Use the pushed images with the newest version e.g v0.2.0 and keep the three services on the same Docker Compose network.
+
+Pull and recreate the containers:
+
+```bash
+docker login <docker-image-prefix>
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml ps
+```
+
+Run database migrations after the backend image is deployed:
+
+```bash
+docker compose -f docker-compose.yml exec backend alembic upgrade head
+```
+
+Create admin account (one time only)
+
+```bash
+docker compose -f docker-compose.yml exec backend python -m ai_qa.auth.bootstrap_admin --email <admin-email> --name <admin-name>
+```
+
+The frontend image serves the Vite build through Nginx and proxies `/api`, `/auth`, and `/ws` to the backend service named `ai-qa-backend` inside the Docker Compose network.
 
 ## Useful Manual Checks
 

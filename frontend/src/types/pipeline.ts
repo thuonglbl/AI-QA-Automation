@@ -10,7 +10,8 @@ export type AgentStatus =
   | "processing" // Agent is working
   | "review_request" // Agent needs user approval
   | "done" // Step completed, ready to continue
-  | "completed"; // Final step completed (step 5 only)
+  | "completed" // Final step completed (step 5 only)
+  | "error"; // Pipeline encountered an error
 
 /** Message sender type */
 export type MessageSender = "agent" | "user" | "system";

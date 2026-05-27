@@ -6,8 +6,10 @@ export interface WebSocketState {
   isConnected: boolean;
   /** Connection error if any */
   error: string | null;
-  /** Latest message received */
+  /** Latest message received (legacy, prefer messageQueue) */
   lastMessage: AgentMessage | null;
+  /** Queue of all messages received since last clear */
+  messageQueue: AgentMessage[];
 }
 
 export interface WebSocketActions {
@@ -15,6 +17,8 @@ export interface WebSocketActions {
   sendMessage: (message: unknown) => void;
   /** Manually reconnect */
   reconnect: () => void;
+  /** Clear the message queue after processing */
+  clearMessageQueue: () => void;
 }
 
 /** WebSocket URL (Vite proxy handles routing) */
@@ -23,7 +27,7 @@ const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
 const WS_URL = `${wsScheme}://${window.location.host}/ws`;
 
 function buildWsUrl(projectId: string): string {
-  const url = new URL(WS_URL);
+  const url = new URL(WS_URL, window.location.origin);
   url.searchParams.set("project_id", projectId);
   return url.toString();
 }
@@ -49,11 +53,21 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastMessage, setLastMessage] = useState<AgentMessage | null>(null);
+  const [messageQueue, setMessageQueue] = useState<AgentMessage[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const activeProjectIdRef = useRef(projectId);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const intentionalCloseRef = useRef(false);
+
+  const getWebSocketCtor = useCallback(() => globalThis.WebSocket, []);
+
+  useEffect(() => {
+    activeProjectIdRef.current = projectId;
+    setLastMessage(null);
+    setMessageQueue([]);
+  }, [projectId]);
 
   const connect = useCallback(() => {
     // Clear any pending reconnect
@@ -63,7 +77,8 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
     }
 
     // Don't create new connection if already connected
-    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
+    const WebSocketCtor = getWebSocketCtor();
+    if (wsRef.current?.readyState === WebSocketCtor.OPEN || wsRef.current?.readyState === WebSocketCtor.CONNECTING) {
       return;
     }
 
@@ -74,7 +89,7 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
     }
 
     try {
-      const ws = new WebSocket(buildWsUrl(projectId));
+      const ws = new WebSocketCtor(buildWsUrl(projectId));
       wsRef.current = ws;
       ws.onopen = () => {
         setIsConnected(true);
@@ -85,10 +100,17 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          const messageProjectId = data.project_id ?? data.projectId ?? data.metadata?.project_id ?? data.metadata?.projectId;
+
+          if (messageProjectId && messageProjectId !== activeProjectIdRef.current) {
+            return;
+          }
 
           // Handle AgentMessage type
           if (data.sender && data.content && data.timestamp) {
-            setLastMessage(data as AgentMessage);
+            const agentMsg = data as AgentMessage;
+            setLastMessage(agentMsg);
+            setMessageQueue(prev => [...prev, agentMsg]);
           }
 
           // Handle other message types (ack, error)
@@ -133,11 +155,12 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
     } catch (err) {
       setError(`Failed to create WebSocket: ${err}`);
     }
-  }, [projectId]);
+  }, [getWebSocketCtor, projectId]);
 
   const sendMessage = useCallback((message: unknown) => {
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN && projectId) {
+    const WebSocketCtor = getWebSocketCtor();
+    if (ws && ws.readyState === WebSocketCtor.OPEN && projectId) {
       const payload = typeof message === "object" && message !== null
         ? { ...message, projectId, project_id: projectId }
         : message;
@@ -145,7 +168,11 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
     } else {
       console.warn("WebSocket not connected");
     }
-  }, [projectId]);
+  }, [getWebSocketCtor, projectId]);
+
+  const clearMessageQueue = useCallback(() => {
+    setMessageQueue([]);
+  }, []);
 
   const reconnect = useCallback(() => {
     reconnectAttemptsRef.current = 0;
@@ -153,6 +180,7 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
 
     if (wsRef.current) {
       wsRef.current.close();
+      wsRef.current = null;
     }
 
     intentionalCloseRef.current = false;
@@ -160,11 +188,14 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
   }, [connect]);
 
   useEffect(() => {
+    intentionalCloseRef.current = true;
+    wsRef.current?.close();
+    wsRef.current = null;
+    intentionalCloseRef.current = false;
+    setIsConnected(false);
+
     if (!projectId) {
-      intentionalCloseRef.current = true;
-      wsRef.current?.close();
-      wsRef.current = null;
-      setIsConnected(false);
+      setError(null);
       return;
     }
 
@@ -182,7 +213,9 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
     isConnected,
     error,
     lastMessage,
+    messageQueue,
     sendMessage,
     reconnect,
+    clearMessageQueue,
   };
 }

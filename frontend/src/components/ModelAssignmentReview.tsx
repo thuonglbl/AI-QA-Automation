@@ -1,28 +1,44 @@
+import { useState } from "react";
 import type { ModelAssignment } from "@/types/provider";
 
 interface ModelAssignmentReviewProps {
   provider: string;
   endpoint: string;
   assignments: ModelAssignment[] | null;
-  onApprove: () => void;
-  onReject: () => void;
+  availableModels?: string[];
+  onApprove: (updatedAssignments: Record<string, string>) => void;
   disabled?: boolean;
 }
 
-const AGENT_ICONS: Record<string, string> = {
-  Bob: "🔵",
-  Mary: "🟢",
-  Sarah: "🟣",
-  Jack: "🟠",
+const AGENT_COLORS: Record<string, string> = {
+  Alice: "bg-pink-500",
+  Bob: "bg-blue-500",
+  Mary: "bg-emerald-500",
+  Sarah: "bg-violet-500",
+  Jack: "bg-orange-500",
 };
 
 export function ModelAssignmentReview({
   provider,
   assignments,
+  availableModels = [],
   onApprove,
-  onReject,
   disabled = false,
 }: ModelAssignmentReviewProps) {
+  const [selectedModels, setSelectedModels] = useState<Record<string, string>>({});
+
+  const handleModelChange = (agent: string, model: string) => {
+    setSelectedModels(prev => ({ ...prev, [agent]: model }));
+  };
+
+  const handleOk = () => {
+    const updatedAssignments: Record<string, string> = {};
+    assignments?.forEach(a => {
+      const lowercaseAgent = a.agent.toLowerCase();
+      updatedAssignments[lowercaseAgent] = selectedModels[a.agent] || a.model;
+    });
+    onApprove(updatedAssignments);
+  };
   return (
     <div className="max-w-[600px] self-start">
       {/* Alice Message */}
@@ -30,7 +46,7 @@ export function ModelAssignmentReview({
       <div className="p-4 bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-sm text-[#0f172a] leading-relaxed">
         ✅ Connected successfully to <strong>{provider}</strong>!
         <br /><br />
-        Here's how I'll assign models to each agent:
+        I assigned appropriate models to each agent, if you find out a better model you can change by selecting dropdown list below
 
         {/* Model Table */}
         <table className="w-full border-collapse my-2 text-xs">
@@ -45,41 +61,45 @@ export function ModelAssignmentReview({
             {assignments?.map((assignment) => (
               <tr key={assignment.agent}>
                 <td className="py-1.5 px-2 border-b border-[#f1f5f9]">
-                  {AGENT_ICONS[assignment.agent]} {assignment.agent}
+                  <div className="flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full inline-block ${AGENT_COLORS[assignment.agent] || 'bg-black'}`}></span>
+                    <span>{assignment.agent}</span>
+                  </div>
                 </td>
                 <td className="py-1.5 px-2 border-b border-[#f1f5f9] text-[#64748b]">
                   {assignment.purpose}
                 </td>
                 <td className="py-1.5 px-2 border-b border-[#f1f5f9]">
-                  <strong>{assignment.model}</strong>
+                  <select
+                    aria-label={`Model for ${assignment.agent}`}
+                    value={selectedModels[assignment.agent] || assignment.model}
+                    onChange={(e) => handleModelChange(assignment.agent, e.target.value)}
+                    disabled={disabled}
+                    className="w-full p-1 border border-[#e2e8f0] rounded text-xs bg-white text-[#0f172a] focus:outline-none focus:ring-1 focus:ring-[#3b82f6]"
+                  >
+                    {availableModels.length > 0 ? (
+                      availableModels.map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))
+                    ) : (
+                      <option value={assignment.model}>{assignment.model}</option>
+                    )}
+                  </select>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-
-        <em className="text-xs text-[#64748b]">
-          Bob uses Opus (highest quality) for requirement extraction. Other agents use Sonnet for speed and cost efficiency.
-        </em>
-        <br /><br />
-        Does this look right to you?
       </div>
 
       {/* Action Buttons */}
-      <div className="flex gap-2 mt-3">
+      <div className="flex justify-center mt-3">
         <button
-          onClick={onApprove}
+          onClick={handleOk}
           disabled={disabled}
-          className="flex-1 px-4 py-2.5 rounded-full bg-[#22c55e] text-white text-sm font-medium hover:bg-[#16a34a] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          className="px-8 py-2.5 rounded-full bg-[#22c55e] text-white text-sm font-medium hover:bg-[#16a34a] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
         >
-          Approve ✓
-        </button>
-        <button
-          onClick={onReject}
-          disabled={disabled}
-          className="flex-1 px-4 py-2.5 rounded-full bg-white text-[#ef4444] border border-[#fca5a5] text-sm font-medium hover:bg-[#fef2f2] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-        >
-          Reject ✗
+          OK
         </button>
       </div>
     </div>

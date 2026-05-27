@@ -14,13 +14,7 @@ interface UseAuthReturn {
 export function useAuth(): UseAuthReturn {
   const context = useAuthContext();
 
-  // Maintain backward compatibility with setAuthStatus (no-op since state is managed by context)
-  const setAuthStatus = () => {
-    // Context manages state internally, this is for API compatibility
-  };
-
   return {
     ...context,
-    setAuthStatus,
   };
 }

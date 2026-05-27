@@ -246,7 +246,6 @@ Recent commits show the current implementation direction:
 ef655c1 feat 12-4: Project and Membership Management API
 db1a9ab feat 12-3: Role-Based Access Control for Admin and Standard Users
 172b73b refactor: 12-2: Local Authentication and Admin Bootstrap
-fe6e02a Merge branch 'main' of ai-qa-automation
 ```
 
 The latest security commit indicates secret-scan remediation is active. Do not add example credentials, real Basic auth values, tokens, or secret-looking strings in docs, tests, or fixtures.

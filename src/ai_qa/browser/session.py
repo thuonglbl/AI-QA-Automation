@@ -31,9 +31,9 @@ class SessionManager:
                        Defaults to workspace/configuration/.
         """
         if config_dir is None:
-            # Default to workspace/configuration/
+            # Default to a dot folder in project root to avoid 'workspace'
             project_root = Path(__file__).resolve().parents[3]
-            config_dir = project_root / "workspace" / "configuration"
+            config_dir = project_root / ".ai_qa" / "configuration"
 
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)

@@ -1,8 +1,10 @@
 import logging
 import re
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ai_qa.pipelines.pipeline_artifact_adapter import PipelineArtifactAdapter
 
 import httpx
 import markdownify
@@ -33,8 +35,8 @@ MULTIPLE_BLANK_LINES = re.compile(r"\n{3,}")
 class ContentParser:
     """Pipeline stage for converting Confluence content to LLM-friendly formats."""
 
-    def __init__(self, output_base_dir: Path) -> None:
-        self.output_base_dir = output_base_dir
+    def __init__(self, adapter: "PipelineArtifactAdapter") -> None:
+        self.adapter = adapter
 
     async def parse(self, page: ConfluencePage) -> StageResult:
         warnings: list[str] = []
@@ -282,13 +284,6 @@ class ContentParser:
         if not img_urls:
             return image_paths
 
-        save_dir = self.output_base_dir / slug / "images"
-        try:
-            save_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            warnings.append(f"OSError creating image directory: {e}")
-            return image_paths
-
         async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
             for i, url in enumerate(img_urls):
                 filename = url.split("/")[-1]
@@ -297,25 +292,21 @@ class ContentParser:
                 if not filename:
                     filename = f"image_{i}.png"
 
-                # Deduplicate filenames: if path already exists, add index suffix
-                stem = filename.rsplit(".", 1)[0] if "." in filename else filename
-                ext = f".{filename.rsplit('.', 1)[1]}" if "." in filename else ""
-                candidate = save_dir / filename
-                if candidate.exists():
-                    filename = f"{stem}_{i}{ext}"
-
-                path = save_dir / filename
+                # Use adapter to save image
                 try:
                     resp = await client.get(url)
                     resp.raise_for_status()
-                    path.write_bytes(resp.content)
 
-                    rel_path = f"{slug}/images/{filename}"
-                    image_paths.append(rel_path)
+                    # Dedup filename across artifacts could be done by adapter if necessary,
+                    # but here we just prepend slug to the artifact name
+                    artifact_name = f"{slug}/images/{filename}"
+                    self.adapter.save_image(artifact_name, resp.content)
+
+                    image_paths.append(artifact_name)
                 except httpx.HTTPError as e:
                     warnings.append(f"HTTPError fetching image {filename}: {e}")
-                except OSError as e:
-                    warnings.append(f"OSError saving image {filename}: {e}")
+                except Exception as e:
+                    warnings.append(f"Error saving image {filename}: {e}")
 
         return image_paths
 

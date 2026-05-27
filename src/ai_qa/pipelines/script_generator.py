@@ -17,8 +17,6 @@ from ai_qa.ai_connection.config import LLMConfig
 from ai_qa.config import AppSettings
 from ai_qa.exceptions import ScriptGenerationError, VisionError
 from ai_qa.models import StageResult, TestCase
-from ai_qa.pipelines.models import OutputMetadata
-from ai_qa.pipelines.output_writer import OutputWriter
 from ai_qa.pipelines.vision_locator import LocatorResult, VisionLocator
 from ai_qa.prompts.script_generation import (
     SCRIPT_GENERATION_PROMPT,
@@ -55,7 +53,6 @@ class ScriptGenerator:
         self.output_base_dir = output_base_dir
         self._llm_config = llm_config
         self._config = config or AppSettings()
-        self._output_writer = OutputWriter(output_base_dir)
         self._vision_locator = vision_locator
         self._vision_enabled = (
             vision_locator is not None and getattr(config, "vision_enabled", True)
@@ -207,12 +204,9 @@ class ScriptGenerator:
             # Calculate confidence based on script quality indicators and vision results
             confidence = self._calculate_confidence(script_content, test_case, locator_results)
 
-            # Write script to file
-            file_path = await self._write_script(script_content, test_case, confidence)
-
             return {
                 "success": True,
-                "file_path": file_path,
+                "script_content": script_content,
                 "test_case_title": test_case.title,
                 "confidence": confidence,
                 "warnings": [],
@@ -437,43 +431,6 @@ class ScriptGenerator:
             base_url=base_url or "",
         )
         return LLMClient(llm_config)
-
-    async def _write_script(
-        self, script_content: str, test_case: TestCase, confidence: float
-    ) -> str:
-        """Write generated script to file.
-
-        Args:
-            script_content: The Python script content to write.
-            test_case: The source test case for metadata.
-            confidence: Confidence score for the generated script.
-
-        Returns:
-            Path to the written file.
-        """
-        # Generate filename from test case title
-        filename = self._generate_filename(test_case.title)
-
-        # Add script header with metadata
-        header = self._generate_script_header(test_case)
-        full_content = header + "\n\n" + script_content
-
-        # Create metadata with safe filename access
-        source_filename = getattr(test_case, "filename", None) or "unknown"
-        metadata = OutputMetadata(
-            source_url=f"workspace/testcases/{source_filename}.json",
-            timestamp=datetime.now(UTC),
-            model=getattr(self._config, "script_generation_model", "sonnet"),
-            confidence=confidence,
-        )
-
-        # Write using OutputWriter
-        result = await self._output_writer.write(filename, full_content, metadata)
-
-        if not result.success:
-            raise ScriptGenerationError(f"Failed to write script: {result.errors}")
-
-        return result.data.get("file_path") if result.data else str(self.output_base_dir / filename)
 
     def _generate_filename(self, title: str) -> str:
         """Generate Python test filename from test case title.

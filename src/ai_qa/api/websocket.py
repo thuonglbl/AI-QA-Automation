@@ -239,13 +239,21 @@ async def _handle_action(
             input_data = message.get("inputData", {})
             await agent.handle_start(input_data)
         elif msg_type == "approve":
-            await agent.handle_approve()
+            data = message.get("data", {})
+            await agent.handle_approve(data)
         elif msg_type == "reject":
             feedback = message.get("feedback", "")
             await agent.handle_reject(feedback)
     except Exception as e:
-        logger.error("Error handling %s for step %d: %s", msg_type, step, e)
-        raise
+        logger.error("Error handling %s for step %d: %s", msg_type, step, e, exc_info=True)
+        error_msg = AgentMessage(
+            sender="system",
+            agentName=None,
+            content=f"An unexpected error occurred: {str(e)}",
+            messageType="error",
+        )
+        await broadcast_message(error_msg)
+        # Don't raise here, let the connection stay open so the user can see the error and retry.
 
 
 async def _handle_navigate(

@@ -65,6 +65,36 @@ class PipelineArtifactAdapter:
             content=json.dumps(metadata, indent=2, sort_keys=True, default=str),
         )
 
+    def save_raw_html(self, page_id: str, html_content: str) -> Artifact:
+        """Save raw HTML from Confluence page extraction (Phase 1).
+
+        Stored at: {project-id}/mcp/confluence/{page_id}/raw.html
+        """
+        return self._save_text(
+            kind="raw_html",
+            name=f"{page_id}/raw.html",
+            content=html_content,
+        )
+
+    def load_raw_html(self, page_id: str) -> str | None:
+        """Load previously saved raw HTML for a page."""
+        artifacts = self.service.list_artifacts(project_id=self.context.project_id, kind="raw_html")
+        for artifact in artifacts:
+            if artifact.name == f"{page_id}/raw.html":
+                return self.service.read_current_content(artifact).decode("utf-8")
+        return None
+
+    def save_image(self, name: str, image_bytes: bytes) -> Artifact:
+        """Persist a downloaded image artifact."""
+        return self.service.save_artifact(
+            project_id=self.context.project_id,
+            owner_user_id=self.context.user_id,
+            pipeline_run_id=self.context.pipeline_run_id,
+            kind="image",
+            name=name,
+            content=image_bytes,
+        )
+
     def _save_text(self, *, kind: str, name: str, content: str) -> Artifact:
         return self.service.save_artifact(
             project_id=self.context.project_id,

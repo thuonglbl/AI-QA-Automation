@@ -15,8 +15,6 @@ from ai_qa.ai_connection.client import LLMClient
 from ai_qa.ai_connection.config import LLMConfig
 from ai_qa.exceptions import LLMError, PipelineError
 from ai_qa.models import StageResult, TestCase, TestCaseStep
-from ai_qa.pipelines.models import OutputMetadata
-from ai_qa.pipelines.output_writer import OutputWriter
 from ai_qa.prompts.test_extraction import format_test_extraction_prompt
 
 logger = logging.getLogger(__name__)
@@ -35,18 +33,14 @@ class TestCaseExtractor:
 
     def __init__(
         self,
-        output_base_dir: Path,
         llm_config: LLMConfig | None = None,
     ) -> None:
         """Initialize the extractor.
 
         Args:
-            output_base_dir: Base directory for test case output (workspace/testcases/)
             llm_config: Optional LLM configuration. If None, loads from agents.json.
         """
-        self.output_base_dir = output_base_dir
         self._llm_config = llm_config
-        self._output_writer = OutputWriter(output_base_dir)
 
     async def extract(self, requirements_path: Path, source_url: str = "") -> StageResult:
         """Extract test cases from a requirements file.
@@ -91,23 +85,14 @@ class TestCaseExtractor:
                     confidence=0.5,
                 )
 
-            # Write test cases to files
-            written_paths = []
-            for test_case in test_cases:
-                file_path = await self._write_test_case(test_case, source_url)
-                if file_path:
-                    written_paths.append(file_path)
-
             # Calculate confidence based on results
-            confidence = self._compute_confidence(test_cases, written_paths)
+            confidence = self._compute_confidence(test_cases)
 
             return StageResult(
                 success=True,
                 data=test_cases,
                 errors=[],
-                warnings=[]
-                if len(written_paths) == len(test_cases)
-                else ["Some test cases failed to write"],
+                warnings=[],
                 confidence=confidence,
             )
 
@@ -293,47 +278,11 @@ class TestCaseExtractor:
             tags=data.get("tags", []),
         )
 
-    async def _write_test_case(self, test_case: TestCase, source_url: str) -> str | None:
-        """Write a test case to file with metadata.
-
-        Args:
-            test_case: TestCase to write
-            source_url: Original source URL for metadata
-
-        Returns:
-            Path string if successful, None otherwise
-        """
-        config = self._llm_config or LLMConfig.from_agents_json(agent_name="mary")
-
-        # Generate filename from title
-        filename = f"{test_case.filename}.json"
-
-        # Prepare content
-        content = test_case.model_dump_json(indent=2)
-
-        # Prepare metadata
-        metadata = OutputMetadata(
-            source_url=source_url,
-            model=config.model_name,
-            confidence=self._compute_single_confidence(test_case),
-        )
-
-        # Write via OutputWriter
-        result = await self._output_writer.write(filename, content, metadata)
-
-        if result.success and result.data:
-            file_path = result.data.get("file_path")
-            if isinstance(file_path, str):
-                return file_path
-
-        return None
-
-    def _compute_confidence(self, test_cases: list[TestCase], written_paths: list[str]) -> float:
+    def _compute_confidence(self, test_cases: list[TestCase]) -> float:
         """Compute overall confidence score for extraction.
 
         Args:
             test_cases: List of generated test cases
-            written_paths: List of successfully written file paths
 
         Returns:
             Confidence score between 0.0 and 1.0
@@ -341,15 +290,11 @@ class TestCaseExtractor:
         if not test_cases:
             return 0.0
 
-        # Base confidence from file write success
-        write_ratio = len(written_paths) / len(test_cases)
-
         # Average individual test case quality
         quality_scores = [self._compute_single_confidence(tc) for tc in test_cases]
         avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
 
-        # Combined score (70% quality, 30% write success)
-        return (avg_quality * 0.7) + (write_ratio * 0.3)
+        return avg_quality
 
     def _compute_single_confidence(self, test_case: TestCase) -> float:
         """Compute confidence for a single test case.

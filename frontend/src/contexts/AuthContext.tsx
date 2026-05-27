@@ -9,6 +9,7 @@ interface AuthContextType {
   error: string | null;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
+  setAuthStatus: (status: AuthStatus) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -54,6 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         error,
         logout: handleLogout,
         refresh,
+        setAuthStatus,
       }}
     >
       {children}

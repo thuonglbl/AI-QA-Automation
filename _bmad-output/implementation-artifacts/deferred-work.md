@@ -1,4 +1,14 @@
-# Deferred Work Log
+# Deferred Work
+
+## Deferred from: code review of 12-10-user-project-selection-in-alice-configuration-flow (2026-05-15)
+
+- Conversation persistence API is not scoped to selected project [frontend/src/hooks/usePipelineState.ts:34] — pre-existing persistence architecture issue; current story already preserves existing conversation API and scopes WebSocket/start/approve/reject/navigate payloads.
+
+## Deferred from: code review of 12-9-admin-dashboard-refinement (2026-05-15)
+
+- Project deletion has no confirmation: deleting a project is a destructive UX action that may need confirmation/undo, but the acceptance criteria only required wiring the implemented delete API.
+- Project deletion may conflict with future dependent data beyond memberships: current story scope covers projects and memberships; future artifact/testcase/report dependencies need a separate domain deletion policy.
+- Admin-created password flow lacks forced reset/invite semantics: current story requires initial password creation only; invite/reset-password semantics should be handled by a broader auth policy story.
 
 ## Deferred from: code review of 1-4-shared-pydantic-models-stageresult-agentmessage (2026-04-09)
 
@@ -39,9 +49,19 @@
 
 ## Deferred from: code review of 4-1-llm-abstraction-layer-langchain-litellm (2026-04-18)
 
-- Timeout substring match quá rộng có thể false positive [client.py:60-61] — not required by acceptance criteria; current heuristic sufficient for internal LiteLLM proxy usage
+- Timeout substring match is too broad and may cause false positives [client.py:60-61] — not required by acceptance criteria; current heuristic sufficient for internal LiteLLM proxy usage.
 
 ## Deferred from: code review of 5-2-script-generator-pipeline-stage (2026-04-19)
 
-- No parallelism for large test suites [script_generator.py:77-91] — Sequential for-loop processes test cases one-by-one. Pre-existing architecture pattern from other pipeline stages; consider asyncio.gather or ThreadPoolExecutor when performance becomes a bottleneck
+- No parallelism for large test suites [script_generator.py:77-91] — Sequential for-loop processes test cases one-by-one. Pre-existing architecture pattern from other pipeline stages; consider asyncio.gather or ThreadPoolExecutor when performance becomes a bottleneck.
 
+## Deferred from: code review of 12-8-bugfix-admin-routing-and-dashboard (2026-05-14)
+
+- Fake/Missing functional implementation for Edit, Delete, and Remove User actions — backend APIs are not implemented yet.
+- Tight Coupling to Hardcoded String Roles — pre-existing architectural choice.
+
+## Deferred from: code review (2026-05-21) - 2-9-dynamic-provider-model-discovery-and-alice-reasoning-transparency.md
+
+- Stripped model metadata when calling LLM: Loss of detailed model information when passed to the LLM (pre-existing constraint).
+- Scattered imports in code: Import statements are placed inside functions, which may cause minor performance degradation (pre-existing code style).
+- Hardcoded agent names (bob, mary...): Pre-existing issue, needs to be refactored later.

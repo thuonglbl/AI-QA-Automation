@@ -37,7 +37,7 @@
 # - Course correction 2026-05-04: prioritize decoupled DB/Auth/Project foundation before Epic 6+.
 
 generated: 2026-04-07T16:11:19+07:00
-last_updated: 2026-05-08T11:46:43+0700
+last_updated: 2026-05-21T13:38:08+07:00
 project: ai-qa-automation
 project_key: NOKEY
 tracking_system: file-system
@@ -51,7 +51,7 @@ development_status:
   1-4-shared-pydantic-models-stageresult-agentmessage: done
   1-5-dev-tooling-setup-ruff-mypy-pytest-pre-commit: done
   epic-1-retrospective: optional
-  epic-2: done
+  epic-2: in-progress
   2-1-fastapi-server-foundation-with-websocket-support: done
   2-2-react-frontend-scaffold-with-shadcn-ui: done
   2-3-baseagent-lifecycle-start-processing-review-done: done
@@ -60,6 +60,7 @@ development_status:
   2-6-chatinputarea-component-state-dependent-actions: done
   2-7-processingindicator-and-error-feedback: done
   2-8-alice-agent-ai-provider-selection-configuration: done
+  2-9-dynamic-provider-model-discovery-and-alice-reasoning-transparency: done
   epic-2-retrospective: optional
   epic-3: done
   3-1-mcp-client-foundation: done
@@ -81,7 +82,8 @@ development_status:
   epic-5-retrospective: optional
   epic-11: deferred
   11-1-azure-entra-sso-authentication-foundation: deferred
-  epic-12: done
+  11-2-oracle-erp-user-sync: deferred
+  epic-12: in-progress
   12-1-postgresql-persistence-foundation-with-sqlalchemy-and-alembic: done
   12-2-local-authentication-and-admin-bootstrap: done
   12-3-role-based-access-control-for-admin-and-standard-users: done
@@ -89,7 +91,10 @@ development_status:
   12-5-project-scoped-artifact-service: done
   12-6-frontend-login-project-selection-and-api-client-foundation: done
   12-7-refactor-existing-pipeline-from-workspace-paths-to-project-context: done
-  epic-12-retrospective: done
+  12-8-bugfix-admin-routing-and-dashboard: done
+  12-9-admin-dashboard-refinement: done
+  12-10-user-project-selection-in-alice-configuration-flow: done
+  epic-12-retrospective: optional
   epic-6: backlog
   6-1-script-runner-pipeline-stage: backlog
   6-2-execution-report-generation: backlog

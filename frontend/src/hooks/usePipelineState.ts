@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
+import { apiFetch, ApiError } from "@/lib/api";
 import type {
   AgentMessage,
   AgentName,
@@ -22,23 +23,18 @@ export interface PipelineStateSelectors {
 
 export interface PipelineStateActions {
   updateFromMessage: (message: AgentMessage) => void;
-  addUserMessage: (content: string, messageType?: AgentMessage["messageType"]) => void;
+  addUserMessage: (content: string, messageType?: AgentMessage["messageType"], metadata?: any) => void;
   reset: () => void;
   setError: (error: string | undefined) => void;
   clearHistory: () => void;
 }
 
 // API client for conversation persistence
-const API_BASE = "/api";
+// using apiFetch from @/lib/api
 
-async function loadConversationFromAPI(): Promise<Partial<PipelineState> | null> {
+async function loadConversationFromAPI(projectId: string): Promise<Partial<PipelineState> | null> {
   try {
-    const response = await fetch(`${API_BASE}/conversation`);
-    if (!response.ok) {
-      if (response.status === 401) return null; // Not authenticated
-      throw new Error(`Failed to load conversation: ${response.status}`);
-    }
-    const data = await response.json();
+    const data = await apiFetch<any>(`/projects/${projectId}/conversation`);
     return {
       currentStep: data.current_step,
       status: data.status as AgentStatus,
@@ -54,12 +50,16 @@ async function loadConversationFromAPI(): Promise<Partial<PipelineState> | null>
       })) || [],
     };
   } catch (error) {
+    // Silently ignore auth errors (expected when not logged in yet)
+    if (error instanceof ApiError && (error.kind === "auth" || error.kind === "forbidden")) {
+      return null;
+    }
     console.error("Failed to load conversation from API:", error);
     return null;
   }
 }
 
-async function saveConversationToAPI(state: PipelineState): Promise<boolean> {
+async function saveConversationToAPI(projectId: string, state: PipelineState): Promise<boolean> {
   try {
     const payload = {
       conversation: {
@@ -79,15 +79,11 @@ async function saveConversationToAPI(state: PipelineState): Promise<boolean> {
       },
     };
 
-    const response = await fetch(`${API_BASE}/conversation`, {
+    await apiFetch(`/projects/${projectId}/conversation`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
-    if (!response.ok) {
-      throw new Error(`Failed to save conversation: ${response.status}`);
-    }
     return true;
   } catch (error) {
     console.error("Failed to save conversation to API:", error);
@@ -114,7 +110,7 @@ const initialState: PipelineState = {
  *
  * @returns Pipeline state selectors and actions
  */
-export function usePipelineState(): PipelineStateSelectors & PipelineStateActions {
+export function usePipelineState(projectId: string | null): PipelineStateSelectors & PipelineStateActions {
   const [state, setState] = useState<PipelineState>(initialState);
   const [isLoaded, setIsLoaded] = useState(false);
 
@@ -123,14 +119,43 @@ export function usePipelineState(): PipelineStateSelectors & PipelineStateAction
     let cancelled = false;
 
     async function load() {
-      const saved = await loadConversationFromAPI();
+      if (!projectId) {
+        setIsLoaded(true);
+        return;
+      }
+      const saved = await loadConversationFromAPI(projectId);
       if (!cancelled && saved) {
+        let filteredMessages = saved.messages || [];
+        const isAliceStart = (saved.status === "error" || saved.status === "start") && saved.currentStep === 1;
+        
+        if (isAliceStart) {
+          // Find the last provider_options message by searching backwards
+          let lastOptionsIndex = -1;
+          for (let i = filteredMessages.length - 1; i >= 0; i--) {
+            const msg = filteredMessages[i];
+            if (msg && msg.metadata?.type === "provider_options") {
+              lastOptionsIndex = i;
+              break;
+            }
+          }
+          
+          if (lastOptionsIndex >= 0) {
+            // Keep only up to the provider_options message, discarding any failed connection attempts
+            filteredMessages = filteredMessages.slice(0, lastOptionsIndex + 1);
+          } else {
+            // Fallback filter
+            filteredMessages = filteredMessages.filter(
+              (m: AgentMessage) => !(m.agentName === 'Alice' && (m.messageType === 'error' || m.messageType === 'success'))
+            );
+          }
+        }
+
         setState((prev) => ({
           ...prev,
           currentStep: saved.currentStep || prev.currentStep,
-          status: saved.status || prev.status,
+          status: isAliceStart ? "start" : (saved.status || prev.status),
           currentAgent: saved.currentAgent || prev.currentAgent,
-          messages: saved.messages || prev.messages,
+          messages: filteredMessages,
         }));
       }
       setIsLoaded(true);
@@ -141,18 +166,18 @@ export function usePipelineState(): PipelineStateSelectors & PipelineStateAction
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [projectId]);
 
   // Persist state to API whenever it changes (debounced)
   useEffect(() => {
-    if (!isLoaded) return; // Don't save until initial load is complete
+    if (!isLoaded || !projectId) return; // Don't save until initial load is complete and projectId is present
 
     const timeoutId = setTimeout(() => {
-      saveConversationToAPI(state);
+      saveConversationToAPI(projectId, state);
     }, 500); // Debounce 500ms
 
     return () => clearTimeout(timeoutId);
-  }, [state, isLoaded]);
+  }, [state, isLoaded, projectId]);
 
   const updateFromMessage = useCallback((message: AgentMessage) => {
     setState((prev) => {
@@ -184,13 +209,14 @@ export function usePipelineState(): PipelineStateSelectors & PipelineStateAction
   }, []);
 
   // Add a user message to the conversation history
-  const addUserMessage = useCallback((content: string, messageType: AgentMessage["messageType"] = "text") => {
+  const addUserMessage = useCallback((content: string, messageType: AgentMessage["messageType"] = "text", metadata?: any) => {
     const userMessage: AgentMessage = {
       id: `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       sender: "user",
       content,
       timestamp: new Date().toISOString(),
       messageType,
+      metadata,
     };
     setState((prev) => ({
       ...prev,
@@ -207,14 +233,16 @@ export function usePipelineState(): PipelineStateSelectors & PipelineStateAction
       hasScrolledUp: false,
     });
     // Also clear on server (fire and forget)
-    saveConversationToAPI({
-      currentStep: 1,
-      status: "start",
-      currentAgent: "Alice",
-      messages: [],
-      hasScrolledUp: false,
-    });
-  }, []);
+    if (projectId) {
+      saveConversationToAPI(projectId, {
+        currentStep: 1,
+        status: "start",
+        currentAgent: "Alice",
+        messages: [],
+        hasScrolledUp: false,
+      });
+    }
+  }, [projectId]);
 
   const clearHistory = useCallback(() => {
     setState((prev) => ({

@@ -10,6 +10,7 @@ export interface Project {
   id: string;
   name: string;
   description: string | null;
+  confluence_base_url: string | null;
   created_by_user_id: string | null;
   current_user_role: string | null;
   membership_count: number;
@@ -22,6 +23,7 @@ export interface AdminProject {
   id: string;
   name: string;
   description: string | null;
+  confluence_base_url: string | null;
   created_by_user_id: string | null;
   created_at: string;
   updated_at: string;
@@ -40,9 +42,16 @@ export interface AdminUser {
 export interface CreateProjectRequest {
   name: string;
   description?: string | null;
+  confluence_base_url: string;
 }
 
 export interface CreateMembershipRequest {
   user_id: string;
   role: "member" | "owner";
+}
+
+export interface CreateAdminUserRequest {
+  email: string;
+  display_name: string;
+  initial_password: string;
 }

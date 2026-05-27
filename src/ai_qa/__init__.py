@@ -1,6 +1,14 @@
 """AI QA Automation pipeline — intelligent test generation from Confluence."""
 
-from ai_qa.exceptions import (
+import warnings
+
+# Suppress LangChain Pydantic V1 compatibility warning for Python 3.14
+warnings.filterwarnings(
+    "ignore",
+    message=".*Core Pydantic V1 functionality isn't compatible with Python 3.14.*",
+    category=UserWarning,
+)
+from ai_qa.exceptions import (  # noqa: E402
     AIQAError,
     BrowserError,
     ConfigError,
@@ -12,7 +20,7 @@ from ai_qa.exceptions import (
     MCPToolError,
     PipelineError,
 )
-from ai_qa.models import AgentMessage, StageResult
+from ai_qa.models import AgentMessage, StageResult  # noqa: E402
 
 __all__ = [
     # Exceptions

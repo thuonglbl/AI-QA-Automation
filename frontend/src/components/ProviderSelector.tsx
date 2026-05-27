@@ -13,7 +13,6 @@ interface SubmittedSelection {
 interface ProviderSelectorProps {
   options: ProviderOption[] | null;
   onPremDefaults?: {
-    server_url: string;
     api_key: string;
   };
   onSelect: (providerId: string, credentials: Record<string, string>) => void;
@@ -67,7 +66,6 @@ export function ProviderSelector({
     // Pre-fill On-Premises defaults if available
     if (providerId === "on-premises" && onPremDefaults) {
       setCredentials({
-        server_url: onPremDefaults.server_url,
         api_key: onPremDefaults.api_key,
       });
     }

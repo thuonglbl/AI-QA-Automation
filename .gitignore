@@ -15,15 +15,18 @@ wheels/
 .claude/
 _bmad/
 .agent/
+.agents/
 .gemini/
 .windsurf/
 .cline/
 .roo/
+.*cache/
 
 # secret files
 .env
 config.yaml
 _bmad-output/planning-artifacts/secret-brief-internal.md
+docker-compose-server.yml
 
 # Frontend build artifacts
 frontend/dist/

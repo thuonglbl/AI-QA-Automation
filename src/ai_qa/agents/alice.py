@@ -20,8 +20,8 @@ Usage:
 # Standard library
 import json
 import logging
+import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 # Third party
@@ -49,87 +49,75 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
     {
         "id": "browser-use-cloud",
         "name": "Browser Use Cloud",
+        "description": "Highest quality · Cloud servers · Personal API key required",
         "quality_rank": 1,
         "security_level": "cloud",
         "credential_fields": [
             {"name": "api_key", "label": "API Key", "type": "password", "required": True}
         ],
-        "endpoint": "https://api.browser-use.com",
+        "endpoint_setting": "browser_use_cloud_url",
         "env_key": "BROWSER_USE_API_KEY",
     },
     {
         "id": "claude",
         "name": "Claude (Anthropic)",
+        "description": "Second highest quality · Enterprise license · API key or SSO login",
         "quality_rank": 2,
         "security_level": "enterprise",
         "credential_fields": [
-            {"name": "api_key", "label": "API Key", "type": "password", "required": True}
+            {
+                "name": "api_key",
+                "label": "API Key",
+                "type": "password",
+                "required": True,
+                "placeholder": "Enter your Claude API key...",
+            }
         ],
-        "endpoint": "https://api.anthropic.com",
+        "endpoint_setting": "claude_api_base_url",
         "env_key": "ANTHROPIC_API_KEY",
     },
     {
         "id": "gemini-chatgpt",
         "name": "Gemini / ChatGPT",
+        "description": "Good quality · Cloud · Personal API key from Google or OpenAI",
         "quality_rank": 3,
         "security_level": "cloud",
         "credential_fields": [
-            {"name": "api_key", "label": "API Key", "type": "password", "required": True}
+            {
+                "name": "api_key",
+                "label": "API Key",
+                "type": "password",
+                "required": True,
+                "placeholder": "Enter your Gemini or OpenAI API key...",
+            }
         ],
-        "endpoint": "https://api.openai.com",
+        "endpoint_setting": "openai_api_base_url",
         "env_key": "OPENAI_API_KEY",
     },
     {
         "id": "on-premises",
-        "name": "On-Premises LLM",
+        "name": "On-Premises",
+        "description": "Highest security · All data stays on your infrastructure · Company API key",
         "quality_rank": 4,
         "security_level": "highest",
         "credential_fields": [
             {
-                "name": "server_url",
-                "label": "Server URL",
-                "type": "url",
+                "name": "api_key",
+                "label": "API Key",
+                "type": "password",
                 "required": True,
-                "placeholder": "https://ai-server.company.com",
+                "placeholder": "Enter your on-premises API key...",
             },
-            {"name": "api_key", "label": "API Key", "type": "password", "required": True},
         ],
-        "endpoint": "",  # User-provided
+        "endpoint_setting": "on_premises_api_base_url",
         "env_key": "ON_PREMISES_AI_SERVER_KEY",
     },
 ]
 
-# Default model mappings per provider
-DEFAULT_MODEL_MAPPINGS: dict[str, dict[str, str]] = {
-    "claude": {
-        "bob": "claude-3-opus-20240229",
-        "mary": "claude-3-sonnet-20240229",
-        "sarah": "claude-3-sonnet-20240229",
-        "jack": "claude-3-haiku-20240307",
-    },
-    "on-premises": {
-        "bob": "deepseek-coder-33b",
-        "mary": "qwen-72b-chat",
-        "sarah": "qwen-72b-chat",
-        "jack": "qwen-7b-chat",
-    },
-    "browser-use-cloud": {
-        "bob": "gpt-4",
-        "mary": "gpt-4",
-        "sarah": "gpt-4",
-        "jack": "gpt-3.5-turbo",
-    },
-    "gemini-chatgpt": {
-        "bob": "gemini-pro",
-        "mary": "gemini-pro",
-        "sarah": "gemini-pro",
-        "jack": "gemini-flash",
-    },
-}
 
 # Agent purposes for display
 AGENT_PURPOSES: dict[str, str] = {
-    "bob": "Requirements extraction from Confluence",
+    "bob": "Requirements extraction from Confluence (requires vision-capable model for image captioning)",
     "mary": "Test case generation",
     "sarah": "Test script generation with browser automation",
     "jack": "Test execution and analysis",
@@ -168,18 +156,13 @@ class AliceAgent(BaseAgent):
         _configuration: Complete AliceConfiguration after approval
     """
 
-    def __init__(self, workspace_dir: Path | None = None) -> None:
-        """Initialize Alice Agent.
-
-        Args:
-            workspace_dir: Override workspace directory path (for testing)
-        """
+    def __init__(self) -> None:
+        """Initialize Alice Agent."""
         super().__init__(
             name="Alice",
             color="#EC4899",  # Pink per UX-DR19
             step_number=1,
             step_title="AI Provider Configuration",
-            workspace_dir=workspace_dir,
         )
         self._selected_provider: str | None = None
         self._provider_credentials: dict[str, str] = {}
@@ -191,33 +174,33 @@ class AliceAgent(BaseAgent):
     # -------------------------------------------------------------------------
 
     async def check_existing_configuration(self) -> AliceConfiguration | None:
-        """Check for existing valid configuration.
+        """Check for existing valid configuration in DB.
 
         Returns:
             AliceConfiguration if valid config exists, None otherwise
         """
-        provider_path = self._workspace_dir / "configuration" / "provider.json"
-        agents_path = self._workspace_dir / "configuration" / "agents.json"
+        if not self.project_context or not self.project_context.artifact_service:
+            return None
 
-        if not provider_path.exists() or not agents_path.exists():
+        db = self.project_context.artifact_service.db
+        from ai_qa.db.models import User
+
+        user = db.get(User, self.project_context.user_id)
+
+        if not user or not user.ai_provider_config or not user.ai_agents_config:
             return None
 
         try:
-            provider_data = json.loads(provider_path.read_text())
-            agents_data = json.loads(agents_path.read_text())
-
-            # Validate configuration is not expired (30 days)
-            if not self._is_config_valid(provider_data):
+            if not self._is_config_valid(user.ai_provider_config):
                 logger.info("Existing configuration expired or invalid")
                 return None
 
-            provider_config = ProviderConfig(**provider_data)
-            agents_config = AgentsConfig(**agents_data)
+            provider_config = ProviderConfig.model_validate(user.ai_provider_config)
+            agents_config = AgentsConfig.model_validate(user.ai_agents_config)
 
             return AliceConfiguration(provider=provider_config, agents=agents_config)
-
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
-            logger.warning("Failed to load existing configuration: %s", exc)
+        except Exception as exc:
+            logger.warning("Failed to load existing configuration from DB: %s", exc)
             return None
 
     def get_provider_options(self) -> list[dict[str, Any]]:
@@ -230,6 +213,7 @@ class AliceAgent(BaseAgent):
             {
                 "id": p["id"],
                 "name": p["name"],
+                "description": p.get("description", ""),
                 "quality_rank": p["quality_rank"],
                 "security_level": p["security_level"],
                 "credential_fields": p["credential_fields"],
@@ -244,14 +228,16 @@ class AliceAgent(BaseAgent):
             Dict with server_url and api_key from user config or settings
         """
         # Use per-user config if available, otherwise empty (user must configure via Alice UI)
-        if self._user_email:
-            from ai_qa.config import UserConfig
+        if self.project_context and self.project_context.artifact_service:
+            db = self.project_context.artifact_service.db
+            from ai_qa.db.models import User
 
-            user_config = UserConfig.load(self._user_email)
-            return {
-                "server_url": user_config.on_premises_ai_server_url or "",
-                "api_key": user_config.on_premises_ai_server_key or "",
-            }
+            user = db.get(User, self.project_context.user_id)
+            if user and user.settings:
+                return {
+                    "server_url": str(user.settings.get("on_premises_ai_server_url", "")),
+                    "api_key": str(user.settings.get("on_premises_ai_server_key", "")),
+                }
         return {"server_url": "", "api_key": ""}
 
     # -------------------------------------------------------------------------
@@ -319,9 +305,30 @@ class AliceAgent(BaseAgent):
                 "Please check your credentials and try again."
             )
 
-        await self._send_connection_test_status(
-            "success", f"Successfully connected to {provider_info['name']}"
-        )
+        # Persist credentials if user is authenticated
+        if self.project_context and self.project_context.artifact_service:
+            try:
+                db = self.project_context.artifact_service.db
+                from ai_qa.db.models import User
+
+                user = db.get(User, self.project_context.user_id)
+                if user:
+                    # SQLAlchemy requires re-assignment or flag_modified for JSON mutation to be tracked
+                    settings = user.settings.copy() if user.settings else {}
+                    api_key = credentials.get("api_key", "")
+                    if provider_info["id"] == "on-premises":
+                        settings["on_premises_ai_server_key"] = api_key
+                    elif provider_info["id"] == "claude":
+                        settings["anthropic_api_key"] = api_key
+                    elif provider_info["id"] == "gemini-chatgpt":
+                        settings["openai_api_key"] = api_key
+                    elif provider_info["id"] == "browser-use-cloud":
+                        settings["browser_use_api_key"] = api_key
+
+                    user.settings = settings
+                    db.commit()
+            except Exception as e:
+                logger.warning(f"Failed to persist user credentials: {e}")
 
         # Generate configuration
         self._configuration = await self._generate_configuration(provider_info, credentials)
@@ -345,16 +352,6 @@ class AliceAgent(BaseAgent):
             # Use existing configuration
             self._configuration = existing_config
             self._selected_provider = existing_config.provider.provider
-
-            await self.send_message(
-                content=(
-                    f"Welcome back! I'm Alice. Using your saved {existing_config.provider.provider_name} "
-                    f"configuration from {existing_config.provider.tested_at[:10]}.\n\n"
-                    f"You can reconfigure by selecting 'Change Provider' at any time."
-                ),
-                message_type="info",
-                metadata={"has_existing_config": True},
-            )
 
             # Show review with existing config
             await self.transition_to(AgentState.REVIEW_REQUEST)
@@ -416,7 +413,7 @@ class AliceAgent(BaseAgent):
                 },
             )
 
-    async def handle_approve(self) -> None:
+    async def handle_approve(self, data: dict[str, Any] | None = None) -> None:
         """Save configuration and complete Alice step."""
         if self._configuration is None:
             logger.error("Cannot approve - no configuration generated")
@@ -425,6 +422,11 @@ class AliceAgent(BaseAgent):
                 message_type="error",
             )
             return
+
+        if data and "assignments" in data:
+            for agent_name, new_model in data["assignments"].items():
+                if agent_name in self._configuration.agents.agents:
+                    self._configuration.agents.agents[agent_name].model = new_model
 
         # Save configuration files
         try:
@@ -438,7 +440,7 @@ class AliceAgent(BaseAgent):
             await self.transition_to(AgentState.ERROR)
             return
 
-        await super().handle_approve()
+        await self.transition_to(AgentState.DONE)
 
     # -------------------------------------------------------------------------
     # Private Helpers
@@ -448,7 +450,11 @@ class AliceAgent(BaseAgent):
         """Get provider info by ID."""
         for p in PROVIDER_OPTIONS:
             if p["id"] == provider_id:
-                return p
+                info = p.copy()
+                setting_name = info.get("endpoint_setting")
+                if setting_name:
+                    info["endpoint"] = getattr(self._settings, setting_name, "")
+                return info
         return None
 
     async def _test_connection(
@@ -463,21 +469,22 @@ class AliceAgent(BaseAgent):
         Returns:
             True if connection successful, False otherwise
         """
-        # Simulate connection test for now
-        # In production, this would make actual API calls
-        await self._simulate_delay(1.0)
-
-        # Basic validation
+        # Real connection test
+        endpoint = provider_info.get("endpoint", "")
         if provider_info["id"] == "on-premises":
-            server_url = credentials.get("server_url", "").strip()
-            if not server_url or not server_url.startswith("http"):
+            if not endpoint or not endpoint.startswith("http"):
                 return False
 
         api_key = credentials.get("api_key", "").strip()
         if not api_key or len(api_key) < 8:
             return False
 
-        # TODO: Implement actual API connection test in Epic 4-1 (LLM abstraction layer)
+        available_models = await self._fetch_available_models(
+            provider_info["id"], endpoint, api_key
+        )
+        if not available_models:
+            return False
+
         logger.info("Connection test passed for %s", provider_info["name"])
         return True
 
@@ -515,10 +522,42 @@ class AliceAgent(BaseAgent):
         now = datetime.now(UTC).isoformat()
 
         # Determine endpoint
-        if provider_id == "on-premises":
-            endpoint = credentials.get("server_url", "").rstrip("/")
-        else:
-            endpoint = provider_info["endpoint"]
+        endpoint = provider_info.get("endpoint", "")
+        api_key = credentials.get("api_key", "")
+
+        # 1. Fetch available models
+        available_models = await self._fetch_available_models(provider_id, endpoint, api_key)
+
+        if not available_models:
+            raise PipelineError(
+                "No models discovered from provider. Please check the provider configuration."
+            )
+
+        # 2. Bootstrap Alice model
+        alice_model = self._bootstrap_alice_model(available_models)
+        if not alice_model:
+            raise PipelineError(
+                "Could not bootstrap a reasoning model for Alice from the available models."
+            )
+
+        # 3. Assign models via LLM
+        model_mappings, reasoning = await self._assign_models_via_llm(
+            provider_id, endpoint, api_key, alice_model, available_models
+        )
+
+        # 4. Emit thinking trace
+        trace_payload = {
+            "connection_status": "success",
+            "available_models": available_models,
+            "bootstrap_model": alice_model,
+            "agent_needs": AGENT_PURPOSES,
+            "assignments": reasoning,
+        }
+        await self.send_message(
+            content="Finished model assignment reasoning.",
+            message_type="info",
+            metadata={"type": "thinking_trace", "trace": trace_payload},
+        )
 
         # Create provider config
         provider_config = ProviderConfig(
@@ -530,29 +569,17 @@ class AliceAgent(BaseAgent):
             test_result="success",
         )
 
-        # Create agents config with model assignments
-        # For on-premise, discover and smart-match models
-        if provider_id == "on-premises":
-            server_url = credentials.get("server_url", "")
-            api_key = credentials.get("api_key", "")
-            available_models = await self._fetch_available_models(server_url, api_key)
-            if available_models:
-                model_mappings = self._match_models_to_agents(available_models)
-                logger.info("Using discovered models: %s", model_mappings)
-            else:
-                model_mappings = DEFAULT_MODEL_MAPPINGS.get(
-                    "on-premises", DEFAULT_MODEL_MAPPINGS["claude"]
-                )
-                logger.warning("Could not discover models, using defaults: %s", model_mappings)
-        else:
-            model_mappings = DEFAULT_MODEL_MAPPINGS.get(
-                provider_id, DEFAULT_MODEL_MAPPINGS["claude"]
-            )
-
         agents: dict[str, AgentModelConfig] = {}
+        # Also assign Alice her model
+        agents["alice"] = AgentModelConfig(
+            model=alice_model,
+            temperature=0.0,
+            prompt_template="default_v1",
+            tools=[],
+        )
         for agent_name in ["bob", "mary", "sarah", "jack"]:
             agents[agent_name] = AgentModelConfig(
-                model=model_mappings.get(agent_name, "claude-3-sonnet-20240229"),
+                model=model_mappings.get(agent_name, alice_model),
                 temperature=0.0,
                 prompt_template=AGENT_PROMPT_TEMPLATES.get(agent_name, "default_v1"),
                 tools=AGENT_TOOLS.get(agent_name, []),
@@ -566,40 +593,26 @@ class AliceAgent(BaseAgent):
         return AliceConfiguration(provider=provider_config, agents=agents_config)
 
     def _save_configuration(self, config: AliceConfiguration) -> None:
-        """Save configuration to workspace files.
+        """Save configuration to User database."""
+        if not self.project_context or not self.project_context.artifact_service:
+            logger.error("No project context available to save configuration.")
+            raise OSError("No project context available to save configuration.")
 
-        Args:
-            config: Complete AliceConfiguration to save
+        db = self.project_context.artifact_service.db
+        from ai_qa.db.models import User
 
-        Raises:
-            OSError: If file writing fails
-        """
-        config_dir = self._workspace_dir / "configuration"
-        config_dir.mkdir(parents=True, exist_ok=True)
+        user = db.get(User, self.project_context.user_id)
 
-        provider_path = config_dir / "provider.json"
-        agents_path = config_dir / "agents.json"
-
-        provider_path.write_text(
-            json.dumps(config.provider.model_dump(), indent=2),
-            encoding="utf-8",
-        )
-        agents_path.write_text(
-            json.dumps(config.agents.model_dump(), indent=2),
-            encoding="utf-8",
-        )
-
-        logger.info("Configuration saved to %s", config_dir)
+        if user:
+            user.ai_provider_config = config.provider.model_dump()
+            user.ai_agents_config = config.agents.model_dump()
+            db.commit()
+            logger.info("Configuration saved to database for user %s", user.email)
+        else:
+            raise OSError("User not found to save configuration.")
 
     def _is_config_valid(self, provider_data: dict[str, Any]) -> bool:
-        """Check if existing configuration is still valid (not expired).
-
-        Args:
-            provider_data: Provider configuration data
-
-        Returns:
-            True if config is valid (tested within 30 days)
-        """
+        """Check if existing configuration is still valid (not expired)."""
         try:
             tested_at = datetime.fromisoformat(provider_data.get("tested_at", "1970-01-01"))
             age_days = (datetime.now(UTC) - tested_at).days
@@ -620,7 +633,10 @@ class AliceAgent(BaseAgent):
         """Get model assignments from configuration."""
         assignments = []
         for agent_name, agent_config in config.agents.agents.items():
-            purpose = AGENT_PURPOSES.get(agent_name, "Agent task")
+            if agent_name == "alice":
+                purpose = "Provider Selection & Configuration"
+            else:
+                purpose = AGENT_PURPOSES.get(agent_name, "Agent task")
             agent_display = agent_name.capitalize()
             assignments.append(
                 {
@@ -630,6 +646,173 @@ class AliceAgent(BaseAgent):
                 }
             )
         return assignments
+
+    def _bootstrap_alice_model(self, available_models: list[dict[str, Any]]) -> str:
+        """Bootstrap Alice's reasoning model using keyword heuristics."""
+        if not available_models:
+            return ""
+
+        model_ids = [m["id"] for m in available_models]
+
+        # Priority keywords for high-quality reasoning
+        priorities = [
+            "gpt-5",
+            "opus",
+            "gpt-4",
+            "pro-3",
+            "pro",
+            "sonnet",
+            "deepseek-v4",
+            "deepseek-v3",
+            "deepseek-coder",
+            "kimi",
+            "glm",
+            "qwen-72",
+            "llama-3-70",
+        ]
+
+        for p in priorities:
+            for m_id in model_ids:
+                if p in str(m_id).lower():
+                    return str(m_id)
+
+        # Fallback to first available
+        return str(model_ids[0])
+
+    async def _assign_models_via_llm(
+        self,
+        provider_id: str,
+        endpoint: str,
+        api_key: str,
+        alice_model: str,
+        available_models: list[dict[str, Any]],
+    ) -> tuple[dict[str, str], list[dict[str, str]]]:
+        """Assign models for Bob, Mary, Sarah, Jack via an LLM call."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        from ai_qa.ai_connection.client import LLMClient
+        from ai_qa.ai_connection.config import LLMConfig
+
+        config = LLMConfig(
+            provider=provider_id,
+            model_name=alice_model,
+            temperature=0.0,
+            base_url=endpoint,
+            api_key=api_key,
+            max_retries=1,
+        )
+        try:
+            client = LLMClient(config)
+
+            system_prompt = """You are Alice, an AI configuration assistant. Your job is to assign the best available models to four specialized agents based on their needs:
+- Bob: Needs strong reasoning, long-context extraction, tool-compatible output, AND vision capability (multimodal) for image captioning from Confluence pages. MUST be a vision-capable model.
+- Mary: Needs structured-output and instruction-following.
+- Sarah: Needs coding and tool capabilities.
+- Jack: Needs fast, lower-cost summarization/execution-analysis.
+
+Available Models:
+{models_list}
+
+IMPORTANT: Bob's model MUST support vision/multimodal input. Prefer models with known vision support (e.g., gpt-4o, gemini-1.5-pro, claude-3-5-sonnet, etc.).
+
+Respond with a JSON object exactly in this format:
+{{
+  "assignments": {{
+    "bob": "model_id",
+    "mary": "model_id",
+    "sarah": "model_id",
+    "jack": "model_id"
+  }},
+  "reasoning": [
+    {{"agent": "bob", "rationale": "reason..."}},
+    {{"agent": "mary", "rationale": "reason..."}},
+    {{"agent": "sarah", "rationale": "reason..."}},
+    {{"agent": "jack", "rationale": "reason..."}}
+  ]
+}}
+"""
+            sys_msg = SystemMessage(
+                content=system_prompt.format(
+                    models_list=", ".join([m["id"] for m in available_models])
+                )
+            )
+            human_msg = HumanMessage(content="Please assign models and provide your reasoning.")
+
+            response = client.invoke([sys_msg, human_msg])
+            response_text = str(response.content)
+
+            # Extract JSON
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
+            if not json_match:
+                # Fallback to greedy search if no markdown block
+                json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+
+            if json_match:
+                data = json.loads(
+                    json_match.group(1) if json_match.groups() else json_match.group(0)
+                )
+                if isinstance(data, dict):
+                    assignments = data.get("assignments") or {}
+                    reasoning = data.get("reasoning") or []
+
+                    # Validate models against available_models
+                    valid_ids = {str(m["id"]) for m in available_models}
+                    final_assignments = {}
+                    final_reasoning = []
+
+                    for agent in ["bob", "mary", "sarah", "jack"]:
+                        assigned_model = str(assignments.get(agent, ""))
+                        if assigned_model in valid_ids:
+                            final_assignments[agent] = assigned_model
+                            agent_reason = next(
+                                (
+                                    r
+                                    for r in reasoning
+                                    if isinstance(r, dict) and r.get("agent") == agent
+                                ),
+                                None,
+                            )
+                            rationale = (
+                                str(agent_reason.get("rationale"))
+                                if agent_reason
+                                else "LLM chose this model."
+                            )
+                            final_reasoning.append(
+                                {"agent": agent, "model": assigned_model, "rationale": rationale}
+                            )
+                        else:
+                            final_assignments[agent] = alice_model
+                            final_reasoning.append(
+                                {
+                                    "agent": agent,
+                                    "model": alice_model,
+                                    "rationale": f"LLM assigned invalid model '{assigned_model}'. Fallback to {alice_model}.",
+                                }
+                            )
+
+                    return final_assignments, final_reasoning
+            else:
+                logger.warning("LLM response did not contain JSON block.")
+                error_msg = f"No JSON found. Response: {response_text[:200]}"
+        except (json.JSONDecodeError, KeyError, Exception) as e:
+            logger.warning(f"Failed LLM assignment: {e}")
+            error_msg = f"Exception: {str(e)}"
+            if "response_text" in locals():
+                error_msg += f" | Response: {response_text[:200]}"
+
+        # Fallback mapping
+        mappings = {}
+        reasoning = []
+        for agent in ["bob", "mary", "sarah", "jack"]:
+            mappings[agent] = alice_model
+            reasoning.append(
+                {
+                    "agent": agent,
+                    "model": alice_model,
+                    "rationale": f"Fallback heuristic applied: {error_msg}",
+                }
+            )
+        return mappings, reasoning
 
     def _mask_endpoint(self, endpoint: str) -> str:
         """Mask sensitive parts of endpoint for display."""
@@ -652,8 +835,13 @@ class AliceAgent(BaseAgent):
 
         assignments: list[dict[str, str]] = result.data.get("model_assignments", [])
         endpoint: str = result.data.get("provider_endpoint", "N/A")
+        provider_id = self._selected_provider
+        provider_info = self._get_provider_info(provider_id) if provider_id else None
+        provider_name = provider_info["name"] if provider_info else "Provider"
 
         lines = [
+            f"Connected successfully to {provider_name}.",
+            "",
             "## AI Provider Configuration Review",
             "",
             f"**Provider Endpoint:** {endpoint}",
@@ -679,142 +867,85 @@ class AliceAgent(BaseAgent):
 
         return "\n".join(lines)
 
-    async def _fetch_available_models(self, server_url: str, api_key: str) -> list[dict[str, Any]]:
-        """Fetch available models from on-premise LLM server.
+    async def _fetch_available_models(
+        self, provider_id: str, server_url: str, api_key: str
+    ) -> list[dict[str, Any]]:
+        """Fetch available models from on-premise LLM server or return known models for cloud.
 
-        Tries common endpoints: /v1/models, /models, /api/models
+        Tries common endpoints: /v1/models, /models, /api/models, /api/tags (Ollama)
         """
+        if provider_id == "claude":
+            return [
+                {"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet"},
+                {"id": "claude-3-opus-latest", "name": "Claude 3 Opus"},
+                {"id": "claude-3-5-haiku-latest", "name": "Claude 3.5 Haiku"},
+            ]
+        elif provider_id == "gemini-chatgpt":
+            return [
+                {"id": "gpt-4o", "name": "GPT-4o"},
+                {"id": "gpt-4o-mini", "name": "GPT-4o Mini"},
+                {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro"},
+                {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash"},
+            ]
+        elif provider_id == "browser-use-cloud":
+            return [
+                {"id": "gpt-4o", "name": "GPT-4o"},
+                {"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet"},
+            ]
+
         endpoints_to_try = [
             f"{server_url.rstrip('/')}/v1/models",
             f"{server_url.rstrip('/')}/models",
+            f"{server_url.rstrip('/')}/api/tags",  # Ollama
             f"{server_url.rstrip('/')}/api/models",
         ]
 
         headers = {"Authorization": f"Bearer {api_key}"}
+        verify_ssl = provider_id != "on-premises"
 
         for endpoint in endpoints_to_try:
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                # Use verify_ssl to support self-signed certificates common in on-premise setups
+                async with httpx.AsyncClient(
+                    timeout=10.0, verify=verify_ssl, follow_redirects=True
+                ) as client:
                     response = await client.get(endpoint, headers=headers)
                     if response.status_code == 200:
                         data = response.json()
                         # Handle different response formats
                         if isinstance(data, list):
                             return [
-                                {"id": m.get("id", m), "name": m.get("id", str(m))} for m in data
+                                {
+                                    "id": m.get("id", m.get("name", str(m))),
+                                    "name": m.get("name", m.get("id", str(m))),
+                                }
+                                for m in data
+                                if isinstance(m, dict)
                             ]
                         elif isinstance(data, dict) and "data" in data:
                             return [
-                                {"id": m.get("id", m), "name": m.get("id", str(m))}
+                                {
+                                    "id": m.get("id", m.get("name", str(m))),
+                                    "name": m.get("name", m.get("id", str(m))),
+                                }
                                 for m in data["data"]
+                                if isinstance(m, dict)
                             ]
                         elif isinstance(data, dict) and "models" in data:
+                            # Ollama /api/tags uses 'models' with 'name'
                             return [
-                                {"id": m.get("id", m), "name": m.get("id", str(m))}
+                                {
+                                    "id": m.get("id", m.get("name", str(m))),
+                                    "name": m.get("name", m.get("id", str(m))),
+                                }
                                 for m in data["models"]
+                                if isinstance(m, dict)
                             ]
             except Exception as exc:
                 logger.debug("Failed to fetch models from %s: %s", endpoint, exc)
                 continue
 
         return []
-
-    def _match_models_to_agents(self, available_models: list[dict[str, Any]]) -> dict[str, str]:
-        """Smart match available models to agents based on capabilities.
-
-        Priority:
-        1. Bob (requirements): Best code/understanding model (coder, large, reasoning)
-        2. Mary (test cases): Balanced model (general purpose, medium)
-        3. Sarah (scripts): Coding + browser automation capable
-        4. Jack (execution): Fast/light model (small, fast)
-        """
-        if not available_models:
-            # Fallback to hardcoded defaults
-            return DEFAULT_MODEL_MAPPINGS.get("on-premises", {})
-
-        def score_model_for_agent(model_id: str, agent: str) -> int:
-            """Score how well a model fits an agent's needs."""
-            score = 0
-            model_lower = model_id.lower()
-
-            # Size indicators
-            has_large = any(
-                x in model_lower for x in ["70b", "72b", "33b", "65b", "40b", "large", "xl"]
-            )
-            has_medium = any(x in model_lower for x in ["13b", "14b", "20b", "medium"])
-            has_small = any(x in model_lower for x in ["7b", "8b", "9b", "small", "mini", "tiny"])
-
-            # Capability indicators
-            is_coder = any(x in model_lower for x in ["code", "coder", "deepseek", "qwen-coder"])
-            is_reasoning = any(x in model_lower for x in ["reasoning", "o1", "r1", "qwq"])
-            is_chat = any(x in model_lower for x in ["chat", "instruct"])
-
-            if agent == "bob":
-                # Bob needs best understanding for requirements
-                if is_coder:
-                    score += 10
-                if is_reasoning:
-                    score += 8
-                if has_large:
-                    score += 5
-                if has_medium:
-                    score += 3
-
-            elif agent == "mary":
-                # Mary needs balanced general purpose
-                if is_chat:
-                    score += 5
-                if has_large:
-                    score += 4
-                if has_medium:
-                    score += 6  # Prefer medium for cost/speed balance
-
-            elif agent == "sarah":
-                # Sarah needs coding for test scripts
-                if is_coder:
-                    score += 10
-                if has_large:
-                    score += 4
-                if has_medium:
-                    score += 3
-
-            elif agent == "jack":
-                # Jack needs fast execution
-                if has_small:
-                    score += 10
-                elif has_medium:
-                    score += 5
-                if is_chat and not is_coder:
-                    score += 3
-
-            # Penalize if clearly wrong type
-            if agent in ["bob", "sarah"] and not is_coder and not is_chat:
-                score -= 3
-
-            return score
-
-        assignments = {}
-        for agent in ["bob", "mary", "sarah", "jack"]:
-            best_model = None
-            best_score = -1
-
-            for model in available_models:
-                model_id = model.get("id", "")
-                score = score_model_for_agent(model_id, agent)
-                if score > best_score:
-                    best_score = score
-                    best_model = model_id
-
-            if best_model:
-                assignments[agent] = best_model
-            else:
-                # Fallback to default
-                assignments[agent] = DEFAULT_MODEL_MAPPINGS.get("on-premises", {}).get(
-                    agent, "unknown"
-                )
-
-        logger.info("Smart model matching: %s", assignments)
-        return assignments
 
     def _format_model_assignments(self, config: AliceConfiguration) -> str:
         """Format model assignments from existing config."""

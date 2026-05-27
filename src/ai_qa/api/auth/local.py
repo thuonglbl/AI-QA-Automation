@@ -121,7 +121,19 @@ def get_auth_router(settings: AppSettings) -> APIRouter:
     @router.post("/logout")
     async def logout(request: Request, response: Response) -> dict[str, Any]:
         """Logout and clear session."""
-        response.delete_cookie(key=settings.session_cookie_name, path="/")
+        cookie_settings = session_manager.get_cookie_settings()
+        response.delete_cookie(
+            key=settings.session_cookie_name,
+            path=cookie_settings.get("path", "/"),
+            secure=cookie_settings.get("secure", False),
+            samesite=cookie_settings.get("samesite", "lax"),
+        )
+        response.delete_cookie(
+            key="aiqa_oauth_session",
+            path="/",
+            secure=settings.session_cookie_secure,
+            samesite="lax",
+        )
         if hasattr(request, "session"):
             request.session.clear()
         return {"success": True, "message": "Logged out successfully"}

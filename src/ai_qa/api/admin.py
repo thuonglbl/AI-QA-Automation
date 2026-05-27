@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.rbac import require_admin
+from ai_qa.auth.password import hash_password
+from ai_qa.auth.service import DuplicateUserError, get_user_by_email, normalize_email
 from ai_qa.db.models import Project, ProjectMembership, User
 
 DbSessionDependency = Depends(get_db_session_dependency)
@@ -40,6 +42,7 @@ class ProjectCreateRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=4000)
+    confluence_base_url: str = Field(min_length=1, max_length=512)
 
     @field_validator("name")
     @classmethod
@@ -60,6 +63,36 @@ class ProjectCreateRequest(BaseModel):
         return normalized or None
 
 
+class ProjectUpdateRequest(ProjectCreateRequest):
+    """Admin project update request."""
+
+
+class AdminUserCreateRequest(BaseModel):
+    """Admin-managed standard user creation request."""
+
+    email: str = Field(min_length=1, max_length=320)
+    display_name: str = Field(min_length=1, max_length=255)
+    initial_password: str = Field(min_length=8, max_length=1024)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email_address(cls, value: str) -> str:
+        """Normalize email before persistence and duplicate checks."""
+        normalized = normalize_email(value)
+        if not normalized:
+            raise ValueError("Email is required")
+        return normalized
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_must_not_be_blank(cls, value: str) -> str:
+        """Normalize and reject blank display names."""
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Display name is required")
+        return normalized
+
+
 class AdminProjectResponse(BaseModel):
     """Secret-free project representation for admin APIs."""
 
@@ -68,6 +101,7 @@ class AdminProjectResponse(BaseModel):
     id: UUID
     name: str
     description: str | None
+    confluence_base_url: str | None
     created_by_user_id: UUID | None
     created_at: datetime
     updated_at: datetime
@@ -102,6 +136,36 @@ async def list_users(
     return list(db.execute(select(User).order_by(User.email)).scalars())
 
 
+@router.post("/users", response_model=AdminUserResponse)
+async def create_user(
+    request: AdminUserCreateRequest,
+    _admin: User = AdminDependency,
+    db: Session = DbSessionDependency,
+) -> User:
+    """Create a standard active user from the admin dashboard."""
+    if get_user_by_email(db, request.email) is not None:
+        raise HTTPException(status_code=409, detail="User already exists")
+
+    user = User(
+        email=request.email,
+        display_name=request.display_name,
+        password_hash=hash_password(request.initial_password),
+        role="standard",
+        is_active=True,
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="User already exists") from exc
+    except DuplicateUserError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="User already exists") from exc
+    db.refresh(user)
+    return user
+
+
 @router.post("/projects", response_model=AdminProjectResponse)
 async def create_project(
     request: ProjectCreateRequest,
@@ -112,12 +176,62 @@ async def create_project(
     project = Project(
         name=request.name,
         description=request.description,
+        confluence_base_url=request.confluence_base_url,
         created_by_user_id=admin.id,
     )
     db.add(project)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Project already exists") from exc
     db.refresh(project)
     return project
+
+
+@router.put("/projects/{project_id}", response_model=AdminProjectResponse)
+async def update_project(
+    project_id: UUID,
+    request: ProjectUpdateRequest,
+    _admin: User = AdminDependency,
+    db: Session = DbSessionDependency,
+) -> Project:
+    """Update project details from the admin dashboard."""
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    project.name = request.name
+    project.description = request.description
+    project.confluence_base_url = request.confluence_base_url
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Project already exists") from exc
+    db.refresh(project)
+    return project
+
+
+@router.delete("/projects/{project_id}", status_code=204)
+async def delete_project(
+    project_id: UUID,
+    _admin: User = AdminDependency,
+    db: Session = DbSessionDependency,
+) -> None:
+    """Delete a project and its memberships from the admin dashboard."""
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    try:
+        db.query(ProjectMembership).filter(ProjectMembership.project_id == project_id).delete(
+            synchronize_session=False
+        )
+        db.query(Project).filter(Project.id == project_id).delete(synchronize_session=False)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Project cannot be deleted") from exc
+    return None
 
 
 @router.post(
@@ -166,3 +280,29 @@ async def assign_project_membership(
 
     db.refresh(membership)
     return membership
+
+
+@router.delete("/projects/{project_id}/memberships/{user_id}", status_code=204)
+async def remove_project_membership(
+    project_id: UUID,
+    user_id: UUID,
+    _admin: User = AdminDependency,
+    db: Session = DbSessionDependency,
+) -> None:
+    """Remove a user's project membership from the admin dashboard."""
+    deleted = (
+        db.query(ProjectMembership)
+        .filter(
+            ProjectMembership.project_id == project_id,
+            ProjectMembership.user_id == user_id,
+        )
+        .delete(synchronize_session=False)
+    )
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Membership cannot be removed") from exc
+    return None
