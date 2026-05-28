@@ -1,3 +1,4 @@
+# mypy: disable-error-code="misc"
 import logging
 from typing import Any
 
@@ -41,7 +42,7 @@ class LLMClient:
             http_async_client=httpx.AsyncClient(verify=verify_ssl, follow_redirects=True),
         )
 
-    @retry(  # type: ignore[misc]
+    @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type(LLMError),

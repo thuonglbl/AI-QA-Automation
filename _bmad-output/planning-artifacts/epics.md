@@ -828,6 +828,33 @@ So that I can start the pipeline directly after login without a separate Project
 - **Given** Alice has not resolved a selected project yet, **then** Alice does not show "Which AI provider would you like to use?..." or provider options.
 - **Given** an admin logs in, **then** the existing admin dashboard routing remains unchanged.
 
+### Story 12.11: Fix API Tests Broken by DB Migration
+
+As a R&D engineer,
+I want the API tests to pass again,
+So that CI/CD and local development checks are reliable.
+
+### Story 12.12: Fix frontend 401 Unauthorized API calls
+
+As a developer,
+I want the frontend API client to correctly include the authentication token for all project-scoped API calls,
+So that data loads successfully without returning 401 errors.
+
+**Acceptance Criteria:**
+- **Given** a user is logged in, **when** the frontend makes a project-scoped request to `/api/projects/{id}/...`, **then** the request includes the proper Authorization header.
+- **Given** an API call returns 401, **then** the error is handled gracefully or prompts re-authentication.
+
+### Story 12.13: Fix MCP extraction failure and implement proactive session cleanup
+
+As a developer,
+I want the MCP extraction to use correct parameters, reuse connections, and proactively cleanup sessions,
+So that Confluence extraction is reliable and complies with IT policy on session lifecycle management.
+
+**Acceptance Criteria:**
+- **Given** Bob attempts to extract children via MCP, **when** `confluence_get_page` or `confluence_search` is called, **then** the correct parameter format (`page_id` vs `pageId` based on MCP server spec) is used.
+- **Given** Bob confirms a parent page and moves to descendant extraction, **then** the same MCP connection session is reused rather than opening a new one.
+- **Given** an MCP session is no longer needed, **then** the application actively signals termination/cleanup to the MCP server (via explicit API or graceful transport close) so sessions do not accumulate offline.
+
 ## Epic 6: Test Execution & Reporting (Agent Jack)
 
 Jack runs test scripts across Chrome/Firefox/Edge, generates execution reports with pass/fail per test per browser. Pipeline completes end-to-end. User sees final results.

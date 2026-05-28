@@ -13,7 +13,6 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from ai_qa.agents.base import AgentState, BaseAgent
-from ai_qa.ai_connection.config import LLMConfig
 from ai_qa.browser.agent import BrowserAgent
 from ai_qa.config import AppSettings
 from ai_qa.models import StageResult, TestCase
@@ -77,21 +76,8 @@ class SarahAgent(BaseAgent):
         self._target_url: str | None = None
         self._start_input_data: dict[str, Any] = {}  # Store input_data for context preservation
 
-        # Load Chrome path from persistent storage
-        self._load_chrome_path()
-
         # Initialize pipeline components
-        try:
-            self.config = LLMConfig.from_agents_json(agent_name="sarah")
-        except FileNotFoundError:
-            # Use default config if agents.json doesn't exist (test environment)
-            self.config = LLMConfig(
-                provider="litellm",
-                model_name="gpt-4",
-                temperature=0.0,
-                api_key="",
-                base_url="",
-            )
+        self.config = self.get_llm_config()
 
         self.app_settings = AppSettings()
 
@@ -473,6 +459,9 @@ class SarahAgent(BaseAgent):
         Args:
             input_data: User input data
         """
+        # Load chrome path now that project_context is available
+        self._load_chrome_path()
+
         # Store input_data for context preservation in reject/regeneration
         self._start_input_data = input_data
 

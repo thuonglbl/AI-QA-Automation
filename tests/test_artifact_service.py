@@ -2,10 +2,11 @@
 
 from collections.abc import Generator
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import Table, create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -24,13 +25,16 @@ def db_session() -> Generator[Session]:
     )
     Base.metadata.create_all(
         engine,
-        tables=[
-            User.__table__,
-            Project.__table__,
-            PipelineRun.__table__,
-            Artifact.__table__,
-            ArtifactVersion.__table__,
-        ],
+        tables=cast(
+            list[Table],
+            [
+                User.__table__,
+                Project.__table__,
+                PipelineRun.__table__,
+                Artifact.__table__,
+                ArtifactVersion.__table__,
+            ],
+        ),
     )
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     session = session_factory()
@@ -57,6 +61,7 @@ def test_local_storage_sanitizes_paths_and_round_trips_content(tmp_path: Path) -
         project_id=project_id,
         artifact_id=artifact_id,
         version=1,
+        kind="markdown",
         name="..\\secret folder/unsafe script.md",
         content="hello artifact",
     )
@@ -77,7 +82,10 @@ def test_local_storage_rejects_traversal_reads(tmp_path: Path) -> None:
 
 
 def test_sanitize_artifact_name_handles_blank_and_windows_separators() -> None:
-    assert sanitize_artifact_name("..\\folder\\Playwright Script!.ts") == "Playwright-Script-.ts"
+    assert (
+        sanitize_artifact_name("..\\folder\\Playwright Script!.ts")
+        == "folder/Playwright-Script-.ts"
+    )
     assert sanitize_artifact_name("../") == "artifact"
 
 
@@ -201,6 +209,7 @@ class RecordingStorage:
         project_id: object,
         artifact_id: object,
         version: int,
+        kind: str,
         name: str,
         content: str | bytes,
     ) -> str:

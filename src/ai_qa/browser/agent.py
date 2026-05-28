@@ -6,7 +6,7 @@ to control Chrome with SSO session reuse and read-only navigation.
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from browser_use import Agent
 
@@ -93,10 +93,12 @@ class BrowserAgent:
             BrowserError: If browser crashes during navigation.
         """
         try:
+            agent_any = cast(Any, self.agent)
             await asyncio.wait_for(
-                self.agent.navigate(url),
+                agent_any.navigate(url),
                 timeout=self.timeout,
             )
+
         except TimeoutError:
             raise NavigationError(
                 f"Navigation to {url} exceeded {self.timeout}s timeout",

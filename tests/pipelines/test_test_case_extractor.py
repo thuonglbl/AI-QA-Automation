@@ -31,9 +31,9 @@ def llm_config() -> LLMConfig:
 
 
 @pytest.fixture
-def extractor(output_base_dir: Path, llm_config: LLMConfig) -> TestCaseExtractor:
+def extractor(llm_config: LLMConfig) -> TestCaseExtractor:
     """Provide a TestCaseExtractor instance."""
-    return TestCaseExtractor(output_base_dir, llm_config)
+    return TestCaseExtractor(llm_config=llm_config)
 
 
 @pytest.fixture
@@ -215,22 +215,9 @@ class TestConfidenceScoring:
             TestCase(title="TC1", steps=[TestCaseStep(number=1, action="A", target="T")]),
             TestCase(title="TC2", steps=[TestCaseStep(number=1, action="B", target="U")]),
         ]
-        written_paths = ["path1", "path2"]  # Both written
 
-        confidence = extractor._compute_confidence(test_cases, written_paths)
+        confidence = extractor._compute_confidence(test_cases)
         assert 0.5 < confidence <= 1.0
-
-    def test_compute_confidence_partial_writes(self, extractor: TestCaseExtractor) -> None:
-        """Test confidence when not all files written."""
-        test_cases = [
-            TestCase(title="TC1", steps=[TestCaseStep(number=1, action="A", target="T")]),
-            TestCase(title="TC2", steps=[TestCaseStep(number=1, action="B", target="U")]),
-        ]
-        written_paths = ["path1"]  # Only one written
-
-        confidence = extractor._compute_confidence(test_cases, written_paths)
-        # 70% quality + 30% write ratio (0.5) = ~0.8
-        assert 0.5 < confidence < 1.0
 
 
 class TestFilenameGeneration:

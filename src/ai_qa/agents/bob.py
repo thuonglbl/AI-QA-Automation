@@ -4,7 +4,6 @@ from typing import Any
 
 from ai_qa.agents.base import AgentState, BaseAgent
 from ai_qa.ai_connection.client import LLMClient
-from ai_qa.ai_connection.config import LLMConfig
 from ai_qa.config import AppSettings
 from ai_qa.mcp.client import MCPClient
 from ai_qa.models import StageResult
@@ -325,12 +324,22 @@ class BobAgent(BaseAgent):
             if not desc_res.success:
                 return desc_res
 
-            urls_to_fetch = [summary.url for summary in (desc_res.data or []) if summary.url]
-            if not urls_to_fetch:
+            summaries = []
+            from ai_qa.pipelines.models import PageSummary
+
+            if self._page_id and parent_title:
+                summaries.append(
+                    PageSummary(page_id=self._page_id, title=parent_title, url=parent_title)
+                )
+
+            if desc_res.data:
+                summaries.extend(desc_res.data)
+
+            if not summaries:
                 return StageResult(
                     success=False,
                     data=None,
-                    errors=["No descendant pages found."],
+                    errors=["No pages found to extract (parent or descendants)."],
                     warnings=[],
                     confidence=0.0,
                 )
@@ -342,22 +351,24 @@ class BobAgent(BaseAgent):
 
             # Phase 1: Extract Raw HTML
             raw_pages: list[ConfluencePage] = []
-            for summary in desc_res.data or []:
-                if not summary.url:
+            for summary in summaries:
+                if not summary.page_id:
                     continue
                 await self.send_message(f"Extracting page '{summary.title}'...", "info")
-                page_result = await reader.read_multiple_pages([summary.url])
+
+                # Fetch directly by page ID instead of URL to avoid URL validation issues
+                page_result = await reader.read_page_by_id(summary.page_id)
                 if not page_result.success or not page_result.data:
                     await self.send_message(f"⚠ Failed to extract: '{summary.title}'", "warning")
                     continue
 
-                page: ConfluencePage = page_result.data[0]
+                page: ConfluencePage = page_result.data
                 adapter.save_raw_html(page.page_id, page.content)
                 await self.send_message(f"✓ Extracted '{summary.title}'", "info")
                 raw_pages.append(page)
 
             # Setup LLM for Bob
-            config = LLMConfig.from_agents_json(agent_name="bob")
+            config = self.get_llm_config()
             llm_client = LLMClient(config)
             formatter = RequirementFormatter(llm_client)
 

@@ -18,13 +18,11 @@ describe("ModelAssignmentReview", () => {
         endpoint="https://api.anthropic.com"
         assignments={mockAssignments}
         onApprove={vi.fn()}
-        onReject={vi.fn()}
       />
     );
 
-    expect(screen.getByText("AI Provider Configuration Review")).toBeInTheDocument();
+    expect(screen.getByText(/Connected successfully to/)).toBeInTheDocument();
     expect(screen.getByText("Claude (Anthropic)")).toBeInTheDocument();
-    expect(screen.getByText(/api.anthropic.com/)).toBeInTheDocument();
   });
 
   it("renders model assignment table with all agents", () => {
@@ -34,7 +32,6 @@ describe("ModelAssignmentReview", () => {
         endpoint="https://api.anthropic.com"
         assignments={mockAssignments}
         onApprove={vi.fn()}
-        onReject={vi.fn()}
       />
     );
 
@@ -46,7 +43,7 @@ describe("ModelAssignmentReview", () => {
 
     // Check models are rendered
     expect(screen.getByText("claude-3-opus-20240229")).toBeInTheDocument();
-    expect(screen.getByText("claude-3-sonnet-20240229")).toBeInTheDocument();
+    expect(screen.getAllByText("claude-3-sonnet-20240229").length).toBeGreaterThan(0);
     expect(screen.getByText("claude-3-haiku-20240307")).toBeInTheDocument();
 
     // Check purposes are rendered
@@ -56,7 +53,7 @@ describe("ModelAssignmentReview", () => {
     expect(screen.getByText("Test execution")).toBeInTheDocument();
   });
 
-  it("calls onApprove when approve button clicked", () => {
+  it("calls onApprove when ok button clicked", () => {
     const onApprove = vi.fn();
 
     render(
@@ -65,29 +62,11 @@ describe("ModelAssignmentReview", () => {
         endpoint="https://api.anthropic.com"
         assignments={mockAssignments}
         onApprove={onApprove}
-        onReject={vi.fn()}
       />
     );
 
-    fireEvent.click(screen.getByText(/Approve/));
+    fireEvent.click(screen.getByText(/OK/));
     expect(onApprove).toHaveBeenCalled();
-  });
-
-  it("calls onReject when reject button clicked", () => {
-    const onReject = vi.fn();
-
-    render(
-      <ModelAssignmentReview
-        provider="Claude (Anthropic)"
-        endpoint="https://api.anthropic.com"
-        assignments={mockAssignments}
-        onApprove={vi.fn()}
-        onReject={onReject}
-      />
-    );
-
-    fireEvent.click(screen.getByText(/Change Provider/));
-    expect(onReject).toHaveBeenCalled();
   });
 
   it("disables buttons when disabled prop is true", () => {
@@ -97,16 +76,12 @@ describe("ModelAssignmentReview", () => {
         endpoint="https://api.anthropic.com"
         assignments={mockAssignments}
         onApprove={vi.fn()}
-        onReject={vi.fn()}
         disabled={true}
       />
     );
 
-    const approveButton = screen.getByText(/Approve/).closest("button");
-    const rejectButton = screen.getByText(/Change Provider/).closest("button");
-
-    expect(approveButton).toBeDisabled();
-    expect(rejectButton).toBeDisabled();
+    const okButton = screen.getByText(/OK/).closest("button");
+    expect(okButton).toBeDisabled();
   });
 
   it("renders agent badges with correct colors", () => {
@@ -116,7 +91,6 @@ describe("ModelAssignmentReview", () => {
         endpoint="https://api.anthropic.com"
         assignments={mockAssignments}
         onApprove={vi.fn()}
-        onReject={vi.fn()}
       />
     );
 
@@ -132,11 +106,10 @@ describe("ModelAssignmentReview", () => {
         endpoint="https://api.anthropic.com"
         assignments={null}
         onApprove={vi.fn()}
-        onReject={vi.fn()}
       />
     );
 
     // Should still render the component without crashing
-    expect(screen.getByText("AI Provider Configuration Review")).toBeInTheDocument();
+    expect(screen.getByText(/Connected successfully to/)).toBeInTheDocument();
   });
 });

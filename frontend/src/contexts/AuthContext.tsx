@@ -41,9 +41,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuthStatus({ authenticated: false, user: null });
   }, []);
 
-  // Check auth status on mount
+  // Check auth status on mount and listen for global auth errors
   useEffect(() => {
     refresh();
+
+    const handleAuthError = () => {
+      refresh();
+    };
+    
+    window.addEventListener("auth-error", handleAuthError);
+    return () => window.removeEventListener("auth-error", handleAuthError);
   }, [refresh]);
 
   return (

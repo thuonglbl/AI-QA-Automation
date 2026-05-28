@@ -21,6 +21,28 @@ describe("apiFetch", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/projects", expect.objectContaining({ credentials: "include" }));
   });
 
+  it("attaches Authorization header if aiqa_access_token exists in localStorage", async () => {
+    localStorage.setItem("aiqa_access_token", "test_token");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(() => mockResponse(200, { ok: true }));
+
+    await apiFetch("/projects");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/projects", expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: "Bearer test_token" })
+    }));
+
+    localStorage.removeItem("aiqa_access_token");
+  });
+
+  it("dispatches auth-error event on 401 response", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => mockResponse(401, { detail: "unauthorized" }));
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+
+    await expect(apiFetch("/projects")).rejects.toMatchObject({ kind: "auth" });
+
+    expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: "auth-error" }));
+  });
+
   it("keeps auth routes outside the /api base path", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(() => mockResponse(200, { authenticated: false }));
 

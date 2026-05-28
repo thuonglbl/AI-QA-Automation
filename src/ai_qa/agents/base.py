@@ -20,6 +20,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from ai_qa.ai_connection.config import LLMConfig
+
 # Local
 from ai_qa.models import AgentMessage, StageResult
 from ai_qa.pipelines.context import PipelineContext
@@ -108,17 +110,45 @@ class BaseAgent(ABC):
         from ai_qa.db.models import User
 
         user = db.get(User, self.project_context.user_id)
-        if user and user.ai_agents_config:
+        if user:
             from typing import cast
 
-            self._agent_config = cast(
-                dict[str, Any], user.ai_agents_config.get(self.name.lower(), {})
-            )
+            if user.ai_agents_config:
+                self._agent_config = cast(
+                    dict[str, Any], user.ai_agents_config.get(self.name.lower(), {})
+                )
+            if user.ai_provider_config:
+                self._provider_config = cast(dict[str, Any], user.ai_provider_config)
             logger.info("Loaded agent config for %s from database", self.name)
         else:
             logger.info(
                 "No ai_agents_config found in database for user, using defaults for %s", self.name
             )
+
+    # ------------------------------------------------------------------
+    # Agent LLM Configuration
+    # ------------------------------------------------------------------
+
+    def get_llm_config(self) -> "LLMConfig":
+        """Build LLMConfig for this agent using database configuration."""
+        import os
+
+        # Get api key from provider config
+        api_key = ""
+        provider_config = getattr(self, "_provider_config", {})
+        credential_ref = provider_config.get("credential_reference", "")
+        if credential_ref.startswith("env://"):
+            env_var = credential_ref[6:]
+            api_key = os.getenv(env_var, "")
+
+        return LLMConfig(
+            provider=provider_config.get("provider", "litellm"),
+            model_name=self._agent_config.get("model", "claude-sonnet-4-6"),
+            temperature=self._agent_config.get("temperature", 0.0),
+            base_url=provider_config.get("endpoint", ""),
+            api_key=api_key,
+            max_retries=3,
+        )
 
     # ------------------------------------------------------------------
     # Messaging

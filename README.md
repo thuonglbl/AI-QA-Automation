@@ -451,19 +451,15 @@ curl -b "aiqa_session=<session_cookie>" http://localhost:8000/api/projects/<proj
 ### Backend
 
 ```powershell
+# Static checks
+uv run ruff check .
+uv run mypy src/
+
 # Full backend suite with configured coverage gate
 uv run pytest tests -q
 
 # Full backend suite without coverage gate, useful during story validation
 uv run pytest tests -q --no-cov
-
-# Epic 12 focused regression examples
-uv run pytest tests/test_auth_password.py tests/test_auth_service.py tests/test_auth_api.py tests/test_admin_rbac_api.py tests/test_project_api.py tests/test_artifact_api.py tests/test_artifact_service.py -q --no-cov
-uv run pytest tests/test_pipeline_project_context.py tests/test_project_scoped_agents.py tests/test_pipeline_artifact_adapter.py tests/test_pipeline_websocket_project_context.py tests/test_api.py -q --no-cov
-
-# Static checks
-uv run ruff check .
-uv run mypy src/
 ```
 
 ### Frontend
@@ -473,14 +469,6 @@ Set-Location frontend
 npm run typecheck
 npm run test
 ```
-
-Recent Epic 12 validation highlights:
-
-- Story 12.5 backend full regression: `474 passed, 2 skipped` with `--no-cov`.
-- Story 12.6 TypeScript validation passed; targeted frontend tests for auth/project/admin/API-client behavior passed.
-- Story 12.7 project-context backend regression passed: `41 passed` across project pipeline, artifact adapter, project-scoped agents, WebSocket project context, and API tests.
-
-Some older frontend component tests may still have pre-existing expectation drift unrelated to Epic 12's project/auth/admin foundation.
 
 ## Security Notes
 

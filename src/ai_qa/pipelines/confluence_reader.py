@@ -246,7 +246,6 @@ class ConfluenceReader:
         "confluence_get_page_by_title",  # Get page by title
         "confluence_search",  # Search pages
         "confluence_get_space",  # Get space details
-        "confluence_get_children",  # Get child pages
     ]
 
     def __init__(
@@ -334,7 +333,12 @@ class ConfluenceReader:
             # Call MCP tool to get page
             tool_result = await self._mcp_client.call_tool(
                 self._get_tool_name("confluence_get_page"),
-                {"page_id": page_id},
+                {
+                    "pageId": page_id,
+                    "format": "view",
+                    "userPrompt": "User initiated a story creation workflow from a Confluence page link.",
+                    "llmReasoning": "Need to extract the content of the provided Confluence page to fulfill the user's request.",
+                },
             )
 
             if not tool_result.success:
@@ -557,10 +561,9 @@ class ConfluenceReader:
             )
 
     async def get_children_by_id(self, page_id: str) -> StageResult:
-        """Get all child pages of a Confluence page by its page_id via MCP.
+        """Get all child pages of a Confluence page by its page_id via MCP using confluence_search.
 
-        Returns a StageResult whose .data is a list of PageSummary objects,
-        matching the contract of get_descendants_by_title().
+        Returns a StageResult whose .data is a list of PageSummary objects.
 
         Args:
             page_id: Numeric Confluence page ID
@@ -578,16 +581,25 @@ class ConfluenceReader:
             )
 
         try:
+            # We must look up the page first to get its space_key, as search is usually space-scoped
+            # But wait, CQL allows searching globally if space isn't provided: `ancestor = <id>`. Let's try that.
             tool_result = await self._mcp_client.call_tool(
-                self._get_tool_name("confluence_get_children"),
-                {"page_id": page_id},
+                self._get_tool_name("confluence_search"),
+                {
+                    "cql": f"type = page AND ancestor IN ({page_id})",
+                    "limit": 50,
+                    "userPrompt": "User initiated a story creation workflow that requires reading all children pages of a Confluence page.",
+                    "llmReasoning": "Need to search for child pages to recursively process all documentation linked to the parent page.",
+                },
             )
 
             if not tool_result.success:
                 return StageResult(
                     success=False,
                     data=None,
-                    errors=[f"Failed to get children of page {page_id}: {tool_result.error}"],
+                    errors=[
+                        f"Failed to search for children of page {page_id}: {tool_result.error}"
+                    ],
                     warnings=[],
                     confidence=0.0,
                 )
@@ -600,23 +612,18 @@ class ConfluenceReader:
                     return StageResult(
                         success=False,
                         data=None,
-                        errors=["Invalid JSON response from MCP for children"],
+                        errors=["Invalid JSON from MCP server"],
                         warnings=[],
                         confidence=0.0,
                     )
 
-            # MCP may return {"results": [...]} or a plain list
-            if isinstance(children_data, dict):
-                children_list = children_data.get("results", [])
-            elif isinstance(children_data, list):
-                children_list = children_data
+            if isinstance(children_data, dict) and "results" in children_data:
+                results_list = children_data["results"]
             else:
-                children_list = []
+                results_list = children_data if isinstance(children_data, list) else []
 
-            from ai_qa.pipelines.models import PageSummary
-
-            summaries: list[PageSummary] = []
-            for child in children_list:
+            summaries = []
+            for child in results_list:
                 if not isinstance(child, dict):
                     continue
                 child_id = str(child.get("id", child.get("page_id", "")))

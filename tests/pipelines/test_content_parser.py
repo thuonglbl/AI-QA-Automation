@@ -17,6 +17,19 @@ def mock_output_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def mock_adapter(mock_output_dir: Path) -> MagicMock:
+    adapter = MagicMock()
+
+    def mock_save_image(artifact_name, content):
+        path = mock_output_dir / artifact_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    adapter.save_image.side_effect = mock_save_image
+    return adapter
+
+
+@pytest.fixture
 def test_page() -> ConfluencePage:
     return ConfluencePage(
         page_id="123",
@@ -31,10 +44,10 @@ def test_page() -> ConfluencePage:
 
 @pytest.mark.asyncio
 async def test_parse_plain_html_returns_markdown(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = "<h1>Title</h1><p>Some text</p>"
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
@@ -45,25 +58,27 @@ async def test_parse_plain_html_returns_markdown(
 
 @pytest.mark.asyncio
 async def test_parse_already_markdown_content_passes_through(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = "# Already Markdown\nWith some text."
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert "# Already Markdown" in result.data.markdown
 
 
 @pytest.mark.asyncio
 async def test_parse_empty_content_returns_warning_not_error(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = ""
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert result.data.markdown == ""
     assert any("no content" in w.lower() for w in result.warnings)
     assert result.confidence == 0.5
@@ -71,61 +86,65 @@ async def test_parse_empty_content_returns_warning_not_error(
 
 @pytest.mark.asyncio
 async def test_parse_confluence_info_macro_converted_to_blockquote(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = '<ac:structured-macro ac:name="info"><ac:rich-text-body><p>Some info text</p></ac:rich-text-body></ac:structured-macro>'
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert "> **ℹ️ Note:**" in result.data.markdown
     assert "Some info text" in result.data.markdown
 
 
 @pytest.mark.asyncio
 async def test_parse_confluence_code_macro_converted_to_fenced_block(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = '<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">python</ac:parameter><ac:plain-text-body><![CDATA[def hello():\n    pass]]></ac:plain-text-body></ac:structured-macro>'
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert "```python\ndef hello():\n    pass\n```" in result.data.markdown
 
 
 @pytest.mark.asyncio
 async def test_parse_table_preserved_as_markdown_table(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>"
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert "| A | B |" in result.data.markdown
     assert "| 1 | 2 |" in result.data.markdown
 
 
 @pytest.mark.asyncio
 async def test_mermaid_existing_block_extracted_as_is(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = "<p>Here is a diagram:</p>\n```mermaid\ngraph TD\nA-->B\n```"
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert len(result.data.mermaid_diagrams) == 1
     assert "graph TD" in result.data.mermaid_diagrams[0]
 
 
 @pytest.mark.asyncio
 async def test_mermaid_gliffy_macro_adds_warning(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = '<ac:structured-macro ac:name="gliffy"></ac:structured-macro>'
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
@@ -134,13 +153,14 @@ async def test_mermaid_gliffy_macro_adds_warning(
 
 @pytest.mark.asyncio
 async def test_mermaid_drawio_simple_flowchart_converted(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = '<ac:structured-macro ac:name="drawio"><ac:plain-text-body><![CDATA[<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="Node A" style="ellipse" vertex="1" parent="1"/><mxCell id="3" value="Node B" style="rounded=1" vertex="1" parent="1"/><mxCell id="4" edge="1" parent="1" source="2" target="3"/></root></mxGraphModel>]]></ac:plain-text-body></ac:structured-macro>'
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert len(result.data.mermaid_diagrams) == 1
     assert "flowchart TD" in result.data.mermaid_diagrams[0]
 
@@ -148,7 +168,7 @@ async def test_mermaid_drawio_simple_flowchart_converted(
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.get")
 async def test_image_save_happy_path(
-    mock_get: AsyncMock, mock_output_dir: Path, test_page: ConfluencePage
+    mock_get: AsyncMock, mock_output_dir: Path, mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     mock_response = MagicMock()
     mock_response.raise_for_status.return_value = None
@@ -156,14 +176,15 @@ async def test_image_save_happy_path(
     mock_get.return_value = mock_response
 
     test_page.content = '<img src="http://confluence/images/test.png" />'
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert len(result.data.image_paths) == 1
     expected_path = Path("test-page/images/test.png")
 
-    assert str(expected_path.as_posix()) in result.data.image_paths[0]
+    assert expected_path.as_posix() in result.data.image_paths
 
     # Check that file was actually written
     full_path = mock_output_dir / "test-page" / "images" / "test.png"
@@ -174,15 +195,16 @@ async def test_image_save_happy_path(
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.get")
 async def test_image_save_http_error_adds_warning_continues(
-    mock_get: AsyncMock, mock_output_dir: Path, test_page: ConfluencePage
+    mock_get: AsyncMock, mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     mock_get.side_effect = httpx.HTTPError("Failed to fetch")
 
     test_page.content = '<img src="http://confluence/images/fail.png" /><p>Some text</p>'
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert len(result.data.image_paths) == 0
     assert any("fail.png" in w for w in result.warnings)
     assert "Some text" in result.data.markdown
@@ -192,7 +214,7 @@ async def test_image_save_http_error_adds_warning_continues(
 @patch("httpx.AsyncClient.get")
 @patch("pathlib.Path.write_bytes")
 async def test_image_save_filesystem_error_adds_warning_continues(
-    mock_write: MagicMock, mock_get: AsyncMock, mock_output_dir: Path, test_page: ConfluencePage
+    mock_write: MagicMock, mock_get: AsyncMock, mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     mock_response = MagicMock()
     mock_response.raise_for_status.return_value = None
@@ -202,23 +224,25 @@ async def test_image_save_filesystem_error_adds_warning_continues(
     mock_write.side_effect = OSError("Permission denied")
 
     test_page.content = '<img src="http://confluence/images/test.png" />'
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert len(result.data.image_paths) == 0
     assert any("permission" in w.lower() or "oserror" in w.lower() for w in result.warnings)
 
 
 @pytest.mark.asyncio
 async def test_test_case_detection_heading_pattern(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = "## TC-001 Title\nPreconditions: User logged in\nSteps:\n1. Do this\n2. Do that\nExpected Result: Success\n"
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert len(result.data.test_cases_detected) == 1
     tc = result.data.test_cases_detected[0]
     assert "TC-001 Title" in tc["title"]
@@ -229,13 +253,14 @@ async def test_test_case_detection_heading_pattern(
 
 @pytest.mark.asyncio
 async def test_test_case_detection_table_pattern(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = "<table><tr><th>Step</th><th>Action</th><th>Expected Result</th></tr><tr><td>1</td><td>Click login</td><td>Form submits</td></tr></table>"
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
+    assert result.data is not None
     assert len(result.data.test_cases_detected) == 1
     tc = result.data.test_cases_detected[0]
     assert tc["steps"] == ["Click login"]
@@ -244,10 +269,10 @@ async def test_test_case_detection_table_pattern(
 
 @pytest.mark.asyncio
 async def test_test_case_detection_numbered_pattern(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = "Test Case: Login\nPreconditions: None\nSteps:\n1. Enter username\nExpected Result: Logged in"
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse(test_page)
 
     assert result.success
@@ -260,13 +285,13 @@ async def test_test_case_detection_numbered_pattern(
 
 @pytest.mark.asyncio
 async def test_parse_multiple_pages_returns_list(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     page1 = test_page
     page2 = test_page.model_copy()
     page2.page_id = "456"
 
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse_multiple([page1, page2])
 
     assert result.success
@@ -276,13 +301,13 @@ async def test_parse_multiple_pages_returns_list(
 
 @pytest.mark.asyncio
 async def test_parse_multiple_pages_partial_failure_adds_warnings(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     page1 = test_page
     page2 = test_page.model_copy()
     page2.content = '<ac:structured-macro ac:name="gliffy"></ac:structured-macro>'
 
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
     result = await parser.parse_multiple([page1, page2])
 
     assert result.success
@@ -293,10 +318,10 @@ async def test_parse_multiple_pages_partial_failure_adds_warnings(
 
 @pytest.mark.asyncio
 async def test_stage_result_confidence_scoring(
-    mock_output_dir: Path, test_page: ConfluencePage
+    mock_adapter: MagicMock, test_page: ConfluencePage
 ) -> None:
     test_page.content = "<p>Standard text</p>"
-    parser = ContentParser(mock_output_dir)
+    parser = ContentParser(mock_adapter)
 
     result = await parser.parse(test_page)
     assert result.success
@@ -304,10 +329,10 @@ async def test_stage_result_confidence_scoring(
 
 
 @pytest.mark.asyncio
-async def test_no_llm_calls_made(mock_output_dir: Path, test_page: ConfluencePage) -> None:
+async def test_no_llm_calls_made(mock_adapter: MagicMock, test_page: ConfluencePage) -> None:
     # Just asserting that we don't import or use LLM providers
     # In practice, ContentParser itself has no LLM instances inside
     with patch("httpx.AsyncClient.post") as mock_post:
-        parser = ContentParser(mock_output_dir)
+        parser = ContentParser(mock_adapter)
         await parser.parse(test_page)
         mock_post.assert_not_called()

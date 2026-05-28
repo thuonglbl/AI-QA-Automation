@@ -32,12 +32,16 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
 
     try {
       await logout();
-      const loginResult = await apiFetch<{ user?: AuthUser }>("/login", {
+      const loginResult = await apiFetch<{ user?: AuthUser; access_token?: string }>("/login", {
         method: "POST",
         authRoute: true,
         safeMessage: "Invalid username or password.",
         body: JSON.stringify({ email, password }),
       });
+
+      if (loginResult.access_token) {
+        localStorage.setItem("aiqa_access_token", loginResult.access_token);
+      }
 
       if (!loginResult.user?.email) {
         throw new Error("Login response did not include a user profile.");

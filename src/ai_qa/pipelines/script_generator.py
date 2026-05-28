@@ -1,3 +1,4 @@
+# mypy: disable-error-code="misc"
 """Script generator pipeline stage.
 
 Converts structured test cases into executable Playwright Python scripts via LLM.
@@ -227,7 +228,7 @@ class ScriptGenerator:
                 "test_case_title": test_case.title,
             }
 
-    @retry(  # type: ignore[misc]
+    @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         reraise=True,
@@ -252,9 +253,9 @@ class ScriptGenerator:
             prompt = SCRIPT_GENERATION_PROMPT.format(test_case=test_case_json)
 
             # Create messages for LLM
-            from langchain_core.messages import HumanMessage, SystemMessage
+            from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-            messages = [
+            messages: list[BaseMessage] = [
                 SystemMessage(content=SCRIPT_GENERATION_SYSTEM_PROMPT),
                 HumanMessage(content=prompt),
             ]
@@ -295,7 +296,7 @@ class ScriptGenerator:
             logger.error(f"LLM call failed: {e}")
             raise ScriptGenerationError(f"LLM generation failed: {e}") from e
 
-    @retry(  # type: ignore[misc]
+    @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         reraise=True,
@@ -332,9 +333,9 @@ class ScriptGenerator:
             )
 
             # Create messages for LLM
-            from langchain_core.messages import HumanMessage, SystemMessage
+            from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-            messages = [
+            messages: list[BaseMessage] = [
                 SystemMessage(content=VISION_SCRIPT_GENERATION_SYSTEM_PROMPT),
                 HumanMessage(content=prompt),
             ]

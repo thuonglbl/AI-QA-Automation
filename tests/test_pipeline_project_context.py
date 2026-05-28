@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import Table, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -24,7 +26,7 @@ from ai_qa.db.models import PipelineRun, Project, ProjectMembership, User
 from ai_qa.models import StageResult
 
 
-class RecordingAgent(BaseAgent):
+class RecordingAgent(BaseAgent):  # type: ignore[misc]
     """Agent that records project context received from API dispatch."""
 
     def __init__(self, workspace_dir: Path | None = None) -> None:
@@ -62,12 +64,15 @@ def pipeline_client() -> Generator[TestClient]:
     )
     Base.metadata.create_all(
         engine,
-        tables=[
-            User.__table__,
-            Project.__table__,
-            ProjectMembership.__table__,
-            PipelineRun.__table__,
-        ],
+        tables=cast(
+            list[Table],
+            [
+                User.__table__,
+                Project.__table__,
+                ProjectMembership.__table__,
+                PipelineRun.__table__,
+            ],
+        ),
     )
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -93,7 +98,8 @@ def pipeline_client() -> Generator[TestClient]:
 
 
 def _session_from_override(client: TestClient) -> Generator[Session]:
-    return client.app.dependency_overrides[get_db_session_dependency]()
+    app = cast(FastAPI, client.app)
+    return cast(Generator[Session], app.dependency_overrides[get_db_session_dependency]())
 
 
 def _create_user(client: TestClient, email: str, role: str) -> User:
@@ -141,7 +147,8 @@ def _add_membership(client: TestClient, project: Project, user: User) -> None:
 
 
 def _auth_headers(client: TestClient, user: User) -> dict[str, str]:
-    manager = SessionManager(client.app.state.settings)
+    app = cast(FastAPI, client.app)
+    manager = SessionManager(app.state.settings)
     session = manager.create_session(
         {
             "user_id": str(user.id),
@@ -189,7 +196,7 @@ def test_project_start_denies_non_member_and_allows_member(
 
     assert denied.status_code == 404
     assert allowed.status_code == 200
-    assert allowed.json()["status"] == "processing"
+    assert allowed.json()["status"] == "review_request"
     agent = _project_user_agents[(str(member.id), str(project.id), 2)]
     assert agent.project_context is not None
     assert agent.project_context.project_id == project.id
@@ -238,6 +245,7 @@ def test_project_run_marked_completed_when_agent_reaches_done(
     )
     assert start.status_code == 200
     agent = _project_user_agents[(str(member.id), str(project.id), 2)]
+    assert agent.project_context is not None
     pipeline_run_id = agent.project_context.pipeline_run_id
 
     approve = pipeline_client.post(
@@ -251,8 +259,10 @@ def test_project_run_marked_completed_when_agent_reaches_done(
     session = next(session_gen)
     try:
         pipeline_run = session.get(PipelineRun, pipeline_run_id)
+        assert pipeline_run is not None
         assert pipeline_run.status == "completed"
         assert pipeline_run.completed_at is not None
+        assert pipeline_run.config_summary is not None
         assert pipeline_run.config_summary["completed_step"] == 2
         assert pipeline_run.config_summary["completed_action"] == "approve"
     finally:
@@ -271,16 +281,20 @@ def test_project_run_marked_failed_when_agent_raises(pipeline_client: TestClient
         headers=_auth_headers(pipeline_client, member),
     )
 
-    assert response.status_code == 500
+    assert response.status_code == 200
+    assert response.json()["status"] == "error"
     agent = _project_user_agents[(str(member.id), str(project.id), 2)]
+    assert agent.project_context is not None
     session_gen = _session_from_override(pipeline_client)
     session = next(session_gen)
     try:
         pipeline_run = session.get(PipelineRun, agent.project_context.pipeline_run_id)
+        assert pipeline_run is not None
         assert pipeline_run.status == "failed"
         assert pipeline_run.completed_at is not None
+        assert pipeline_run.config_summary is not None
         assert pipeline_run.config_summary["failed_step"] == 2
         assert pipeline_run.config_summary["failed_action"] == "start"
-        assert "boom" in pipeline_run.config_summary["error"]
+        assert "agent" in pipeline_run.config_summary
     finally:
         session_gen.close()

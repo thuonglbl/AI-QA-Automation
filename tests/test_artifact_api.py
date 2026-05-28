@@ -3,10 +3,12 @@
 from base64 import b64encode
 from collections.abc import Generator
 from pathlib import Path
+from typing import cast
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import Table, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -33,6 +35,7 @@ class ArtifactStorageFake:
         project_id: object,
         artifact_id: object,
         version: int,
+        kind: str,
         name: str,
         content: str | bytes,
     ) -> str:
@@ -62,14 +65,17 @@ def artifact_client() -> Generator[TestClient]:
     )
     Base.metadata.create_all(
         engine,
-        tables=[
-            User.__table__,
-            Project.__table__,
-            ProjectMembership.__table__,
-            PipelineRun.__table__,
-            Artifact.__table__,
-            ArtifactVersion.__table__,
-        ],
+        tables=cast(
+            list[Table],
+            [
+                User.__table__,
+                Project.__table__,
+                ProjectMembership.__table__,
+                PipelineRun.__table__,
+                Artifact.__table__,
+                ArtifactVersion.__table__,
+            ],
+        ),
     )
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     storage = ArtifactStorageFake()
@@ -91,7 +97,8 @@ def artifact_client() -> Generator[TestClient]:
 
 
 def _session_from_override(client: TestClient) -> Generator[Session]:
-    return client.app.dependency_overrides[get_db_session_dependency]()
+    app = cast(FastAPI, client.app)
+    return cast(Generator[Session], app.dependency_overrides[get_db_session_dependency]())
 
 
 def _create_user(client: TestClient, email: str, role: str, *, active: bool = True) -> User:
@@ -157,7 +164,8 @@ def _create_pipeline_run(client: TestClient, project: Project) -> PipelineRun:
 
 
 def _token(client: TestClient, user: User) -> str:
-    session_manager = SessionManager(client.app.state.settings)
+    app = cast(FastAPI, client.app)
+    session_manager = SessionManager(app.state.settings)
     session = session_manager.create_session(
         {
             "user_id": str(user.id),
@@ -167,7 +175,7 @@ def _token(client: TestClient, user: User) -> str:
             "is_active": user.is_active,
         }
     )
-    return session_manager.encode_session(session)
+    return session_manager.encode_session(session)  # type: ignore[no-any-return]
 
 
 def _auth_headers(client: TestClient, user: User) -> dict[str, str]:
@@ -363,7 +371,8 @@ def test_artifact_api_returns_controlled_response_for_missing_content(
         json={"kind": "markdown", "name": "missing.md", "content": "content"},
     )
     artifact_id = created.json()["id"]
-    storage: ArtifactStorageFake = artifact_client.app.state.test_artifact_storage
+    app = cast(FastAPI, artifact_client.app)
+    storage: ArtifactStorageFake = app.state.test_artifact_storage
     storage.contents.clear()
 
     content = artifact_client.get(

@@ -12,6 +12,7 @@ const project = {
   id: "project-1",
   name: "Admin Project",
   description: null,
+  confluence_base_url: "https://confluence",
   created_by_user_id: null,
   current_user_role: "owner",
   membership_count: 1,
@@ -85,6 +86,7 @@ describe("AdminDashboard", () => {
     expect((await screen.findAllByText("member@example.com")).length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText(/project name/i), { target: { value: "New Project" } });
+    fireEvent.change(screen.getByLabelText(/confluence base url/i), { target: { value: "https://confluence" } });
     fireEvent.click(screen.getByRole("button", { name: /create project/i }));
     expect(await screen.findByText(/project created successfully/i)).toBeInTheDocument();
 

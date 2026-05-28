@@ -1,3 +1,4 @@
+# mypy: disable-error-code="misc"
 """Vision-assisted locator identification pipeline stage.
 
 Uses browser-use vision model to identify UI element locators by analyzing
@@ -6,7 +7,7 @@ screenshots of the target application, then validates them against the DOM.
 
 import base64
 import logging
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -289,7 +290,7 @@ class VisionLocator:
                 details=str(e),
             ) from e
 
-    @retry(  # type: ignore[misc]
+    @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         reraise=True,
@@ -331,22 +332,26 @@ class VisionLocator:
             timeout = getattr(self.config, "vision_timeout", 60)
 
             # Format message with image for vision model
-            from langchain_core.messages import HumanMessage
+            from langchain_core.messages import BaseMessage, HumanMessage
 
-            message = HumanMessage(
-                content=[
-                    {"type": "text", "text": vision_prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
-                    },
-                ]
-            )
+            messages: list[BaseMessage] = [
+                HumanMessage(
+                    content=[
+                        {"type": "text", "text": vision_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                        },
+                    ]
+                )
+            ]
 
-            response = await agent.llm.ainvoke([message], timeout=timeout)
+            # Use typed invoke method with timeout
+            llm_any = cast(Any, agent.llm)
+            response = await llm_any.ainvoke(messages, timeout=timeout)
 
             # Parse vision analysis response
-            analysis = self._parse_vision_response(response.content)
+            analysis = self._parse_vision_response(getattr(response, "content", str(response)))
             logger.debug(f"Vision analysis completed for step {step.number}")
             return analysis
 
@@ -420,7 +425,7 @@ then ARIA roles, then semantic HTML elements."""
                         content_parts.append(text)
             content = "\n".join(content_parts)
         else:
-            content = str(response)
+            content = response
 
         # Try to extract JSON from response
         # Look for JSON block in markdown code blocks first

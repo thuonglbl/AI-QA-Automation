@@ -12,10 +12,34 @@ Scope guidelines:
 """
 
 from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
+from ai_qa.db.models import User
 from ai_qa.models import AgentMessage, StageResult
+from ai_qa.pipelines.context import PipelineContext
+
+# --- Context Fixtures ---
+
+
+@pytest.fixture
+def mock_db() -> MagicMock:
+    db = MagicMock()
+    user = User(id="user-123", email="test@example.com")
+    db.get.return_value = user
+    return db
+
+
+@pytest.fixture
+def mock_project_context(mock_db: MagicMock, tmp_path: Path) -> MagicMock:
+    context = MagicMock(spec=PipelineContext)
+    context.user_id = "user-123"
+    context.user_email = "test@example.com"
+    context.artifact_service.db = mock_db
+    return context
+
 
 # --- StageResult Fixtures ---
 

@@ -55,10 +55,12 @@ export async function fetchWithAuth(
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {
+  const token = localStorage.getItem("aiqa_access_token");
   return fetch(url, {
     ...options,
     credentials: "include",
     headers: {
+      ...(token ? { "Authorization": `Bearer ${token}` } : {}),
       ...options.headers,
     },
   });
@@ -90,6 +92,7 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
 // Logout
 export async function logout(): Promise<void> {
   try {
+    localStorage.removeItem("aiqa_access_token");
     await apiFetch<{ success: boolean }>("/logout", { method: "POST", authRoute: true });
   } catch {
     // Ignore errors

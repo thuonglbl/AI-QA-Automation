@@ -48,7 +48,7 @@ def test_child_exception_inherits_constructor() -> None:
     err = LLMError("LLM call failed", details="HTTP 429 rate limited")
     assert err.message == "LLM call failed"
     assert err.details == "HTTP 429 rate limited"
-    assert str(err) == "LLM call failed"
+    assert str(err) == "LLM call failed - Details: HTTP 429 rate limited"
 
 
 # --- Raise and catch tests ---
@@ -120,4 +120,5 @@ def test_config_error_usage_pattern() -> None:
             ),
         )
     assert exc_info.value.message == "No AI provider configured."
+    assert exc_info.value.details is not None
     assert "ANTHROPIC_API_KEY" in exc_info.value.details

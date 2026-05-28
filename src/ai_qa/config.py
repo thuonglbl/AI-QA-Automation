@@ -94,7 +94,6 @@ class AppSettings(BaseSettings):
     mcp_server_url: str = Field(
         default="", description="MCP server URL for Confluence/Jira integration"
     )
-    mcp_server_key: str = Field(default="", description="MCP server API key")
     mcp_tool_prefix: str = Field(default="", description="Prefix for MCP tools")
     mcp_use_streamable_http: bool = Field(
         default=True, description="Use MCP Streamable HTTP transport instead of Legacy SSE"

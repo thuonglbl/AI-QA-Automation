@@ -200,131 +200,67 @@ class TestConfluenceReaderReadPage:
         assert result.data is not None
         assert result.data.title == "Test Page"
 
-
-class TestConfluenceReaderListPages:
-    """Test suite for ConfluenceReader.list_pages_in_space method."""
-
-    async def test_list_pages_success(
+    async def test_read_page_by_id_success(
         self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
     ) -> None:
-        """Test successful page listing."""
-        # Setup mock responses
-        mock_mcp_client.call_tool.side_effect = [
-            # First call: confluence_get_space
-            ToolResult.from_data(
-                {
-                    "key": "TEST",
-                    "name": "Test Space",
-                }
-            ),
-            # Second call: confluence_search
-            ToolResult.from_data(
-                {
-                    "results": [
-                        {
-                            "id": "111",
-                            "title": "Page 1",
-                            "_links": {"webui": "/spaces/TEST/pages/111"},
-                        },
-                        {
-                            "id": "222",
-                            "title": "Page 2",
-                            "_links": {"webui": "/spaces/TEST/pages/222"},
-                        },
-                    ]
-                }
-            ),
-        ]
+        """Test successful page read by ID."""
+        mock_mcp_client.call_tool.return_value = ToolResult.from_data(
+            {
+                "id": "123456",
+                "title": "Test Page",
+                "content": "<p>Page content</p>",
+                "space": {"key": "TEST"},
+                "author": {"displayName": "John Doe"},
+                "version": {"number": 1},
+                "labels": ["test", "documentation"],
+            }
+        )
 
-        result = await confluence_reader.list_pages_in_space("TEST")
+        result = await confluence_reader.read_page_by_id("123456")
 
         assert result.success is True
         assert result.data is not None
-        assert len(result.data) == 2
-        assert result.data[0].page_id == "111"
-        assert result.data[0].title == "Page 1"
-        assert result.data[1].page_id == "222"
-        assert result.data[1].title == "Page 2"
-        assert result.confidence == 0.9
+        assert result.data.page_id == "123456"
+        assert result.data.title == "Test Page"
+        assert result.data.content == "<p>Page content</p>"
+        assert result.confidence == 1.0
 
-    async def test_list_pages_empty_space_key(self, confluence_reader: ConfluenceReader) -> None:
-        """Test listing with empty space key."""
-        result = await confluence_reader.list_pages_in_space("")
+    async def test_read_page_by_id_tool_error(
+        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
+    ) -> None:
+        """Test read_page_by_id tool error."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError("Page not found")
+
+        result = await confluence_reader.read_page_by_id("123456")
 
         assert result.success is False
         assert result.data is None
-        assert any("Space key is required" in e for e in result.errors)
+        assert any("Page not found" in e for e in result.errors)
 
-    async def test_list_pages_not_connected(
+    async def test_read_page_by_id_connection_error(
         self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
     ) -> None:
-        """Test listing when not connected."""
+        """Test read_page_by_id connection error."""
+        mock_mcp_client.call_tool.side_effect = MCPConnectionError("Connection refused")
+
+        result = await confluence_reader.read_page_by_id("123456")
+
+        assert result.success is False
+        assert result.data is None
+        assert any("Connection refused" in e for e in result.errors)
+
+    async def test_read_page_by_id_not_connected(
+        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
+    ) -> None:
+        """Test read_page_by_id when MCP client is not connected."""
         mock_mcp_client.is_connected = False
 
-        result = await confluence_reader.list_pages_in_space("TEST")
+        result = await confluence_reader.read_page_by_id("123456")
 
         assert result.success is False
         assert result.data is None
+        assert result.confidence == 0.0
         assert any("MCP server not connected" in e for e in result.errors)
-
-    async def test_list_pages_space_not_found(
-        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
-    ) -> None:
-        """Test listing with space not found."""
-        mock_mcp_client.call_tool.return_value = ToolResult.from_error("Space not found")
-
-        result = await confluence_reader.list_pages_in_space("NONEXISTENT")
-
-        assert result.success is False
-        assert result.data is None
-        assert any("Space not found" in e for e in result.errors)
-
-    async def test_list_pages_search_error(
-        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
-    ) -> None:
-        """Test handling search error."""
-        mock_mcp_client.call_tool.side_effect = [
-            # First call: confluence_get_space succeeds
-            ToolResult.from_data({"key": "TEST"}),
-            # Second call: confluence_search fails
-            ToolResult.from_error("Search failed"),
-        ]
-
-        result = await confluence_reader.list_pages_in_space("TEST")
-
-        assert result.success is False
-        assert result.data is None
-        assert any("Failed to search pages" in e for e in result.errors)
-
-    async def test_list_pages_empty_results(
-        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
-    ) -> None:
-        """Test listing with no results."""
-        mock_mcp_client.call_tool.side_effect = [
-            ToolResult.from_data({"key": "TEST"}),
-            ToolResult.from_data({"results": []}),
-        ]
-
-        result = await confluence_reader.list_pages_in_space("TEST")
-
-        assert result.success is True
-        assert result.data == []
-        assert result.confidence == 0.5  # Lower confidence for empty results
-
-    async def test_list_pages_invalid_response_format(
-        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
-    ) -> None:
-        """Test handling invalid search response format."""
-        mock_mcp_client.call_tool.side_effect = [
-            ToolResult.from_data({"key": "TEST"}),
-            ToolResult.from_data("invalid-json"),
-        ]
-
-        result = await confluence_reader.list_pages_in_space("TEST")
-
-        assert result.success is False
-        assert result.data is None
-        assert any("Invalid search response format" in e for e in result.errors)
 
 
 class TestConfluenceReaderReadMultiple:
@@ -472,14 +408,3 @@ class TestConfluenceReaderEdgeCases:
         url2 = "https://confluence.company.com/pages/viewpage.action?pageId=123456"
         result2 = await confluence_reader.read_page(url2)
         assert result2.success is True
-
-    async def test_list_pages_mcp_connection_error(
-        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
-    ) -> None:
-        """Test list pages with connection error."""
-        mock_mcp_client.call_tool.side_effect = MCPConnectionError("Connection lost")
-
-        result = await confluence_reader.list_pages_in_space("TEST")
-
-        assert result.success is False
-        assert any("MCP server unavailable" in e for e in result.errors)

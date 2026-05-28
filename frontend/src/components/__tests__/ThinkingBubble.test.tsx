@@ -14,24 +14,23 @@ const mockTrace: ThinkingTrace = {
 };
 
 describe("ThinkingBubble", () => {
-  it("renders collapsed by default", () => {
+  it("renders expanded by default when not completed", () => {
     render(<ThinkingBubble trace={mockTrace} />);
-    expect(screen.getByText(/Alice's Reasoning Process/)).toBeInTheDocument();
-    expect(screen.queryByText(/Connection Status/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Alice's thought/i)).toBeInTheDocument();
+    expect(screen.getByText(/Success/i)).toBeInTheDocument();
+    expect(screen.getByText(/bob/i)).toBeInTheDocument();
   });
 
-  it("expands when clicked", () => {
+  it("collapses when clicked", () => {
     render(<ThinkingBubble trace={mockTrace} />);
     const button = screen.getByRole("button");
     fireEvent.click(button);
-    expect(screen.getByText(/✅ Success/)).toBeInTheDocument();
-    expect(screen.getAllByText(/model-1/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Bob/)).toBeInTheDocument();
-    expect(screen.getByText(/Needs reasoning/)).toBeInTheDocument();
+    expect(screen.queryByText(/Success/i)).not.toBeInTheDocument();
   });
 
-  it("renders initially expanded when initialExpanded is true", () => {
-    render(<ThinkingBubble trace={mockTrace} initialExpanded={true} />);
-    expect(screen.getByText(/✅ Success/)).toBeInTheDocument();
+  it("renders initially collapsed when isCompleted is true", () => {
+    render(<ThinkingBubble trace={mockTrace} isCompleted={true} />);
+    expect(screen.queryByText(/Success/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Complete/i)).toBeInTheDocument();
   });
 });

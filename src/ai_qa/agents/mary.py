@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from ai_qa.agents.base import AgentState, BaseAgent
-from ai_qa.ai_connection.config import LLMConfig
 from ai_qa.models import StageResult, TestCase
 from ai_qa.pipelines.artifact_adapter import PipelineArtifact, PipelineArtifactAdapter
 from ai_qa.pipelines.test_case_extractor import TestCaseExtractor
@@ -53,17 +52,7 @@ class MaryAgent(BaseAgent):
         self.current_review_index: int = 0
 
         # Initialize pipeline components
-        try:
-            self.config = LLMConfig.from_agents_json(agent_name="mary")
-        except FileNotFoundError:
-            # Use default config if agents.json doesn't exist (test environment)
-            self.config = LLMConfig(
-                provider="litellm",
-                model_name="gpt-4",
-                temperature=0.0,
-                api_key="",
-                base_url="",
-            )
+        self.config = self.get_llm_config()
 
         self.extractor = TestCaseExtractor(
             llm_config=self.config,

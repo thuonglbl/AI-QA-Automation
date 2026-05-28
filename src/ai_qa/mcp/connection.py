@@ -16,7 +16,7 @@ from mcp.client.stdio import stdio_client
 
 from ai_qa.config import AppSettings
 from ai_qa.exceptions import MCPAuthenticationError, MCPConnectionError, MCPTimeoutError
-from ai_qa.mcp.tools import Tool, ToolCache
+from ai_qa.mcp.tools import Tool, ToolCache, ToolParameter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -288,14 +288,17 @@ class MCPConnection:
             for tool_data in response.tools:
                 # Convert MCP tool to our Tool model
                 params = []
-                if hasattr(tool_data, "parameters") and tool_data.parameters:
-                    for name, param in tool_data.parameters.items():
+                input_schema = getattr(tool_data, "inputSchema", {})
+                if isinstance(input_schema, dict) and "properties" in input_schema:
+                    properties = input_schema.get("properties", {})
+                    required_fields = input_schema.get("required", [])
+                    for name, param in properties.items():
                         params.append(
-                            Tool.Parameter(  # type: ignore[attr-defined]
+                            ToolParameter(
                                 name=name,
                                 type=param.get("type", "string"),
                                 description=param.get("description", ""),
-                                required=param.get("required", True),
+                                required=name in required_fields,
                             )
                         )
 
@@ -347,17 +350,9 @@ class ConnectionManager:
         server_url: str | None = None,
         auth_token: str | None = None,
     ) -> MCPConnection:
-        """Get or create a connection.
-
-        Args:
-            server_url: Server URL (uses settings if not provided)
-            auth_token: Auth token (uses settings if not provided)
-
-        Returns:
-            MCPConnection instance
-        """
+        """Get or create connection for the current thread/task."""
         url = server_url or (self._settings.mcp_server_url if self._settings else None) or ""
-        token = auth_token or (self._settings.mcp_server_key if self._settings else None)
+        token = auth_token
         timeout = (
             self._settings.mcp_timeout
             if self._settings and self._settings.mcp_timeout

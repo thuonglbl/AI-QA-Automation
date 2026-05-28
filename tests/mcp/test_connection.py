@@ -28,7 +28,7 @@ class TestMCPConnection:
     @pytest.mark.asyncio
     async def test_connect_not_connected(self):
         """Connect if not already connected."""
-        conn = MCPConnection("http://localhost:3000/sse")
+        conn = MCPConnection("http://localhost:3000/sse", use_streamable_http=False)
 
         with patch("ai_qa.mcp.connection.sse_client") as mock_sse:
             mock_ctx = AsyncMock()
@@ -38,7 +38,7 @@ class TestMCPConnection:
 
             with patch("ai_qa.mcp.connection.ClientSession") as mock_session_class:
                 mock_session = AsyncMock()
-                mock_session_class.return_value = mock_session
+                mock_session_class.return_value.__aenter__.return_value = mock_session
 
                 await conn.connect()
                 assert conn.is_connected
@@ -46,7 +46,7 @@ class TestMCPConnection:
     @pytest.mark.asyncio
     async def test_connect_already_connected(self):
         """No-op if already connected."""
-        conn = MCPConnection("http://localhost:3000/sse")
+        conn = MCPConnection("http://localhost:3000/sse", use_streamable_http=False)
 
         with patch("ai_qa.mcp.connection.sse_client") as mock_sse:
             mock_ctx = AsyncMock()
@@ -56,7 +56,7 @@ class TestMCPConnection:
 
             with patch("ai_qa.mcp.connection.ClientSession") as mock_session_class:
                 mock_session = AsyncMock()
-                mock_session_class.return_value = mock_session
+                mock_session_class.return_value.__aenter__.return_value = mock_session
 
                 await conn.connect()
                 await conn.connect()  # Second call
@@ -66,7 +66,7 @@ class TestMCPConnection:
     @pytest.mark.asyncio
     async def test_disconnect(self):
         """Disconnect from server."""
-        conn = MCPConnection("http://localhost:3000/sse")
+        conn = MCPConnection("http://localhost:3000/sse", use_streamable_http=False)
 
         with patch("ai_qa.mcp.connection.sse_client") as mock_sse:
             mock_ctx = AsyncMock()
@@ -76,7 +76,7 @@ class TestMCPConnection:
 
             with patch("ai_qa.mcp.connection.ClientSession") as mock_session_class:
                 mock_session = AsyncMock()
-                mock_session_class.return_value = mock_session
+                mock_session_class.return_value.__aenter__.return_value = mock_session
 
                 await conn.connect()
                 await conn.disconnect()
@@ -107,7 +107,6 @@ class TestConnectionManager:
         """Initialize with settings."""
         settings = AppSettings(
             mcp_server_url="http://server:3000",
-            mcp_server_key="secret",
             mcp_timeout=60,
         )
         mgr = ConnectionManager(settings=settings)
@@ -115,7 +114,7 @@ class TestConnectionManager:
 
     def test_get_connection_creates_new(self):
         """Create new connection if not exists."""
-        settings = AppSettings(mcp_server_url="http://server:3000", mcp_server_key="")
+        settings = AppSettings(mcp_server_url="http://server:3000")
         mgr = ConnectionManager(settings=settings)
 
         conn = mgr.get_connection()

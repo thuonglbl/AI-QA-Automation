@@ -49,6 +49,8 @@ function kindForStatus(status: number): ApiErrorKind {
 
 export async function apiFetch<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const { authRoute = false, safeMessage: overrideMessage, headers, ...request } = options;
+  const token = localStorage.getItem("aiqa_access_token");
+
   let response: Response;
   try {
     response = await fetch(buildUrl(path, authRoute), {
@@ -56,6 +58,7 @@ export async function apiFetch<T>(path: string, options: ApiRequestOptions = {})
       credentials: "include",
       headers: {
         ...(request.body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { "Authorization": `Bearer ${token}` } : {}),
         ...headers,
       },
     });
@@ -69,6 +72,9 @@ export async function apiFetch<T>(path: string, options: ApiRequestOptions = {})
 
   if (!response.ok) {
     const kind = kindForStatus(response.status);
+    if (kind === "auth") {
+      window.dispatchEvent(new Event("auth-error"));
+    }
     throw new ApiError(kind, overrideMessage ?? safeMessage(kind), response.status, payload);
   }
 

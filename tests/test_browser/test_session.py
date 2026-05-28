@@ -37,10 +37,10 @@ class TestSessionManagerInitialization:
         """Test SessionManager initialization with default config directory."""
         # This test uses the actual default path resolution
         manager = SessionManager()
-        # The default should be project_root/workspace/configuration
+        # The default should be project_root/.ai_qa/configuration
         # We just verify it creates the structure correctly
         assert manager.config_dir.name == "configuration"
-        assert manager.config_dir.parent.name == "workspace"
+        assert manager.config_dir.parent.name == ".ai_qa"
 
 
 class TestChromePathLoading:

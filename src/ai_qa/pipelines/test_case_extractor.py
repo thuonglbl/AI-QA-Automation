@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from ai_qa.ai_connection.client import LLMClient
 from ai_qa.ai_connection.config import LLMConfig
@@ -30,6 +30,8 @@ class TestCaseExtractor:
     Uses LLM to convert natural language requirements into browser-use-optimized
     test cases with clear action-target pairs.
     """
+
+    __test__ = False  # Prevent pytest from collecting this as a test class
 
     def __init__(
         self,
@@ -161,12 +163,14 @@ class TestCaseExtractor:
         Raises:
             LLMError: If LLM call fails
         """
-        config = self._llm_config or LLMConfig.from_agents_json(agent_name="mary")
+        config = self._llm_config or LLMConfig(
+            provider="litellm", model_name="claude-sonnet-4-6", temperature=0.0
+        )
         client = LLMClient(config)
 
         prompt = format_test_extraction_prompt(requirements)
 
-        messages = [
+        messages: list[BaseMessage] = [
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(content=prompt),
         ]

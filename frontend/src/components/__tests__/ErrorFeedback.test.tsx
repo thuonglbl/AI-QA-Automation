@@ -100,6 +100,6 @@ describe('ErrorFeedback', () => {
     render(<ErrorFeedback error={mockError} onRetry={() => {}} />);
 
     const retryButton = screen.getByRole('button');
-    expect(retryButton).toHaveAttribute('autofocus');
+    expect(retryButton).toHaveFocus();
   });
 });

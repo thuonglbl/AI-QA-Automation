@@ -6,7 +6,6 @@ abstract lifecycle methods without depending on any real agent implementation.
 All WebSocket interactions are mocked so no real network connections are made.
 """
 
-import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -34,7 +33,6 @@ class ConcreteAgent(BaseAgent):
     def __init__(
         self,
         process_result: StageResult | None = None,
-        workspace_dir: Path | None = None,
     ) -> None:
         self._process_result: StageResult = process_result or StageResult(
             success=True, data={"output": "default"}
@@ -44,7 +42,6 @@ class ConcreteAgent(BaseAgent):
             color="#EC4899",
             step_number=1,
             step_title="AI Provider Configuration",
-            workspace_dir=workspace_dir,
         )
 
     async def process(
@@ -62,10 +59,9 @@ class ConcreteAgent(BaseAgent):
 
 def make_agent(
     process_result: StageResult | None = None,
-    workspace_dir: Path | None = None,
 ) -> ConcreteAgent:
     """Create a ConcreteAgent with broadcast_message mocked at module level."""
-    return ConcreteAgent(process_result=process_result, workspace_dir=workspace_dir)
+    return ConcreteAgent(process_result=process_result)
 
 
 # ---------------------------------------------------------------------------
@@ -107,11 +103,11 @@ class TestBaseAgentInit:
     """Verify constructor sets identity properties and initial state."""
 
     def test_initial_state_is_start(self, tmp_path: Path) -> None:
-        agent = make_agent(workspace_dir=tmp_path)
-        assert agent.state is AgentState.START
+        agent = make_agent()
+        assert agent.state == AgentState.START
 
     def test_identity_properties_set_correctly(self, tmp_path: Path) -> None:
-        agent = make_agent(workspace_dir=tmp_path)
+        agent = make_agent()
         assert agent.name == "Alice"
         assert agent.color == "#EC4899"
         assert agent.step_number == 1
@@ -119,62 +115,7 @@ class TestBaseAgentInit:
 
     def test_agent_config_defaults_to_empty_dict_when_file_missing(self, tmp_path: Path) -> None:
         """No agents.json → _agent_config == {}."""
-        agent = make_agent(workspace_dir=tmp_path)
-        assert agent._agent_config == {}
-
-
-# ---------------------------------------------------------------------------
-# Workspace creation tests
-# ---------------------------------------------------------------------------
-
-
-class TestCreateWorkspace:
-    """Verify workspace directory structure is created correctly."""
-
-    def test_workspace_dir_is_assigned(self, tmp_path: Path) -> None:
-        """Agent should store the workspace dir correctly."""
-        agent = make_agent(workspace_dir=tmp_path)
-        assert agent.workspace_dir == tmp_path
-
-
-# ---------------------------------------------------------------------------
-# Agent config loading tests
-# ---------------------------------------------------------------------------
-
-
-class TestLoadAgentConfig:
-    """Verify agents.json config loading behaviour."""
-
-    def test_load_agent_config_from_file(self, tmp_path: Path) -> None:
-        """Agent reads its section from agents.json when the file exists."""
-        config_dir = tmp_path / "configuration"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        agents_data = {
-            "alice": {"model": "claude-sonnet-4-6", "prompt": "config_v1"},
-            "bob": {"model": "claude-opus-4"},
-        }
-        (config_dir / "agents.json").write_text(json.dumps(agents_data))
-
-        agent = make_agent(workspace_dir=tmp_path)
-        assert agent._agent_config == {"model": "claude-sonnet-4-6", "prompt": "config_v1"}
-
-    def test_load_agent_config_defaults_when_key_missing(self, tmp_path: Path) -> None:
-        """Agent uses empty dict when its key is absent from agents.json."""
-        config_dir = tmp_path / "configuration"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / "agents.json").write_text(json.dumps({"bob": {"model": "x"}}))
-
-        agent = make_agent(workspace_dir=tmp_path)
-        assert agent._agent_config == {}
-
-    def test_load_agent_config_handles_malformed_json(self, tmp_path: Path) -> None:
-        """Malformed agents.json must not raise — agent falls back to defaults."""
-        config_dir = tmp_path / "configuration"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / "agents.json").write_text("this is not json }")
-
-        # Should not raise
-        agent = make_agent(workspace_dir=tmp_path)
+        agent = make_agent()
         assert agent._agent_config == {}
 
 
@@ -200,11 +141,10 @@ class TestHandleStart:
         """handle_start: START → PROCESSING → REVIEW_REQUEST on success."""
         agent = make_agent(
             process_result=StageResult(success=True, data={"x": 1}),
-            workspace_dir=tmp_path,
         )
         await agent.handle_start({"url": "http://example.com"})
 
-        assert agent.state is AgentState.REVIEW_REQUEST
+        assert agent.state == AgentState.REVIEW_REQUEST
 
     @pytest.mark.asyncio
     async def test_handle_start_transitions_to_error_on_failure(
@@ -213,10 +153,9 @@ class TestHandleStart:
         """handle_start: START → PROCESSING → ERROR when process returns failure."""
         agent = make_agent(
             process_result=StageResult(success=False, errors=["something broke"]),
-            workspace_dir=tmp_path,
         )
         await agent.handle_start({})
-        assert agent.state is AgentState.ERROR
+        assert agent.state == AgentState.ERROR
 
     @pytest.mark.asyncio
     async def test_handle_start_broadcasts_state_transitions(
@@ -225,7 +164,6 @@ class TestHandleStart:
         """broadcast_message is called for each state transition."""
         agent = make_agent(
             process_result=StageResult(success=True),
-            workspace_dir=tmp_path,
         )
         await agent.handle_start({})
         # Should have been called at least twice (PROCESSING + REVIEW_REQUEST + content msg)
@@ -238,7 +176,6 @@ class TestHandleStart:
         """Error message broadcast uses 'error' message_type."""
         agent = make_agent(
             process_result=StageResult(success=False, errors=["boom"]),
-            workspace_dir=tmp_path,
         )
         await agent.handle_start({})
         # Last broadcast call should include messageType="error"
@@ -257,12 +194,11 @@ class TestHandleReject:
         """handle_reject: any state → PROCESSING → REVIEW_REQUEST on success."""
         agent = make_agent(
             process_result=StageResult(success=True, data={"revised": True}),
-            workspace_dir=tmp_path,
         )
         # Set agent to REVIEW_REQUEST as it would be after handle_start
         agent.state = AgentState.REVIEW_REQUEST
         await agent.handle_reject("Please add more detail")
-        assert agent.state is AgentState.REVIEW_REQUEST
+        assert agent.state == AgentState.REVIEW_REQUEST
 
     @pytest.mark.asyncio
     async def test_handle_reject_acknowledges_feedback(
@@ -271,7 +207,6 @@ class TestHandleReject:
         """handle_reject sends an acknowledgement text message first."""
         agent = make_agent(
             process_result=StageResult(success=True),
-            workspace_dir=tmp_path,
         )
         agent.state = AgentState.REVIEW_REQUEST
         await agent.handle_reject("More detail please")
@@ -289,11 +224,10 @@ class TestHandleReject:
         """handle_reject → ERROR when re-processing returns failure."""
         agent = make_agent(
             process_result=StageResult(success=False, errors=["cannot redo"]),
-            workspace_dir=tmp_path,
         )
         agent.state = AgentState.REVIEW_REQUEST
         await agent.handle_reject("Some feedback")
-        assert agent.state is AgentState.ERROR
+        assert agent.state == AgentState.ERROR
 
 
 class TestHandleApprove:
@@ -304,17 +238,17 @@ class TestHandleApprove:
         self, tmp_path: Path, mock_broadcast: AsyncMock
     ) -> None:
         """handle_approve: any state → DONE."""
-        agent = make_agent(workspace_dir=tmp_path)
+        agent = make_agent()
         agent.state = AgentState.REVIEW_REQUEST
         await agent.handle_approve()
-        assert agent.state is AgentState.DONE
+        assert agent.state == AgentState.DONE
 
     @pytest.mark.asyncio
     async def test_handle_approve_broadcasts_success_message(
         self, tmp_path: Path, mock_broadcast: AsyncMock
     ) -> None:
         """handle_approve broadcasts a 'success' message."""
-        agent = make_agent(workspace_dir=tmp_path)
+        agent = make_agent()
         agent.state = AgentState.REVIEW_REQUEST
         await agent.handle_approve()
 
@@ -335,7 +269,7 @@ class TestSendMessage:
         self, tmp_path: Path, mock_broadcast: AsyncMock
     ) -> None:
         """send_message calls broadcast_message with correct AgentMessage."""
-        agent = make_agent(workspace_dir=tmp_path)
+        agent = make_agent()
         await agent.send_message("Hello from Alice", message_type="info")
 
         mock_broadcast.assert_called_once()
@@ -350,7 +284,7 @@ class TestSendMessage:
         self, tmp_path: Path, mock_broadcast: AsyncMock
     ) -> None:
         """Metadata dict is attached to the broadcasted AgentMessage."""
-        agent = make_agent(workspace_dir=tmp_path)
+        agent = make_agent()
         meta = {"key": "value"}
         await agent.send_message("data", metadata=meta)
         sent = mock_broadcast.call_args[0][0]
@@ -369,15 +303,15 @@ class TestTransitionTo:
     async def test_transition_to_updates_state(
         self, tmp_path: Path, mock_broadcast: AsyncMock
     ) -> None:
-        agent = make_agent(workspace_dir=tmp_path)
+        agent = make_agent()
         await agent.transition_to(AgentState.PROCESSING)
-        assert agent.state is AgentState.PROCESSING
+        assert agent.state == AgentState.PROCESSING
 
     @pytest.mark.asyncio
     async def test_transition_to_broadcasts_system_message(
         self, tmp_path: Path, mock_broadcast: AsyncMock
     ) -> None:
-        agent = make_agent(workspace_dir=tmp_path)
+        agent = make_agent()
         await agent.transition_to(AgentState.REVIEW_REQUEST)
 
         mock_broadcast.assert_called_once()
@@ -408,9 +342,9 @@ class TestPipelineErrorHandling:
             ) -> StageResult:
                 raise PipelineError("Pipeline broke unexpectedly")
 
-        agent = FailingAgent(workspace_dir=tmp_path)
+        agent = FailingAgent()
         await agent.handle_start({})
-        assert agent.state is AgentState.ERROR
+        assert agent.state == AgentState.ERROR
 
     @pytest.mark.asyncio
     async def test_pipeline_error_in_handle_reject_transitions_to_error(
@@ -424,7 +358,7 @@ class TestPipelineErrorHandling:
             ) -> StageResult:
                 raise PipelineError("Cannot re-process")
 
-        agent = FailingAgent(workspace_dir=tmp_path)
+        agent = FailingAgent()
         agent.state = AgentState.REVIEW_REQUEST
         await agent.handle_reject("feedback")
-        assert agent.state is AgentState.ERROR
+        assert agent.state == AgentState.ERROR

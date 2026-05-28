@@ -8,7 +8,7 @@ Tests follow TDD pattern:
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -17,12 +17,14 @@ from ai_qa.models import StageResult, TestCase, TestCaseStep
 
 
 @pytest.fixture
-def mary_agent(tmp_path: Path) -> Any:
+def mary_agent(tmp_path: Path, mock_project_context) -> Any:
     """Create Mary agent instance with test workspace."""
     # Import here to avoid import error if file doesn't exist yet
     from ai_qa.agents.mary import MaryAgent
 
-    return MaryAgent(workspace_dir=tmp_path)
+    agent = MaryAgent()
+    agent.set_project_context(mock_project_context)
+    return agent
 
 
 @pytest.fixture
@@ -89,7 +91,7 @@ class TestMaryAgentProcess:
 
     @pytest.mark.asyncio
     async def test_process_reads_requirements_from_workspace(
-        self, tmp_path: Path, sample_test_cases: list[TestCase]
+        self, tmp_path: Path, sample_test_cases: list[TestCase], mary_agent: Any
     ) -> None:
         """Test process reads requirements from workspace/requirements/."""
         # Create sample requirements file
@@ -99,7 +101,7 @@ class TestMaryAgentProcess:
             "# Sample requirements\n\nUser should be able to login"
         )
 
-        with patch("ai_qa.agents.mary.TestCaseExtractor") as mock_extractor_class:
+        with patch("ai_qa.agents.mary.PipelineArtifactAdapter") as mock_adapter_class:
             mock_extractor = AsyncMock()
             mock_extractor.extract_batch.return_value = StageResult(
                 success=True,
@@ -108,12 +110,14 @@ class TestMaryAgentProcess:
                 warnings=[],
                 confidence=0.9,
             )
-            mock_extractor_class.return_value = mock_extractor
+            mary_agent.extractor = mock_extractor
 
-            # Create agent inside patch context
-            from ai_qa.agents.mary import MaryAgent
-
-            mary_agent = MaryAgent(workspace_dir=tmp_path)
+            mock_adapter = MagicMock()
+            mock_artifact = MagicMock()
+            mock_artifact.filename = "test-req.md"
+            mock_artifact.content = "content"
+            mock_adapter.load_requirement_markdown.return_value = [mock_artifact]
+            mock_adapter_class.return_value = mock_adapter
 
             result = await mary_agent.process({})
 
@@ -123,7 +127,7 @@ class TestMaryAgentProcess:
 
     @pytest.mark.asyncio
     async def test_process_sends_progress_updates(
-        self, tmp_path: Path, sample_test_cases: list[TestCase]
+        self, tmp_path: Path, sample_test_cases: list[TestCase], mary_agent: Any
     ) -> None:
         """Test process sends progress updates for each test case."""
         # Create sample requirements file
@@ -132,8 +136,8 @@ class TestMaryAgentProcess:
         (requirements_dir / "test-req.md").write_text("# Sample requirements")
 
         with (
-            patch("ai_qa.agents.mary.TestCaseExtractor") as mock_extractor_class,
             patch("ai_qa.api.websocket.broadcast_message") as mock_broadcast,
+            patch("ai_qa.agents.mary.PipelineArtifactAdapter") as mock_adapter_class,
         ):
             mock_extractor = AsyncMock()
             mock_extractor.extract_batch.return_value = StageResult(
@@ -143,12 +147,14 @@ class TestMaryAgentProcess:
                 warnings=[],
                 confidence=0.9,
             )
-            mock_extractor_class.return_value = mock_extractor
+            mary_agent.extractor = mock_extractor
 
-            # Create agent inside patch context
-            from ai_qa.agents.mary import MaryAgent
-
-            mary_agent = MaryAgent(workspace_dir=tmp_path)
+            mock_adapter = MagicMock()
+            mock_artifact = MagicMock()
+            mock_artifact.filename = "test-req.md"
+            mock_artifact.content = "content"
+            mock_adapter.load_requirement_markdown.return_value = [mock_artifact]
+            mock_adapter_class.return_value = mock_adapter
 
             await mary_agent.process({})
 
@@ -157,13 +163,18 @@ class TestMaryAgentProcess:
             assert mock_broadcast.call_count >= len(sample_test_cases) + 1
 
     @pytest.mark.asyncio
-    async def test_process_handles_empty_requirements(self, tmp_path: Path) -> None:
+    async def test_process_handles_empty_requirements(
+        self, tmp_path: Path, mary_agent: Any
+    ) -> None:
         """Test process handles empty requirements directory gracefully."""
         # Create empty requirements directory
         requirements_dir = tmp_path / "requirements"
         requirements_dir.mkdir(parents=True, exist_ok=True)
 
-        with patch("ai_qa.agents.mary.TestCaseExtractor") as mock_extractor_class:
+        with (
+            patch("ai_qa.agents.mary.TestCaseExtractor") as mock_extractor_class,
+            patch("ai_qa.agents.mary.PipelineArtifactAdapter") as mock_adapter_class,
+        ):
             mock_extractor = AsyncMock()
             mock_extractor.extract_batch.return_value = StageResult(
                 success=True,
@@ -174,10 +185,9 @@ class TestMaryAgentProcess:
             )
             mock_extractor_class.return_value = mock_extractor
 
-            # Create agent inside patch context
-            from ai_qa.agents.mary import MaryAgent
-
-            mary_agent = MaryAgent(workspace_dir=tmp_path)
+            mock_adapter = MagicMock()
+            mock_adapter.load_requirement_markdown.return_value = []
+            mock_adapter_class.return_value = mock_adapter
 
             result = await mary_agent.process({})
 
@@ -185,14 +195,14 @@ class TestMaryAgentProcess:
             assert result.data == []
 
     @pytest.mark.asyncio
-    async def test_process_handles_extractor_failure(self, tmp_path: Path) -> None:
+    async def test_process_handles_extractor_failure(self, tmp_path: Path, mary_agent: Any) -> None:
         """Test process handles TestCaseExtractor failure gracefully."""
         # Create sample requirements file
         requirements_dir = tmp_path / "requirements"
         requirements_dir.mkdir(parents=True, exist_ok=True)
         (requirements_dir / "test-req.md").write_text("# Sample requirements")
 
-        with patch("ai_qa.agents.mary.TestCaseExtractor") as mock_extractor_class:
+        with patch("ai_qa.agents.mary.PipelineArtifactAdapter") as mock_adapter_class:
             mock_extractor = AsyncMock()
             mock_extractor.extract_batch.return_value = StageResult(
                 success=False,
@@ -201,12 +211,14 @@ class TestMaryAgentProcess:
                 warnings=[],
                 confidence=0.0,
             )
-            mock_extractor_class.return_value = mock_extractor
+            mary_agent.extractor = mock_extractor
 
-            # Create agent inside patch context
-            from ai_qa.agents.mary import MaryAgent
-
-            mary_agent = MaryAgent(workspace_dir=tmp_path)
+            mock_adapter = MagicMock()
+            mock_artifact = MagicMock()
+            mock_artifact.filename = "test-req.md"
+            mock_artifact.content = "content"
+            mock_adapter.load_requirement_markdown.return_value = [mock_artifact]
+            mock_adapter_class.return_value = mock_adapter
 
             result = await mary_agent.process({})
 
@@ -219,12 +231,9 @@ class TestMaryAgentHandleApprove:
 
     @pytest.mark.asyncio
     async def test_handle_approve_marks_current_test_case_approved(
-        self, tmp_path: Path, sample_test_cases: list[TestCase]
+        self, tmp_path: Path, sample_test_cases: list[TestCase], mary_agent: Any
     ) -> None:
         """Test handle_approve marks current test case as approved."""
-        from ai_qa.agents.mary import MaryAgent
-
-        mary_agent = MaryAgent(workspace_dir=tmp_path)
         mary_agent.test_cases = sample_test_cases
         mary_agent.current_review_index = 0
 
@@ -239,25 +248,19 @@ class TestMaryAgentHandleApprove:
 
     @pytest.mark.asyncio
     async def test_handle_approve_transitions_to_done_when_all_approved(
-        self, tmp_path: Path, sample_test_cases: list[TestCase]
+        self, tmp_path: Path, sample_test_cases: list[TestCase], mary_agent: Any
     ) -> None:
         """Test handle_approve transitions to DONE when all test cases approved."""
-        from ai_qa.agents.mary import MaryAgent
-
-        mary_agent = MaryAgent(workspace_dir=tmp_path)
         mary_agent.test_cases = sample_test_cases
         mary_agent.current_review_index = len(sample_test_cases) - 1  # Last test case
 
         with (
             patch.object(mary_agent, "transition_to") as mock_transition,
             patch.object(mary_agent, "send_message"),
-            patch("ai_qa.agents.mary.OutputWriter") as mock_writer_class,
+            patch("ai_qa.agents.mary.PipelineArtifactAdapter") as mock_adapter_class,
         ):
-            mock_writer = AsyncMock()
-            mock_writer.write.return_value = StageResult(
-                success=True, data={}, errors=[], warnings=[], confidence=1.0
-            )
-            mock_writer_class.return_value = mock_writer
+            mock_adapter = MagicMock()
+            mock_adapter_class.return_value = mock_adapter
 
             await mary_agent.handle_approve()
 
@@ -266,20 +269,13 @@ class TestMaryAgentHandleApprove:
 
     @pytest.mark.asyncio
     async def test_handle_approve_writes_approved_test_cases(
-        self, tmp_path: Path, sample_test_cases: list[TestCase]
+        self, tmp_path: Path, sample_test_cases: list[TestCase], mary_agent: Any
     ) -> None:
         """Test handle_approve writes approved test cases to workspace."""
-        with patch("ai_qa.agents.mary.OutputWriter") as mock_writer_class:
-            mock_writer = AsyncMock()
-            mock_writer.write.return_value = StageResult(
-                success=True, data={}, errors=[], warnings=[], confidence=1.0
-            )
-            mock_writer_class.return_value = mock_writer
+        with patch("ai_qa.agents.mary.PipelineArtifactAdapter") as mock_adapter_class:
+            mock_adapter = MagicMock()
+            mock_adapter_class.return_value = mock_adapter
 
-            # Create agent inside patch context
-            from ai_qa.agents.mary import MaryAgent
-
-            mary_agent = MaryAgent(workspace_dir=tmp_path)
             mary_agent.test_cases = sample_test_cases
             mary_agent.current_review_index = len(sample_test_cases) - 1  # Last test case
 
@@ -290,24 +286,24 @@ class TestMaryAgentHandleApprove:
                 await mary_agent.handle_approve()
 
                 # Should write all test cases
-                assert mock_writer.write.call_count == len(sample_test_cases)
+                assert mock_adapter.save_test_case.call_count == len(sample_test_cases)
 
 
 class TestMaryAgentHandleReject:
     """Test Mary agent handle_reject method."""
 
     @pytest.mark.asyncio
-    async def test_handle_reject_acknowledges_feedback(self, tmp_path: Path) -> None:
+    async def test_handle_reject_acknowledges_feedback(
+        self, tmp_path: Path, mary_agent: Any
+    ) -> None:
         """Test handle_reject sends acknowledgment message paraphrasing feedback."""
-        from ai_qa.agents.mary import MaryAgent
-
-        mary_agent = MaryAgent(workspace_dir=tmp_path)
         feedback = "The precondition is missing"
 
         with (
             patch.object(mary_agent, "transition_to"),
             patch.object(mary_agent, "send_message") as mock_send,
             patch("ai_qa.agents.mary.TestCaseExtractor") as mock_extractor_class,
+            patch("ai_qa.agents.mary.PipelineArtifactAdapter") as mock_adapter_class,
         ):
             mock_extractor = AsyncMock()
             mock_extractor.extract_batch.return_value = StageResult(
@@ -319,6 +315,13 @@ class TestMaryAgentHandleReject:
             )
             mock_extractor_class.return_value = mock_extractor
 
+            mock_adapter = MagicMock()
+            mock_artifact = MagicMock()
+            mock_artifact.filename = "test-req.md"
+            mock_artifact.content = "content"
+            mock_adapter.load_requirement_markdown.return_value = [mock_artifact]
+            mock_adapter_class.return_value = mock_adapter
+
             await mary_agent.handle_reject(feedback)
 
             # Check acknowledgment was sent
@@ -328,7 +331,7 @@ class TestMaryAgentHandleReject:
 
     @pytest.mark.asyncio
     async def test_handle_reject_regenerates_current_test_case(
-        self, tmp_path: Path, sample_test_cases: list[TestCase]
+        self, tmp_path: Path, sample_test_cases: list[TestCase], mary_agent: Any
     ) -> None:
         """Test handle_reject re-generates the current test case with feedback."""
         # Create requirements file so handle_reject executes replacement logic
@@ -336,7 +339,7 @@ class TestMaryAgentHandleReject:
         requirements_dir.mkdir(parents=True, exist_ok=True)
         (requirements_dir / "test-req.md").write_text("# Sample requirements")
 
-        with patch("ai_qa.agents.mary.TestCaseExtractor") as mock_extractor_class:
+        with patch("ai_qa.agents.mary.PipelineArtifactAdapter") as mock_adapter_class:
             mock_extractor = AsyncMock()
             regenerated_case = TestCase(
                 title="Login with valid credentials (updated)",
@@ -352,12 +355,15 @@ class TestMaryAgentHandleReject:
                 warnings=[],
                 confidence=0.9,
             )
-            mock_extractor_class.return_value = mock_extractor
+            mary_agent.extractor = mock_extractor
 
-            # Create agent inside patch context
-            from ai_qa.agents.mary import MaryAgent
+            mock_adapter = MagicMock()
+            mock_artifact = MagicMock()
+            mock_artifact.filename = "test-req.md"
+            mock_artifact.content = "content"
+            mock_adapter.load_requirement_markdown.return_value = [mock_artifact]
+            mock_adapter_class.return_value = mock_adapter
 
-            mary_agent = MaryAgent(workspace_dir=tmp_path)
             mary_agent.test_cases = sample_test_cases
             mary_agent.current_review_index = 0
 
@@ -375,12 +381,9 @@ class TestMaryAgentFormatReviewContent:
     """Test Mary agent review content formatting."""
 
     def test_format_review_content_includes_test_case_structure(
-        self, tmp_path: Path, sample_test_cases: list[TestCase]
+        self, tmp_path: Path, sample_test_cases: list[TestCase], mary_agent: Any
     ) -> None:
         """Test review content includes test case title, preconditions, steps, expected results."""
-        from ai_qa.agents.mary import MaryAgent
-
-        mary_agent = MaryAgent(workspace_dir=tmp_path)
         mary_agent.test_cases = sample_test_cases
         mary_agent.current_review_index = 0
 
@@ -394,12 +397,9 @@ class TestMaryAgentFormatReviewContent:
         assert "expected" in content.lower()
 
     def test_format_review_content_includes_navigation_info(
-        self, tmp_path: Path, sample_test_cases: list[TestCase]
+        self, tmp_path: Path, sample_test_cases: list[TestCase], mary_agent: Any
     ) -> None:
         """Test review content includes current position and total count."""
-        from ai_qa.agents.mary import MaryAgent
-
-        mary_agent = MaryAgent(workspace_dir=tmp_path)
         mary_agent.test_cases = sample_test_cases
         mary_agent.current_review_index = 0
 

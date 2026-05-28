@@ -69,6 +69,13 @@ ignore = [
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--cov=src/ai_qa --cov-report=term-missing --cov-fail-under=50"
+markers = [
+    "integration: mark a test as an integration test",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:browser_use.*",
+    "ignore::DeprecationWarning:starlette.*",
+]
 
 [tool.coverage.run]
 omit = [

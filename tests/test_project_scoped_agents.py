@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from pathlib import Path
+from typing import cast
+
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import Table, create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -16,11 +20,10 @@ from ai_qa.db.base import Base
 from ai_qa.db.models import Artifact, ArtifactVersion, PipelineRun, Project, User
 from ai_qa.models import StageResult, TestCase, TestCaseStep
 from ai_qa.pipelines.context import PipelineContext
-from ai_qa.pipelines.models import ParsedContent
 
 
 @pytest.fixture
-def project_context(tmp_path):
+def project_context(tmp_path: Path) -> Generator[PipelineContext]:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -28,13 +31,16 @@ def project_context(tmp_path):
     )
     Base.metadata.create_all(
         engine,
-        tables=[
-            User.__table__,
-            Project.__table__,
-            PipelineRun.__table__,
-            Artifact.__table__,
-            ArtifactVersion.__table__,
-        ],
+        tables=cast(
+            list[Table],
+            [
+                User.__table__,
+                Project.__table__,
+                PipelineRun.__table__,
+                Artifact.__table__,
+                ArtifactVersion.__table__,
+            ],
+        ),
     )
     session = sessionmaker(bind=engine, expire_on_commit=False)()
     user = User(
@@ -63,33 +69,44 @@ def project_context(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_bob_approve_saves_requirement_artifact(project_context) -> None:
+async def test_bob_approve_saves_requirement_artifact(project_context: PipelineContext) -> None:
+    assert project_context.artifact_service is not None
     bob = BobAgent()
     bob.set_project_context(project_context)
     bob.pages = [
-        ParsedContent(
-            page_id="123",
-            page_title="Login Page",
-            source_url="https://example.test/wiki/login",
-            markdown="# Login requirement",
-        )
+        {
+            "page_id": "123",
+            "page_title": "Login Page",
+            "source_url": "https://example.test/wiki/login",
+            "requirement_md": "# Login requirement",
+            "raw_html": "<h1>Login requirement</h1>",
+        }
     ]
 
-    await bob.handle_approve()
+    bob.phase = "review_markdown"
+    bob.current_page_index = 0
+    bob.output_files_saved = 0
+
+    await bob.handle_approve(
+        {"action": "approved", "page_id": "123", "markdown": "# Login requirement"}
+    )
 
     requirements = project_context.artifact_service.list_artifacts(
         project_id=project_context.project_id, kind="requirements"
     )
     assert len(requirements) == 1
     assert requirements[0].pipeline_run_id == project_context.pipeline_run_id
-    assert (
-        project_context.artifact_service.read_current_content(requirements[0]).decode("utf-8")
-        == "# Login requirement"
-    )
+    content = project_context.artifact_service.read_current_content(requirements[0])
+    if isinstance(content, bytes):
+        content = content.decode("utf-8")
+    assert content == "# Login requirement"
 
 
 @pytest.mark.asyncio
-async def test_mary_writes_approved_test_cases_to_artifacts(project_context, monkeypatch) -> None:
+async def test_mary_writes_approved_test_cases_to_artifacts(
+    project_context: PipelineContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert project_context.artifact_service is not None
     project_context.artifact_service.save_artifact(
         project_id=project_context.project_id,
         owner_user_id=project_context.user_id,
@@ -107,7 +124,9 @@ async def test_mary_writes_approved_test_cases_to_artifacts(project_context, mon
         expected_results=["Dashboard is shown"],
     )
 
-    async def fake_extract_batch(requirements_paths, source_urls):
+    async def fake_extract_batch(
+        requirements_paths: list[Path], source_urls: list[str]
+    ) -> StageResult:
         assert len(requirements_paths) == 1
         assert requirements_paths[0].read_text(encoding="utf-8") == "# Login requirement"
         return StageResult(success=True, data=[generated], errors=[], warnings=[], confidence=1.0)
@@ -123,13 +142,17 @@ async def test_mary_writes_approved_test_cases_to_artifacts(project_context, mon
     )
     assert len(testcases) == 1
     assert testcases[0].pipeline_run_id == project_context.pipeline_run_id
-    assert "Login succeeds" in project_context.artifact_service.read_current_content(
-        testcases[0]
-    ).decode("utf-8")
+    content = project_context.artifact_service.read_current_content(testcases[0])
+    if isinstance(content, bytes):
+        content = content.decode("utf-8")
+    assert "Login succeeds" in content
 
 
 @pytest.mark.asyncio
-async def test_sarah_loads_test_cases_and_saves_approved_script(project_context) -> None:
+async def test_sarah_loads_test_cases_and_saves_approved_script(
+    project_context: PipelineContext,
+) -> None:
+    assert project_context.artifact_service is not None
     test_case = TestCase(
         title="Login succeeds",
         preconditions=["User exists"],
@@ -150,6 +173,7 @@ async def test_sarah_loads_test_cases_and_saves_approved_script(project_context)
 
     loaded = await sarah._load_test_cases()
     assert loaded.success
+    assert loaded.data is not None
     assert loaded.data[0].title == "Login succeeds"
 
     sarah._generated_scripts = [
@@ -168,6 +192,7 @@ async def test_sarah_loads_test_cases_and_saves_approved_script(project_context)
     )
     assert len(scripts) == 1
     assert scripts[0].pipeline_run_id == project_context.pipeline_run_id
-    assert "login succeeds" in project_context.artifact_service.read_current_content(
-        scripts[0]
-    ).decode("utf-8")
+    content = project_context.artifact_service.read_current_content(scripts[0])
+    if isinstance(content, bytes):
+        content = content.decode("utf-8")
+    assert "login succeeds" in content

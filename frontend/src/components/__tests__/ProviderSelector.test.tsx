@@ -32,9 +32,9 @@ describe("ProviderSelector", () => {
     );
 
     expect(screen.getByText(/Claude \(Anthropic\)/)).toBeInTheDocument();
-    expect(screen.getByText("On-Premises LLM")).toBeInTheDocument();
-    expect(screen.getByText("2nd Choice")).toBeInTheDocument();
-    expect(screen.getByText("4th Choice")).toBeInTheDocument();
+    expect(screen.getByText(/On-Premises LLM/)).toBeInTheDocument();
+    expect(screen.getByText(/Recommended/i)).toBeInTheDocument();
+    expect(screen.getByText(/Most secure/i)).toBeInTheDocument();
   });
 
   it("shows security level badges", () => {
@@ -45,8 +45,8 @@ describe("ProviderSelector", () => {
       />
     );
 
-    expect(screen.getByText("Enterprise")).toBeInTheDocument();
-    expect(screen.getByText("Highest Security")).toBeInTheDocument();
+    expect(screen.getByText(/Recommended/i)).toBeInTheDocument();
+    expect(screen.getByText(/Most secure/i)).toBeInTheDocument();
   });
 
   it("shows credential fields when provider selected", () => {
@@ -61,7 +61,7 @@ describe("ProviderSelector", () => {
     fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
 
     // Should show credential form
-    expect(screen.getByLabelText(/API Key/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Enter API Key/i)).toBeInTheDocument();
   });
 
   it("shows credential fields for on-premises provider", () => {
@@ -73,10 +73,10 @@ describe("ProviderSelector", () => {
     );
 
     // Click on On-Premises provider
-    fireEvent.click(screen.getByText("On-Premises LLM"));
+    fireEvent.click(screen.getByText(/On-Premises LLM/));
 
     // Should show API key field
-    expect(screen.getByLabelText(/API Key/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Enter API Key/i)).toBeInTheDocument();
   });
 
   it("pre-fills on-premises defaults when provided", () => {
@@ -93,10 +93,10 @@ describe("ProviderSelector", () => {
     );
 
     // Click on On-Premises provider
-    fireEvent.click(screen.getByText("On-Premises LLM"));
+    fireEvent.click(screen.getByText(/On-Premises LLM/));
 
     // Should pre-fill defaults
-    const apiKeyInput = screen.getByLabelText(/API Key/) as HTMLInputElement;
+    const apiKeyInput = screen.getByPlaceholderText(/Enter API Key/i) as HTMLInputElement;
     expect(apiKeyInput.value).toBe("default-key-123");
   });
 
@@ -114,11 +114,11 @@ describe("ProviderSelector", () => {
     fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
 
     // Click start without entering credentials
-    fireEvent.click(screen.getByText(/Test Connection/));
+    fireEvent.click(screen.getByRole("button", { name: /Start/i }));
 
     // Should show validation error
     await waitFor(() => {
-      expect(screen.getByText(/API Key is required/)).toBeInTheDocument();
+      expect(screen.getByText(/API Key is required/i)).toBeInTheDocument();
     });
 
     // onSelect should not have been called
@@ -139,11 +139,11 @@ describe("ProviderSelector", () => {
     fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
 
     // Enter API key
-    const apiKeyInput = screen.getByLabelText(/API Key/);
+    const apiKeyInput = screen.getByPlaceholderText(/Enter API Key/i);
     fireEvent.change(apiKeyInput, { target: { value: "my-api-key-12345" } });
 
     // Click start
-    fireEvent.click(screen.getByText(/Test Connection/));
+    fireEvent.click(screen.getByRole("button", { name: /Start/i }));
 
     // onSelect should be called with provider and credentials
     await waitFor(() => {

@@ -2,11 +2,12 @@
 
 from collections.abc import Generator
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import Table, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -28,7 +29,8 @@ def admin_client() -> Generator[TestClient]:
         poolclass=StaticPool,
     )
     Base.metadata.create_all(
-        engine, tables=[User.__table__, Project.__table__, ProjectMembership.__table__]
+        engine,
+        tables=cast(list[Table], [User.__table__, Project.__table__, ProjectMembership.__table__]),
     )
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -47,8 +49,9 @@ def admin_client() -> Generator[TestClient]:
 
 
 def _session_from_override(client: TestClient) -> Generator[Session]:
-    db_override = client.app.dependency_overrides[get_db_session_dependency]
-    return db_override()
+    app = cast(FastAPI, client.app)
+    db_override = app.dependency_overrides[get_db_session_dependency]
+    return cast(Generator[Session], db_override())
 
 
 def _create_user(client: TestClient, email: str, role: str, *, active: bool = True) -> User:
@@ -72,7 +75,8 @@ def _create_user(client: TestClient, email: str, role: str, *, active: bool = Tr
 
 
 def _token(client: TestClient, user: User) -> str:
-    session_manager = SessionManager(client.app.state.settings)
+    app = cast(FastAPI, client.app)
+    session_manager = SessionManager(app.state.settings)
     session = session_manager.create_session(
         {
             "user_id": str(user.id),
@@ -82,7 +86,7 @@ def _token(client: TestClient, user: User) -> str:
             "is_active": user.is_active,
         }
     )
-    return session_manager.encode_session(session)
+    return session_manager.encode_session(session)  # type: ignore[no-any-return]
 
 
 def _auth_headers(client: TestClient, user: User) -> dict[str, str]:
@@ -103,10 +107,11 @@ async def test_require_admin_allows_active_admin_and_rejects_standard(
                 "method": "GET",
                 "path": "/api/admin/users",
                 "headers": [],
-                "app": admin_client.app,
+                "app": cast(FastAPI, admin_client.app),
             }
         )
-        request.state.user = SessionManager(admin_client.app.state.settings).decode_session(
+        app = cast(FastAPI, admin_client.app)
+        request.state.user = SessionManager(app.state.settings).decode_session(
             _token(admin_client, user)
         )
         session_gen = _session_from_override(admin_client)
@@ -183,17 +188,21 @@ def test_admin_can_create_project_and_standard_user_cannot(admin_client: TestCli
     created = admin_client.post(
         "/api/admin/projects",
         headers=_auth_headers(admin_client, admin),
-        json={"name": "  Quality Workspace  ", "description": "  Core QA project  "},
+        json={
+            "name": "  Quality Workspace  ",
+            "description": "  Core QA project  ",
+            "confluence_base_url": "https://mcp",
+        },
     )
     denied = admin_client.post(
         "/api/admin/projects",
         headers=_auth_headers(admin_client, standard),
-        json={"name": "Denied"},
+        json={"name": "Denied", "confluence_base_url": "https://mcp"},
     )
     blank = admin_client.post(
         "/api/admin/projects",
         headers=_auth_headers(admin_client, admin),
-        json={"name": "   "},
+        json={"name": "   ", "confluence_base_url": "https://mcp"},
     )
 
     assert created.status_code == 200
@@ -212,7 +221,7 @@ def test_admin_assigns_membership_and_duplicate_updates_role(admin_client: TestC
     project_response = admin_client.post(
         "/api/admin/projects",
         headers=_auth_headers(admin_client, admin),
-        json={"name": "Quality Workspace"},
+        json={"name": "Quality Workspace", "confluence_base_url": "https://mcp"},
     )
     project_id = project_response.json()["id"]
 
@@ -262,7 +271,7 @@ def test_admin_cannot_assign_inactive_user_to_project(admin_client: TestClient) 
     project_response = admin_client.post(
         "/api/admin/projects",
         headers=_auth_headers(admin_client, admin),
-        json={"name": "Quality Workspace"},
+        json={"name": "Quality Workspace", "confluence_base_url": "https://mcp"},
     )
 
     response = admin_client.post(
@@ -300,19 +309,27 @@ def test_admin_can_update_and_delete_project(admin_client: TestClient) -> None:
     project_response = admin_client.post(
         "/api/admin/projects",
         headers=_auth_headers(admin_client, admin),
-        json={"name": "Original Project", "description": "Original description"},
+        json={
+            "name": "Original Project",
+            "description": "Original description",
+            "confluence_base_url": "https://mcp",
+        },
     )
     project_id = project_response.json()["id"]
 
     updated = admin_client.put(
         f"/api/admin/projects/{project_id}",
         headers=_auth_headers(admin_client, admin),
-        json={"name": "  Updated Project  ", "description": "  Updated description  "},
+        json={
+            "name": "  Updated Project  ",
+            "description": "  Updated description  ",
+            "confluence_base_url": "https://mcp",
+        },
     )
     blank = admin_client.put(
         f"/api/admin/projects/{project_id}",
         headers=_auth_headers(admin_client, admin),
-        json={"name": "   "},
+        json={"name": "   ", "confluence_base_url": "https://mcp"},
     )
     deleted = admin_client.delete(
         f"/api/admin/projects/{project_id}",
@@ -337,14 +354,14 @@ def test_standard_user_cannot_update_or_delete_project(admin_client: TestClient)
     project_response = admin_client.post(
         "/api/admin/projects",
         headers=_auth_headers(admin_client, admin),
-        json={"name": "Quality Workspace"},
+        json={"name": "Quality Workspace", "confluence_base_url": "https://mcp"},
     )
     project_id = project_response.json()["id"]
 
     updated = admin_client.put(
         f"/api/admin/projects/{project_id}",
         headers=_auth_headers(admin_client, standard),
-        json={"name": "Denied"},
+        json={"name": "Denied", "confluence_base_url": "https://mcp"},
     )
     deleted = admin_client.delete(
         f"/api/admin/projects/{project_id}", headers=_auth_headers(admin_client, standard)
@@ -404,7 +421,7 @@ def test_admin_can_remove_project_membership(admin_client: TestClient) -> None:
     project_response = admin_client.post(
         "/api/admin/projects",
         headers=_auth_headers(admin_client, admin),
-        json={"name": "Quality Workspace"},
+        json={"name": "Quality Workspace", "confluence_base_url": "https://mcp"},
     )
     project_id = project_response.json()["id"]
     assigned = admin_client.post(

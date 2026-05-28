@@ -9,7 +9,7 @@ Tests follow TDD pattern:
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -73,7 +73,7 @@ def mock_broadcast():
 class TestSarahAgentInit:
     """Test Sarah agent initialization."""
 
-    def test_sarah_agent_initialization(self, sarah_agent: Any) -> None:
+    def test_sarah_agent_initialization(self, sarah_agent: Any, mock_project_context) -> None:
         """Test Sarah agent has correct identity properties."""
         assert sarah_agent.name == "Sarah"
         assert sarah_agent.color == "#8B5CF6"  # Purple
@@ -105,38 +105,60 @@ class TestChromePathPersistence:
     """Test Chrome path loading and storage."""
 
     @pytest.mark.asyncio
-    async def test_load_chrome_path_from_storage(self, tmp_path: Path) -> None:
-        """Test Chrome path is loaded from persistent storage on init."""
+    async def test_load_chrome_path_from_storage(self, mock_project_context) -> None:
+        """Test Chrome path is loaded from persistent storage."""
         from ai_qa.agents.sarah import SarahAgent
 
-        # Create chrome path file
-        config_dir = tmp_path / "configuration"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        chrome_path_data = {"chrome_path": "/usr/bin/chrome"}
-        (config_dir / "chrome_path.json").write_text(json.dumps(chrome_path_data))
+        agent = SarahAgent()
+        agent.project_context = mock_project_context
 
-        agent = SarahAgent(workspace_dir=tmp_path)
-        assert agent._chrome_path == "/usr/bin/chrome"
+        with patch("ai_qa.agents.sarah.PipelineArtifactAdapter") as mock_adapter_class:
+            mock_adapter = MagicMock()
+            mock_adapter_class.return_value = mock_adapter
+
+            mock_artifact = MagicMock()
+            mock_artifact.name = "chrome_path.json"
+            mock_adapter.service.list_artifacts.return_value = [mock_artifact]
+            mock_adapter.service.read_current_content.return_value = json.dumps(
+                {"chrome_path": "/usr/bin/chrome"}
+            ).encode("utf-8")
+
+            agent._load_chrome_path()
+            assert agent._chrome_path == "/usr/bin/chrome"
 
     @pytest.mark.asyncio
-    async def test_store_chrome_path_saves_to_file(self, tmp_path: Path) -> None:
+    async def test_store_chrome_path_saves_to_file(self, mock_project_context) -> None:
         """Test Chrome path is saved to persistent storage."""
         from ai_qa.agents.sarah import SarahAgent
 
-        agent = SarahAgent(workspace_dir=tmp_path)
-        await agent._store_chrome_path("/usr/bin/google-chrome")
+        agent = SarahAgent()
+        agent.project_context = mock_project_context
 
-        chrome_path_file = tmp_path / "configuration" / "chrome_path.json"
-        assert chrome_path_file.exists()
-        data = json.loads(chrome_path_file.read_text())
-        assert data["chrome_path"] == "/usr/bin/google-chrome"
+        with patch("ai_qa.agents.sarah.PipelineArtifactAdapter") as mock_adapter_class:
+            mock_adapter = MagicMock()
+            mock_adapter_class.return_value = mock_adapter
 
-    def test_chrome_path_none_when_no_storage(self, tmp_path: Path) -> None:
+            await agent._store_chrome_path("/usr/bin/google-chrome")
+
+            mock_adapter.save_metadata.assert_called_once_with(
+                "chrome_path.json", {"chrome_path": "/usr/bin/google-chrome"}
+            )
+            assert agent._chrome_path == "/usr/bin/google-chrome"
+
+    def test_chrome_path_none_when_no_storage(self, mock_project_context) -> None:
         """Test Chrome path is None when no storage exists."""
         from ai_qa.agents.sarah import SarahAgent
 
-        agent = SarahAgent(workspace_dir=tmp_path)
-        assert agent._chrome_path is None
+        agent = SarahAgent()
+        agent.project_context = mock_project_context
+
+        with patch("ai_qa.agents.sarah.PipelineArtifactAdapter") as mock_adapter_class:
+            mock_adapter = MagicMock()
+            mock_adapter_class.return_value = mock_adapter
+            mock_adapter.service.list_artifacts.return_value = []
+
+            agent._load_chrome_path()
+            assert agent._chrome_path is None
 
 
 # -----------------------------------------------------------------------------
@@ -147,21 +169,32 @@ class TestChromePathPersistence:
 class TestSarahAgentProcess:
     """Test Sarah agent process method."""
 
+    @pytest.fixture(autouse=True)
+    def setup_mocks(self):
+        with patch("ai_qa.agents.sarah.PipelineArtifactAdapter") as mock_adapter_class:
+            self.mock_adapter = MagicMock()
+            mock_adapter_class.return_value = self.mock_adapter
+            yield mock_adapter_class
+
     @pytest.mark.asyncio
     async def test_process_loads_test_cases_from_workspace(
-        self, tmp_path: Path, sample_test_cases: list[TestCase]
+        self, tmp_path: Path, sample_test_cases: list[TestCase], mock_project_context
     ) -> None:
-        """Test process loads test cases from workspace/testcases/."""
+        """Test process loads test cases from project artifacts."""
         from ai_qa.agents.sarah import SarahAgent
 
-        # Create test cases directory with test case files
-        testcases_dir = tmp_path / "testcases"
-        testcases_dir.mkdir(parents=True, exist_ok=True)
-        for tc in sample_test_cases:
-            (testcases_dir / f"{tc.filename}.json").write_text(json.dumps(tc.model_dump()))
+        # Mock adapter to return test cases
+        mock_artifact = MagicMock()
+        mock_artifact.content = json.dumps([tc.model_dump() for tc in sample_test_cases]).encode(
+            "utf-8"
+        )
+        self.mock_adapter.load_test_cases.return_value = [mock_artifact]
 
         with patch("ai_qa.agents.sarah.ScriptGenerator") as mock_generator_class:
-            mock_generator = AsyncMock()
+            mock_generator = MagicMock()
+            mock_generator.generate = AsyncMock()
+            mock_generator._generate_script_header.return_value = "# Header"
+            mock_generator._generate_filename.return_value = "file.py"
             mock_generator.generate.return_value = StageResult(
                 success=True,
                 data=[
@@ -179,42 +212,52 @@ class TestSarahAgentProcess:
             mock_generator_class.return_value = mock_generator
 
             agent = SarahAgent(workspace_dir=tmp_path)
+            agent.project_context = mock_project_context
             result = await agent.process({"chrome_path": "/usr/bin/chrome"})
 
             assert result.success is True
             assert len(agent._generated_scripts) == len(sample_test_cases)
 
     @pytest.mark.asyncio
-    async def test_process_handles_empty_testcases_directory(self, tmp_path: Path) -> None:
-        """Test process returns error for empty testcases directory."""
+    async def test_process_handles_empty_testcases_directory(
+        self, tmp_path: Path, mock_project_context
+    ) -> None:
+        """Test process returns error for empty test cases from artifacts."""
         from ai_qa.agents.sarah import SarahAgent
 
-        # Create empty testcases directory
-        testcases_dir = tmp_path / "testcases"
-        testcases_dir.mkdir(parents=True, exist_ok=True)
+        # Mock adapter to return empty list
+        self.mock_adapter.load_test_cases.return_value = []
 
         agent = SarahAgent(workspace_dir=tmp_path)
+        agent.project_context = mock_project_context
         result = await agent.process({"chrome_path": "/usr/bin/chrome"})
 
         assert result.success is False
         assert result.data is None
-        assert any("No test case files found" in err for err in result.errors)
+        assert any("No test case artifacts found" in err for err in result.errors)
 
     @pytest.mark.asyncio
     async def test_process_sends_progress_updates(
-        self, tmp_path: Path, sample_test_cases: list[TestCase], mock_broadcast: AsyncMock
+        self,
+        tmp_path: Path,
+        sample_test_cases: list[TestCase],
+        mock_broadcast: AsyncMock,
+        mock_project_context,
     ) -> None:
         """Test process sends progress updates for each script generation."""
         from ai_qa.agents.sarah import SarahAgent
 
-        # Create test cases directory
-        testcases_dir = tmp_path / "testcases"
-        testcases_dir.mkdir(parents=True, exist_ok=True)
-        for tc in sample_test_cases:
-            (testcases_dir / f"{tc.filename}.json").write_text(json.dumps(tc.model_dump()))
+        mock_artifact = MagicMock()
+        mock_artifact.content = json.dumps([tc.model_dump() for tc in sample_test_cases]).encode(
+            "utf-8"
+        )
+        self.mock_adapter.load_test_cases.return_value = [mock_artifact]
 
         with patch("ai_qa.agents.sarah.ScriptGenerator") as mock_generator_class:
-            mock_generator = AsyncMock()
+            mock_generator = MagicMock()
+            mock_generator.generate = AsyncMock()
+            mock_generator._generate_script_header.return_value = "# Header"
+            mock_generator._generate_filename.return_value = "file.py"
             mock_generator.generate.return_value = StageResult(
                 success=True,
                 data=[
@@ -232,6 +275,7 @@ class TestSarahAgentProcess:
             mock_generator_class.return_value = mock_generator
 
             agent = SarahAgent(workspace_dir=tmp_path)
+            agent.project_context = mock_project_context
             await agent.process({"chrome_path": "/usr/bin/chrome"})
 
             # Check that progress messages were sent
@@ -243,19 +287,22 @@ class TestSarahAgentProcess:
 
     @pytest.mark.asyncio
     async def test_process_stores_chrome_path_when_provided(
-        self, tmp_path: Path, sample_test_cases: list[TestCase]
+        self, tmp_path: Path, sample_test_cases: list[TestCase], mock_project_context
     ) -> None:
         """Test process stores Chrome path when provided in input."""
         from ai_qa.agents.sarah import SarahAgent
 
-        # Create test cases directory
-        testcases_dir = tmp_path / "testcases"
-        testcases_dir.mkdir(parents=True, exist_ok=True)
-        for tc in sample_test_cases:
-            (testcases_dir / f"{tc.filename}.json").write_text(json.dumps(tc.model_dump()))
+        mock_artifact = MagicMock()
+        mock_artifact.content = json.dumps([tc.model_dump() for tc in sample_test_cases]).encode(
+            "utf-8"
+        )
+        self.mock_adapter.load_test_cases.return_value = [mock_artifact]
 
         with patch("ai_qa.agents.sarah.ScriptGenerator") as mock_generator_class:
-            mock_generator = AsyncMock()
+            mock_generator = MagicMock()
+            mock_generator.generate = AsyncMock()
+            mock_generator._generate_script_header.return_value = "# Header"
+            mock_generator._generate_filename.return_value = "file.py"
             mock_generator.generate.return_value = StageResult(
                 success=True,
                 data=[
@@ -273,13 +320,13 @@ class TestSarahAgentProcess:
             mock_generator_class.return_value = mock_generator
 
             agent = SarahAgent(workspace_dir=tmp_path)
+            agent.project_context = mock_project_context
             await agent.process({"chrome_path": "/usr/bin/google-chrome"})
 
-            # Check Chrome path was stored
-            chrome_path_file = tmp_path / "configuration" / "chrome_path.json"
-            assert chrome_path_file.exists()
-            data = json.loads(chrome_path_file.read_text())
-            assert data["chrome_path"] == "/usr/bin/google-chrome"
+            # Check Chrome path was stored via adapter
+            self.mock_adapter.save_metadata.assert_called_with(
+                "chrome_path.json", {"chrome_path": "/usr/bin/google-chrome"}
+            )
 
 
 # -----------------------------------------------------------------------------
@@ -290,14 +337,24 @@ class TestSarahAgentProcess:
 class TestSarahAgentHandleStart:
     """Test Sarah agent handle_start method."""
 
+    @pytest.fixture(autouse=True)
+    def setup_mocks(self):
+        with patch("ai_qa.agents.sarah.PipelineArtifactAdapter") as mock_adapter_class:
+            self.mock_adapter = MagicMock()
+            mock_adapter_class.return_value = self.mock_adapter
+            yield mock_adapter_class
+
     @pytest.mark.asyncio
     async def test_handle_start_requests_chrome_path_when_not_set(
-        self, tmp_path: Path, mock_broadcast: AsyncMock
+        self, tmp_path: Path, mock_broadcast: AsyncMock, mock_project_context
     ) -> None:
         """Test handle_start requests Chrome path when not configured."""
         from ai_qa.agents.sarah import SarahAgent
 
+        self.mock_adapter.service.list_artifacts.return_value = []
+
         agent = SarahAgent(workspace_dir=tmp_path)
+        agent.project_context = mock_project_context
 
         await agent.handle_start({})
 
@@ -310,25 +367,26 @@ class TestSarahAgentHandleStart:
 
     @pytest.mark.asyncio
     async def test_handle_start_uses_saved_chrome_path(
-        self, tmp_path: Path, mock_broadcast: AsyncMock
+        self, tmp_path: Path, mock_broadcast: AsyncMock, mock_project_context
     ) -> None:
         """Test handle_start uses saved Chrome path when available."""
         from ai_qa.agents.sarah import SarahAgent
 
-        # Create chrome path file
-        config_dir = tmp_path / "configuration"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        chrome_path_data = {"chrome_path": "/usr/bin/chrome"}
-        (config_dir / "chrome_path.json").write_text(json.dumps(chrome_path_data))
-
-        # Create test cases directory
-        testcases_dir = tmp_path / "testcases"
-        testcases_dir.mkdir(parents=True, exist_ok=True)
+        mock_artifact = MagicMock()
+        mock_artifact.name = "chrome_path.json"
+        self.mock_adapter.service.list_artifacts.return_value = [mock_artifact]
+        self.mock_adapter.service.read_current_content.return_value = json.dumps(
+            {"chrome_path": "/usr/bin/chrome"}
+        ).encode("utf-8")
 
         agent = SarahAgent(workspace_dir=tmp_path)
+        agent.project_context = mock_project_context
 
         with patch("ai_qa.agents.sarah.ScriptGenerator") as mock_generator_class:
-            mock_generator = AsyncMock()
+            mock_generator = MagicMock()
+            mock_generator.generate = AsyncMock()
+            mock_generator._generate_script_header.return_value = "# Header"
+            mock_generator._generate_filename.return_value = "file.py"
             mock_generator.generate.return_value = StageResult(
                 success=True,
                 data=[],
@@ -353,14 +411,26 @@ class TestSarahAgentHandleStart:
 class TestSarahAgentHandleApprove:
     """Test Sarah agent handle_approve method."""
 
+    @pytest.fixture(autouse=True)
+    def setup_mocks(self):
+        with patch("ai_qa.agents.sarah.PipelineArtifactAdapter") as mock_adapter_class:
+            self.mock_adapter = MagicMock()
+            mock_adapter_class.return_value = self.mock_adapter
+            yield mock_adapter_class
+
     @pytest.mark.asyncio
     async def test_handle_approve_marks_script_approved_and_advances(
-        self, tmp_path: Path, sample_test_cases: list[TestCase], mock_broadcast: AsyncMock
+        self,
+        tmp_path: Path,
+        sample_test_cases: list[TestCase],
+        mock_broadcast: AsyncMock,
+        mock_project_context,
     ) -> None:
         """Test handle_approve marks current script as approved and advances."""
         from ai_qa.agents.sarah import GeneratedScript, SarahAgent
 
         agent = SarahAgent(workspace_dir=tmp_path)
+        agent.project_context = mock_project_context
 
         # Create generated scripts
         for tc in sample_test_cases:
@@ -385,12 +455,17 @@ class TestSarahAgentHandleApprove:
 
     @pytest.mark.asyncio
     async def test_handle_approve_transitions_to_done_when_all_approved(
-        self, tmp_path: Path, sample_test_cases: list[TestCase], mock_broadcast: AsyncMock
+        self,
+        tmp_path: Path,
+        sample_test_cases: list[TestCase],
+        mock_broadcast: AsyncMock,
+        mock_project_context,
     ) -> None:
         """Test handle_approve transitions to DONE when all scripts approved."""
         from ai_qa.agents.sarah import GeneratedScript, SarahAgent
 
         agent = SarahAgent(workspace_dir=tmp_path)
+        agent.project_context = mock_project_context
 
         # Create single generated script
         script = GeneratedScript(
@@ -412,12 +487,17 @@ class TestSarahAgentHandleApprove:
 
     @pytest.mark.asyncio
     async def test_handle_approve_presents_next_script(
-        self, tmp_path: Path, sample_test_cases: list[TestCase], mock_broadcast: AsyncMock
+        self,
+        tmp_path: Path,
+        sample_test_cases: list[TestCase],
+        mock_broadcast: AsyncMock,
+        mock_project_context,
     ) -> None:
         """Test handle_approve presents next script when more exist."""
         from ai_qa.agents.sarah import GeneratedScript, SarahAgent
 
         agent = SarahAgent(workspace_dir=tmp_path)
+        agent.project_context = mock_project_context
 
         # Create multiple generated scripts
         for tc in sample_test_cases:
@@ -471,7 +551,10 @@ class TestSarahAgentHandleReject:
         feedback = "Add more assertions"
 
         with patch("ai_qa.agents.sarah.ScriptGenerator") as mock_generator_class:
-            mock_generator = AsyncMock()
+            mock_generator = MagicMock()
+            mock_generator.generate = AsyncMock()
+            mock_generator._generate_script_header.return_value = "# Header"
+            mock_generator._generate_filename.return_value = "file.py"
             mock_generator.generate.return_value = StageResult(
                 success=True,
                 data=[
@@ -515,7 +598,10 @@ class TestSarahAgentHandleReject:
         agent._current_review_index = 0
 
         with patch("ai_qa.agents.sarah.ScriptGenerator") as mock_generator_class:
-            mock_generator = AsyncMock()
+            mock_generator = MagicMock()
+            mock_generator.generate = AsyncMock()
+            mock_generator._generate_script_header.return_value = "# Header"
+            mock_generator._generate_filename.return_value = "file.py"
             mock_generator.generate.return_value = StageResult(
                 success=True,
                 data=[
@@ -545,14 +631,26 @@ class TestSarahAgentHandleReject:
 class TestSarahAgentHandleSkip:
     """Test Sarah agent handle_skip method."""
 
+    @pytest.fixture(autouse=True)
+    def setup_mocks(self):
+        with patch("ai_qa.agents.sarah.PipelineArtifactAdapter") as mock_adapter_class:
+            self.mock_adapter = MagicMock()
+            mock_adapter_class.return_value = self.mock_adapter
+            yield mock_adapter_class
+
     @pytest.mark.asyncio
     async def test_handle_skip_advances_without_approval(
-        self, tmp_path: Path, sample_test_cases: list[TestCase], mock_broadcast: AsyncMock
+        self,
+        tmp_path: Path,
+        sample_test_cases: list[TestCase],
+        mock_broadcast: AsyncMock,
+        mock_project_context,
     ) -> None:
         """Test handle_skip advances without marking script approved."""
         from ai_qa.agents.sarah import GeneratedScript, SarahAgent
 
         agent = SarahAgent(workspace_dir=tmp_path)
+        agent.project_context = mock_project_context
 
         # Create generated scripts
         for tc in sample_test_cases:
@@ -577,12 +675,17 @@ class TestSarahAgentHandleSkip:
 
     @pytest.mark.asyncio
     async def test_handle_skip_sends_skip_notification(
-        self, tmp_path: Path, sample_test_cases: list[TestCase], mock_broadcast: AsyncMock
+        self,
+        tmp_path: Path,
+        sample_test_cases: list[TestCase],
+        mock_broadcast: AsyncMock,
+        mock_project_context,
     ) -> None:
         """Test handle_skip sends notification about skipped script."""
         from ai_qa.agents.sarah import GeneratedScript, SarahAgent
 
         agent = SarahAgent(workspace_dir=tmp_path)
+        agent.project_context = mock_project_context
 
         # Create generated script
         script = GeneratedScript(
@@ -734,7 +837,7 @@ class TestSarahAgentReviewState:
         assert review_state["approved_count"] == 1
         assert review_state["current_script"] == sample_test_cases[1].title
 
-    def test_get_review_state_when_no_scripts(self, tmp_path: Path) -> None:
+    def test_get_review_state_when_no_scripts(self, tmp_path: Path, mock_project_context) -> None:
         """Test get_review_state when no scripts generated."""
         from ai_qa.agents.sarah import SarahAgent
 
@@ -780,7 +883,9 @@ class TestSarahAgentFormatReviewContent:
         assert sample_test_cases[0].title in content
         assert "1 of 1" in content or "Script 1" in content
 
-    def test_format_review_content_when_no_scripts(self, tmp_path: Path) -> None:
+    def test_format_review_content_when_no_scripts(
+        self, tmp_path: Path, mock_project_context
+    ) -> None:
         """Test review content when no scripts to review."""
         from ai_qa.agents.sarah import SarahAgent
 

@@ -4,11 +4,20 @@ Validates that all pipeline action endpoints return correct responses
 and that request validation works properly.
 """
 
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 
 from ai_qa.api.app import create_app
 from ai_qa.api.auth.session import SessionManager
+
+
+@pytest.fixture(autouse=True)
+def mock_agents():
+    """Mock agent retrieval to return None so endpoints use stub responses."""
+    with patch("ai_qa.api.routes._agent_for_context", return_value=None) as mock:
+        yield mock
 
 
 @pytest.fixture
@@ -33,7 +42,11 @@ def client() -> TestClient:
 class TestHealthCheck:
     """Tests for /api/health endpoint."""
 
-    def test_health_check_returns_healthy(self, client: TestClient) -> None:
+    @patch("ai_qa.api.routes.check_database_health")
+    def test_health_check_returns_healthy(self, mock_health, client: TestClient) -> None:
+        from ai_qa.db.health import DatabaseHealth
+
+        mock_health.return_value = DatabaseHealth(status="healthy", latency_ms=10.0)
         response = client.get("/api/health")
         assert response.status_code == 200
         data = response.json()
@@ -240,7 +253,7 @@ class TestAppFactory:
 
     def test_app_has_api_routes(self) -> None:
         app = create_app()
-        routes = [route.path for route in app.routes]
+        routes = [getattr(route, "path", "") for route in app.routes]
         assert "/api/start" in routes
         assert "/api/approve" in routes
         assert "/api/reject" in routes
@@ -249,5 +262,5 @@ class TestAppFactory:
 
     def test_app_has_websocket_route(self) -> None:
         app = create_app()
-        routes = [route.path for route in app.routes]
+        routes = [getattr(route, "path", "") for route in app.routes]
         assert "/ws" in routes

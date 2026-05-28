@@ -58,7 +58,7 @@ class MCPClient:
         """
         self._settings = settings or AppSettings()
         self._server_url = server_url or self._settings.mcp_server_url or ""
-        self._auth_token = auth_token or self._settings.mcp_server_key
+        self._auth_token = auth_token
 
         if not self._server_url:
             raise MCPConnectionError(

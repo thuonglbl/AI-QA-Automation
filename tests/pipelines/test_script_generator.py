@@ -111,11 +111,6 @@ class TestScriptGeneratorInitialization:
         assert generator.output_base_dir == temp_workspace
         assert isinstance(generator._config, AppSettings)
 
-    def test_init_creates_output_writer(self, temp_workspace: Path) -> None:
-        """Test that OutputWriter is created on initialization."""
-        generator = ScriptGenerator(output_base_dir=temp_workspace)
-        assert generator._output_writer is not None
-
 
 class TestScriptGeneratorGenerate:
     """Test suite for ScriptGenerator.generate method."""
@@ -137,7 +132,7 @@ class TestScriptGeneratorGenerate:
         assert result.data is not None
         assert len(result.data) == 1
         assert result.data[0]["test_case_title"] == "User Login Flow"
-        assert "file_path" in result.data[0]
+        assert "script_content" in result.data[0]
 
     async def test_generate_empty_test_cases(self, temp_workspace: Path) -> None:
         """Test generating with empty test cases list."""

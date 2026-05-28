@@ -16,6 +16,8 @@ vi.mock("@/hooks/useWebSocket", () => ({
       isConnected: Boolean(projectId),
       error: null,
       lastMessage: null,
+      messageQueue: [],
+      clearMessageQueue: vi.fn(),
       sendMessage: (message: unknown) => {
         websocketMock.sentMessages.push(
           typeof message === "object" && message !== null && projectId
