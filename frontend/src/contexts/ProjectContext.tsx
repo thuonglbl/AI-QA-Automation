@@ -82,6 +82,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     void reloadProjects();
   }, [reloadProjects]);
 
+
   const value = useMemo<ProjectContextType>(() => ({
     projects,
     selectedProject,

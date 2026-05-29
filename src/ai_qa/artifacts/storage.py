@@ -81,9 +81,9 @@ class LocalArtifactStorage:
         self, project_id: UUID, artifact_id: UUID, version: int, kind: str, safe_name: str
     ) -> str:
         if kind == "requirements":
-            return f"projects/{project_id}/requirement/{safe_name}"
+            return f"projects/{project_id}/requirements/{safe_name}"
         if kind == "raw_html":
-            return f"projects/{project_id}/mcp/confluence/{safe_name}"
+            return f"projects/{project_id}/requirements/mcp/confluence/{safe_name}"
         return f"projects/{project_id}/artifacts/{artifact_id}/v{version}/{safe_name}"
 
     def _resolve_storage_path(self, storage_path: str) -> Path:
@@ -133,9 +133,9 @@ class S3ArtifactStorage:
         """Upload content to S3 bucket and return object key."""
         safe_name = sanitize_artifact_name(name)
         if kind == "requirements":
-            object_key = f"projects/{project_id}/requirement/{safe_name}"
+            object_key = f"projects/{project_id}/requirements/{safe_name}"
         elif kind == "raw_html":
-            object_key = f"projects/{project_id}/mcp/confluence/{safe_name}"
+            object_key = f"projects/{project_id}/requirements/mcp/confluence/{safe_name}"
         else:
             object_key = f"projects/{project_id}/artifacts/{artifact_id}/v{version}/{safe_name}"
 

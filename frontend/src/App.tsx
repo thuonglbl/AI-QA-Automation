@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, Fragment } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { usePipelineState } from "@/hooks/usePipelineState";
 import { useAuth } from "@/hooks/useAuth";
@@ -108,7 +108,7 @@ function App() {
   const [sessionSelectedProjectId, setSessionSelectedProjectId] = useState<string | null>(null);
 
   const confirmedProjectId = isProjectReady && sessionSelectedProjectId === selectedProjectId ? selectedProjectId : null;
-  const { isConnected, error: wsError, messageQueue, clearMessageQueue, sendMessage } = useWebSocket(confirmedProjectId);
+  const { isConnected, error: wsError, messageQueue, consumeMessages, sendMessage } = useWebSocket(confirmedProjectId);
   const {
     status,
     currentStep,
@@ -139,6 +139,11 @@ function App() {
     submittedMcp: false,
   });
   const isBobStep = currentStep === 2;
+
+  // Ref to avoid double-processing the same message from both the live
+  // WebSocket queue and the one-shot history sync effect.
+  const syncedProjectIdRef = useRef<string | null>(null);
+  const processedMsgIds = useRef<Set<string>>(new Set());
 
   const resetAliceConfiguration = useCallback(() => {
     setAliceState((prev) => ({ ...prev, submittedSelection: null, modelAssignments: null, thinkingTrace: null }));
@@ -181,12 +186,16 @@ function App() {
   }, [aliceState.submittedSelection]);
 
   // Handle WebSocket messages for Bob-specific UI
+  // FIX RC-1: selectedProject?.confluence_base_url added to dependency array so
+  // the closure always captures the current project URL instead of a stale one.
   const handleBobMessage = useCallback((message: AgentMessage, currentProjectUrl?: string | null) => {
     if (message.agentName && message.agentName !== "Bob") return;
 
-    if (message.metadata?.is_confirm_parent) {
+    const resultData = (message.metadata?.result as any)?.data || message.metadata;
+
+    if (resultData?.type === "confirm_parent" || message.metadata?.is_confirm_parent) {
       setBobState((prev) => {
-        let newSuggested = (message.metadata?.suggested_page as string) || "";
+        let newSuggested = (resultData?.suggested_page as string) || (message.metadata?.suggested_page as string) || "";
         if (newSuggested === "Requirements" || newSuggested === "Requirement" || newSuggested === "") {
           newSuggested = currentProjectUrl || newSuggested;
         }
@@ -196,12 +205,12 @@ function App() {
           suggestedPage: newSuggested,
         };
       });
-    } else if (message.metadata?.is_review_ready) {
+    } else if (message.metadata?.is_review_ready || resultData?.type === "review_ready") {
       setBobState((prev) => ({
         ...prev,
         isConfirmParent: false,
         isPaginating: true,
-        extractedPages: (message.metadata?.pages as any) || [],
+        extractedPages: (message.metadata?.pages as any) || (resultData?.pages as any) || [],
       }));
     }
     
@@ -240,24 +249,31 @@ function App() {
 
   useEffect(() => {
     if (messageQueue.length > 0) {
-      messageQueue.forEach((msg) => {
+      const messagesToProcess = [...messageQueue];
+      messagesToProcess.forEach((msg) => {
         updateFromMessage(msg);
         handleAliceMessage(msg);
+        // FIX RC-3: mark as processed so history sync doesn't replay it
+        if (msg.id) processedMsgIds.current.add(msg.id);
         handleBobMessage(msg, selectedProject?.confluence_base_url);
       });
-      clearMessageQueue();
+      consumeMessages(messagesToProcess.length);
     }
-  }, [messageQueue, updateFromMessage, handleAliceMessage, handleBobMessage, clearMessageQueue, selectedProject]);
+  }, [messageQueue, updateFromMessage, handleAliceMessage, handleBobMessage, consumeMessages, selectedProject]);
 
-  // Sync state from messages when history is loaded
+  // Sync state from messages when history is loaded.
+  // Replay loaded messages into individual agent states for UI restoration
   useEffect(() => {
-    if (isLoaded && messages.length > 0) {
-      messages.forEach(msg => {
-        handleAliceMessage(msg);
-        handleBobMessage(msg, selectedProject?.confluence_base_url);
-      });
-    }
-  }, [isLoaded, handleAliceMessage, handleBobMessage, messages, selectedProject?.confluence_base_url]);
+    if (!isLoaded || syncedProjectIdRef.current === (selectedProject?.id || null)) return;
+    syncedProjectIdRef.current = selectedProject?.id || null;
+    messages.forEach(msg => {
+      // FIX RC-3: skip messages already processed from the live queue
+      if (msg.id && processedMsgIds.current.has(msg.id)) return;
+      handleAliceMessage(msg);
+      handleBobMessage(msg, selectedProject?.confluence_base_url);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoaded, selectedProject?.id]);
 
   useEffect(() => {
     if (!wsError) return;

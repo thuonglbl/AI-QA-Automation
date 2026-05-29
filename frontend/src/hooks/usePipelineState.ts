@@ -119,6 +119,7 @@ export function usePipelineState(projectId: string | null): PipelineStateSelecto
     let cancelled = false;
 
     async function load() {
+      setIsLoaded(false);
       if (!projectId) {
         setIsLoaded(true);
         return;

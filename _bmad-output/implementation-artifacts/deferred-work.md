@@ -65,3 +65,11 @@
 - Stripped model metadata when calling LLM: Loss of detailed model information when passed to the LLM (pre-existing constraint).
 - Scattered imports in code: Import statements are placed inside functions, which may cause minor performance degradation (pre-existing code style).
 - Hardcoded agent names (bob, mary...): Pre-existing issue, needs to be refactored later.
+
+## Deferred from: code review of 12-13-fix-mcp-extraction-failure-and-implement-proactive-session-cleanup (2026-05-29)
+
+- Test Design Issues (Encapsulation, private methods, mock explosion) [tests/test_agents/test_bob.py]
+
+## Deferred from: code review of 12-12-fix-frontend-401-unauthorized-api-calls (2026-05-29)
+
+- Security Vulnerability (XSS) — Using localStorage instead of HttpOnly cookies for session tokens is a security risk. Pre-existing architectural choice.

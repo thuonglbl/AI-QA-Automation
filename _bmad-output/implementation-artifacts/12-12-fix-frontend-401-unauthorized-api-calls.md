@@ -1,6 +1,6 @@
 # Story 12.12: Fix frontend 401 Unauthorized API calls
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -58,3 +58,14 @@ Gemini 3.1 Pro (High)
 - `frontend/src/lib/api.ts`
 - `frontend/src/lib/auth.ts`
 - `frontend/src/contexts/AuthContext.tsx`
+
+### Review Findings
+
+- [x] [Review][Decision] Revert unrelated sprint-status.yaml and story 2-9 updates — The diff includes bulk updates to sprint-status and story 2-9 (with corrupted encoding). Should these be reverted to isolate Story 12.12?
+- [x] [Review][Patch] Fix Broken Logout Logic — `/logout` API must be called before token is removed from localStorage, with exception handling.
+- [x] [Review][Patch] Prevent Infinite Auth Loop & Wrong Password global dispatch — Do not dispatch `auth-error` for 401s originating from `/login` or `/refresh`.
+- [x] [Review][Patch] Prevent Event Listener Storm — Debounce or deduplicate concurrent `refresh()` calls in AuthContext to handle multiple simultaneous 401s.
+- [x] [Review][Patch] Fix Test State Leakage — Use cleanup blocks in `api.test.ts` to reliably remove `aiqa_access_token` and restore `vi.spyOn` mocks even if tests fail.
+- [x] [Review][Patch] Handle LocalStorage Exceptions — Wrap `getItem` and `setItem` with try-catch in `api.ts` and `auth.ts` to prevent uncaught exceptions.
+- [x] [Review][Patch] Clear stale token on 401 — Ensure `localStorage.removeItem("aiqa_access_token")` is called when `auth-error` is handled.
+- [x] [Review][Defer] Security Vulnerability (XSS) — Using localStorage instead of HttpOnly cookies for session tokens is a security risk — deferred, pre-existing architectural choice.

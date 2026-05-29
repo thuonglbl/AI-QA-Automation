@@ -63,6 +63,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
         """
         path = request.url.path
 
+        # WebSocket upgrade requests authenticate themselves inside websocket_endpoint
+        # via query-param token or session cookie. Do not block them at HTTP middleware
+        # level, otherwise the 101 Upgrade handshake can never succeed.
+        is_websocket_upgrade = (
+            request.headers.get("upgrade", "").lower() == "websocket"
+            or path == "/ws"
+            or path.startswith("/ws/")
+        )
+        if is_websocket_upgrade:
+            # Still attach user if cookie is present (nice-to-have for logging),
+            # but always let the request through.
+            user = self._get_user_from_request(request)
+            request.state.user = user
+            return await call_next(request)
+
         # Check if path is public
         is_public = any(
             path == public_path or path.startswith(public_path + "/")
@@ -84,7 +99,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         if user is None:
             # Check if this is an API request (return 401) or page request (redirect to login)
-            if path.startswith("/api/") or path == "/ws" or path.startswith("/ws/"):
+            if path.startswith("/api/"):
                 return Response(
                     content='{"detail": "Not authenticated"}',
                     status_code=401,
@@ -98,7 +113,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Check session expiration
         if user.is_expired:
-            if path.startswith("/api/") or path == "/ws" or path.startswith("/ws/"):
+            if path.startswith("/api/"):
                 return Response(
                     content='{"detail": "Session expired"}',
                     status_code=401,

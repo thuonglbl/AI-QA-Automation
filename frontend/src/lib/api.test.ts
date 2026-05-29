@@ -9,8 +9,11 @@ function mockResponse(status: number, body: unknown, contentType = "application/
 }
 
 describe("apiFetch", () => {
-  beforeEach(() => {
+  afterEach(() => {
     vi.restoreAllMocks();
+    try {
+      localStorage.removeItem("aiqa_access_token");
+    } catch {}
   });
 
   it("uses credentials and /api base path for protected calls", async () => {
@@ -31,7 +34,6 @@ describe("apiFetch", () => {
       headers: expect.objectContaining({ Authorization: "Bearer test_token" })
     }));
 
-    localStorage.removeItem("aiqa_access_token");
   });
 
   it("dispatches auth-error event on 401 response", async () => {

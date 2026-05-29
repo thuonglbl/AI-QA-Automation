@@ -408,3 +408,57 @@ class TestConfluenceReaderEdgeCases:
         url2 = "https://confluence.company.com/pages/viewpage.action?pageId=123456"
         result2 = await confluence_reader.read_page(url2)
         assert result2.success is True
+
+
+class TestConfluenceReaderParameterConsistency:
+    """Tests for AC1: parameter naming consistency (page_id vs pageId)."""
+
+    async def test_read_page_uses_page_id_snake_case(
+        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
+    ) -> None:
+        """AC1: read_page() must call confluence_get_page with 'page_id' (snake_case)."""
+        mock_mcp_client.call_tool.return_value = ToolResult.from_data(
+            {
+                "id": "123456",
+                "title": "Test Page",
+                "content": "<p>Content</p>",
+                "space": {"key": "TEST"},
+            }
+        )
+
+        url = "https://company.atlassian.net/wiki/spaces/TEST/pages/123456/Test+Page"
+        await confluence_reader.read_page(url)
+
+        mock_mcp_client.call_tool.assert_called_once()
+        call_args = mock_mcp_client.call_tool.call_args
+        params = call_args.args[1]
+        assert params == {
+            "page_id": "123456",
+            "format": "view",
+            "userPrompt": "User initiated a story creation workflow from a Confluence page link.",
+            "llmReasoning": "Need to extract the content of the provided Confluence page to fulfill the user's request.",
+        }
+
+    async def test_read_page_by_id_uses_page_id_snake_case(
+        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
+    ) -> None:
+        """AC1: read_page_by_id() must also use 'page_id' (snake_case)."""
+        mock_mcp_client.call_tool.return_value = ToolResult.from_data(
+            {
+                "id": "789",
+                "title": "Another Page",
+                "content": "<p>Content</p>",
+                "space": {"key": "TEST"},
+            }
+        )
+
+        await confluence_reader.read_page_by_id("789")
+
+        mock_mcp_client.call_tool.assert_called_once()
+        call_args = mock_mcp_client.call_tool.call_args
+        params = call_args.args[1]
+        assert params == {
+            "page_id": "789",
+            "userPrompt": "User initiated a story creation workflow from a Confluence page link.",
+            "llmReasoning": "Need to extract the content of the provided Confluence page to fulfill the user's request.",
+        }

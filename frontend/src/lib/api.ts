@@ -49,7 +49,10 @@ function kindForStatus(status: number): ApiErrorKind {
 
 export async function apiFetch<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const { authRoute = false, safeMessage: overrideMessage, headers, ...request } = options;
-  const token = localStorage.getItem("aiqa_access_token");
+  let token = null;
+  try {
+    token = localStorage.getItem("aiqa_access_token");
+  } catch (e) {}
 
   let response: Response;
   try {
@@ -72,7 +75,13 @@ export async function apiFetch<T>(path: string, options: ApiRequestOptions = {})
 
   if (!response.ok) {
     const kind = kindForStatus(response.status);
-    if (kind === "auth") {
+    // Only dispatch auth-error for non-auth-route API calls.
+    // Auth route calls (login, status, me) returning 401 are expected and should NOT
+    // trigger a refresh loop — that would cause infinite recursion.
+    if (kind === "auth" && !authRoute && !path.includes("/login") && !path.includes("/refresh")) {
+      try {
+        localStorage.removeItem("aiqa_access_token");
+      } catch (e) {}
       window.dispatchEvent(new Event("auth-error"));
     }
     throw new ApiError(kind, overrideMessage ?? safeMessage(kind), response.status, payload);

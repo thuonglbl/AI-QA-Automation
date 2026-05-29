@@ -17,8 +17,8 @@ export interface WebSocketActions {
   sendMessage: (message: unknown) => void;
   /** Manually reconnect */
   reconnect: () => void;
-  /** Clear the message queue after processing */
-  clearMessageQueue: () => void;
+  /** Consume a specific number of messages from the queue */
+  consumeMessages: (count: number) => void;
 }
 
 /** WebSocket URL (Vite proxy handles routing) */
@@ -29,6 +29,16 @@ const WS_URL = `${wsScheme}://${window.location.host}/ws`;
 function buildWsUrl(projectId: string): string {
   const url = new URL(WS_URL, window.location.origin);
   url.searchParams.set("project_id", projectId);
+  // Attach Bearer token so the backend can auth the WebSocket without relying
+  // solely on cookies (cookies may be SameSite-blocked in some deployments).
+  try {
+    const token = localStorage.getItem("aiqa_access_token");
+    if (token) {
+      url.searchParams.set("token", token);
+    }
+  } catch {
+    // localStorage unavailable (e.g. incognito with storage blocked) — fall back to cookie auth
+  }
   return url.toString();
 }
 
@@ -127,10 +137,19 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
         setError("WebSocket connection error");
       };
 
-      ws.onclose = () => {
-        console.log("WebSocket closed");
+      ws.onclose = (event) => {
+        console.log("WebSocket closed, code:", event.code);
         setIsConnected(false);
         wsRef.current = null;
+
+        // WS close code 4401 = server-side Unauthorized (session expired/missing).
+        // Dispatch auth-error so AuthContext can refresh and redirect to login.
+        // Do NOT attempt reconnect — that would loop forever.
+        if (event.code === 4401) {
+          console.warn("WebSocket closed with 4401 — session expired or invalid");
+          window.dispatchEvent(new Event("auth-error"));
+          return;
+        }
 
         // Skip reconnection if intentionally closed (unmount or manual reconnect)
         if (intentionalCloseRef.current) {
@@ -170,8 +189,8 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
     }
   }, [getWebSocketCtor, projectId]);
 
-  const clearMessageQueue = useCallback(() => {
-    setMessageQueue([]);
+  const consumeMessages = useCallback((count: number) => {
+    setMessageQueue((prev) => prev.slice(count));
   }, []);
 
   const reconnect = useCallback(() => {
@@ -216,6 +235,6 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
     messageQueue,
     sendMessage,
     reconnect,
-    clearMessageQueue,
+    consumeMessages,
   };
 }

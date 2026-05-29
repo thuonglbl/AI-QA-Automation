@@ -99,7 +99,7 @@ class AppSettings(BaseSettings):
         default=True, description="Use MCP Streamable HTTP transport instead of Legacy SSE"
     )
     mcp_timeout: int = Field(
-        default=30, ge=1, le=300, description="MCP connection timeout in seconds"
+        default=120, ge=1, le=300, description="MCP connection timeout in seconds"
     )
     mcp_max_retries: int = Field(
         default=3, ge=0, le=10, description="Max retry attempts for MCP operations"

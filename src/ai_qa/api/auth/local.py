@@ -108,7 +108,14 @@ def get_auth_router(settings: AppSettings) -> APIRouter:
 
         session = session_manager.create_session(_session_payload(user))
         session_token = session_manager.encode_session(session)
-        response.set_cookie(value=session_token, **session_manager.get_cookie_settings())
+        cookie_settings = session_manager.get_cookie_settings()
+        cookie_settings.update(
+            {
+                "samesite": "lax",
+                "domain": None,  # Let browser handle domain
+            }
+        )
+        response.set_cookie(value=session_token, **cookie_settings)
 
         return {
             "success": True,

@@ -39,6 +39,7 @@ class BobAgent(BaseAgent):
 
     async def handle_start(self, input_data: dict[str, Any]) -> None:
         """Override to parse multiple pages immediately."""
+        self.phase = "confirm_parent"
         await self.transition_to(AgentState.PROCESSING)
 
         # Start processing
@@ -192,8 +193,8 @@ class BobAgent(BaseAgent):
         )
 
         try:
-            # Determine suggested page — never crash here; always
-            # reach confirm_parent so the user can correct the suggestion.
+            # Determine suggested page — search for a requirement page first;
+            # fall back to confluence_url so the user can always correct it.
             suggested = confluence_url
 
             if page_id:
@@ -219,6 +220,36 @@ class BobAgent(BaseAgent):
                     )
 
                 self._space_key = space_key
+
+            # --- Search for requirement page to suggest a smarter URL ---
+            # Re-use the already-connected client; ConfluenceReader is lightweight.
+            reader = ConfluenceReader(client, confluence_base_url=confluence_url)
+            if space_key:
+                logger.debug(
+                    "BobAgent.process: searching requirement pages in space_key=%r", space_key
+                )
+                req_result = await reader.find_parent_pages(space_key)
+                if req_result.success and req_result.data:
+                    first: Any = req_result.data[0]
+                    candidate_url = getattr(first, "url", "") if hasattr(first, "url") else ""
+                    if candidate_url:
+                        suggested = candidate_url
+                        logger.debug(
+                            "BobAgent.process: requirement page found, suggested=%r", suggested
+                        )
+            elif page_id:
+                logger.debug(
+                    "BobAgent.process: searching requirement pages under page_id=%r", page_id
+                )
+                req_result = await reader.find_requirement_page_by_parent_id(page_id)
+                if req_result.success and req_result.data:
+                    candidate_url = getattr(req_result.data, "url", "")
+                    if candidate_url:
+                        suggested = candidate_url
+                        logger.debug(
+                            "BobAgent.process: requirement child page found, suggested=%r",
+                            suggested,
+                        )
 
             await self.send_message(
                 content="Found the requirements page.",
@@ -306,7 +337,9 @@ class BobAgent(BaseAgent):
             # Use page_id if available (direct children fetch), else search by title
             if self._page_id:
                 logger.debug("_extract_descendants: using page_id=%r for children", self._page_id)
-                desc_res = await reader.get_children_by_id(self._page_id)
+                desc_res = await reader.get_children_by_id(
+                    self._page_id, space_key=self._space_key or ""
+                )
             elif self._space_key:
                 logger.debug(
                     "_extract_descendants: using space_key=%r + title for descendants",
@@ -359,13 +392,28 @@ class BobAgent(BaseAgent):
                 # Fetch directly by page ID instead of URL to avoid URL validation issues
                 page_result = await reader.read_page_by_id(summary.page_id)
                 if not page_result.success or not page_result.data:
-                    await self.send_message(f"⚠ Failed to extract: '{summary.title}'", "warning")
+                    error_details = (
+                        ", ".join(page_result.errors) if page_result.errors else "Unknown error"
+                    )
+                    logger.error(
+                        f"Failed to extract page '{summary.title}' (ID: {summary.page_id}): {error_details}"
+                    )
+                    await self.send_message(
+                        f"⚠ Failed to extract: '{summary.title}' - {error_details}", "warning"
+                    )
                     continue
 
                 page: ConfluencePage = page_result.data
                 adapter.save_raw_html(page.page_id, page.content)
+                adapter._save_text(kind="raw_html", name=f"{page.page_id}.txt", content=page.url)
                 await self.send_message(f"✓ Extracted '{summary.title}'", "info")
                 raw_pages.append(page)
+
+            # Proactively disconnect from MCP session after all pages are extracted
+            try:
+                await client.disconnect()
+            except Exception as e:
+                logger.warning(f"Failed to disconnect MCP client cleanly: {e}")
 
             # Setup LLM for Bob
             config = self.get_llm_config()
@@ -378,7 +426,7 @@ class BobAgent(BaseAgent):
                 await self.send_message(f"Converting '{page.title}' to requirement...", "info")
                 try:
                     requirement_md = await formatter.convert_page(page)
-                    adapter.save_requirement_page(f"{page.page_id}/requirement.md", requirement_md)
+                    adapter.save_requirement_page(page.page_id, requirement_md)
                     await self.send_message(f"✓ Converted '{page.title}'", "info")
                     self.pages.append(
                         {
@@ -426,8 +474,14 @@ class BobAgent(BaseAgent):
                 confidence=1.0,
             )
 
-        finally:
-            await client.disconnect()
+        except Exception as e:
+            logger.error(f"Error in Bob _extract_descendants: {e}", exc_info=True)
+            # Try to disconnect if an exception occurred before phase 1 finished
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            raise
 
     async def handle_approve(self, data: dict[str, Any] | None = None) -> None:
         """Override to handle paginated approval and parent confirmation."""

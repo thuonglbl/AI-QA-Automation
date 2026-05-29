@@ -4,9 +4,11 @@ Validates WebSocket connection, message exchange, and disconnection handling.
 """
 
 import json
+from collections.abc import Generator
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from ai_qa.api.app import create_app
 from ai_qa.api.auth.session import SessionManager
@@ -30,7 +32,7 @@ def client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def _reset_active_connections() -> None:
+def _reset_active_connections() -> Generator[None, None, None]:
     """Reset active_connections before each test to prevent state leaking."""
     active_connections.clear()
     yield
@@ -136,3 +138,53 @@ class TestActiveConnections:
 
         # After disconnect, the connection should be cleaned up
         # The exact timing depends on the test client implementation
+
+
+class TestWebSocketAuthentication:
+    """Tests for WebSocket authentication behavior."""
+
+    def test_unauthenticated_connection_is_closed_with_4401(self) -> None:
+        """Unauthenticated WebSocket connections must be rejected with code 4401.
+
+        This prevents silent guest connections and ensures the frontend can detect
+        auth failure and redirect to login instead of entering a reconnect loop.
+        """
+        app = create_app()
+        client = TestClient(app)
+
+        # Connect without any auth cookie or token
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            # TestClient raises when the server closes the connection during
+            # the context (the WS close frame with code 4401 causes disconnect)
+            with client.websocket_connect("/ws") as ws:
+                # Server should close immediately with 4401
+                ws.receive_json()  # may raise WebSocketDisconnect
+        assert exc_info.value.code == 4401
+
+    def test_token_query_param_authenticates_websocket(self) -> None:
+        """A valid Bearer token supplied as ?token= should authenticate the WS."""
+        app = create_app()
+        client = TestClient(app)
+
+        settings = app.state.settings
+        session_manager = SessionManager(settings)
+        session = session_manager.create_session(
+            {"email": "token@example.com", "name": "Token User"}
+        )
+        token = session_manager.encode_session(session)
+
+        # Connect without cookie, but with token in query param
+        with client.websocket_connect(f"/ws?token={token}") as ws:
+            response = ws.receive_json()
+            assert response["type"] == "auth_status"
+            assert response["authenticated"] is True
+            assert response["user"]["email"] == "token@example.com"
+
+    def test_auth_status_shows_authenticated_true_on_success(self, client: TestClient) -> None:
+        """Authenticated connections receive auth_status with authenticated=True."""
+        with client.websocket_connect("/ws", cookies=client.cookies) as ws:
+            response = ws.receive_json()
+            assert response["type"] == "auth_status"
+            assert response["authenticated"] is True
+            assert "user" in response
+            assert response["user"]["email"] == "test@example.com"

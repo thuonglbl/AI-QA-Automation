@@ -30,23 +30,35 @@ active_connections: dict[str, tuple[WebSocket, UserSession | None]] = {}
 def _get_user_from_websocket(websocket: WebSocket, settings: AppSettings) -> UserSession | None:
     """Extract and validate user session from WebSocket connection.
 
+    Auth resolution order:
+    1. ?token= query param (JWT sent by frontend that cannot set WS headers)
+    2. Session cookie (set by /auth/login for same-origin requests)
+
     Args:
         websocket: WebSocket connection.
         settings: Application settings.
 
     Returns:
-        UserSession if authenticated, None otherwise.
+        UserSession if authenticated and not expired, None otherwise.
     """
     session_manager = SessionManager(settings)
     cookie_name = settings.session_cookie_name
 
-    # Try to get token from cookie
-    token = websocket.cookies.get(cookie_name)
+    # 1. Try Bearer token from query param (frontend passes ?token=<jwt>)
+    token = websocket.query_params.get("token")
+
+    # 2. Fallback to session cookie
+    if not token:
+        token = websocket.cookies.get(cookie_name)
 
     if not token:
         return None
 
-    return session_manager.decode_session(token)
+    user = session_manager.decode_session(token)
+    # Treat expired sessions the same as no session
+    if user and user.is_expired:
+        return None
+    return user
 
 
 async def websocket_endpoint(websocket: WebSocket) -> None:
@@ -55,33 +67,38 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     Accepts connections from frontend and handles bidirectional messaging.
     Frontend receives AgentMessage JSON objects as agents progress.
 
-    Authentication is checked via session cookie. Unauthenticated connections
-    are accepted but marked as guest (limited functionality).
+    Authentication is checked via ?token= query param or session cookie.
+    Unauthenticated / expired-session connections are closed immediately with
+    WS close code 4401 so the frontend knows to redirect to login.
     """
     # Get settings from app state
     settings = (
         websocket.app.state.settings if hasattr(websocket.app.state, "settings") else AppSettings()
     )
 
-    # Authenticate user from cookie
+    # Authenticate user from query param or cookie
     user = _get_user_from_websocket(websocket, settings)
 
     await websocket.accept()
+
+    if user is None:
+        # Reject unauthenticated connections with a clear close code.
+        # 4401 is a custom application-level code meaning "Unauthorized".
+        # The frontend should redirect to login on receiving this.
+        logger.warning("WebSocket connection rejected: no valid session")
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+
     connection_id = str(id(websocket))
     active_connections[connection_id] = (websocket, user)
     query_project_id = _parse_project_id(websocket.query_params.get("projectId"))
 
-    # Send auth status to frontend
+    # Notify frontend that auth succeeded
     await websocket.send_json(
         {
             "type": "auth_status",
-            "authenticated": user is not None,
-            "user": {
-                "email": user.email,
-                "name": user.name,
-            }
-            if user
-            else None,
+            "authenticated": True,
+            "user": {"email": user.email, "name": user.name},
         }
     )
 

@@ -7,17 +7,25 @@ import { ProjectProvider } from "@/contexts/ProjectContext";
 const websocketMock = vi.hoisted(() => ({
   projectIds: [] as Array<string | null>,
   sentMessages: [] as unknown[],
+  messageQueue: [] as unknown[],
+  messages: [] as unknown[],
+  isLoaded: true,
+  isConnectedOverride: null as boolean | null,
 }));
 
 vi.mock("@/hooks/useWebSocket", () => ({
   useWebSocket: (projectId: string | null) => {
     websocketMock.projectIds.push(projectId);
     return {
-      isConnected: Boolean(projectId),
+      isConnected: websocketMock.isConnectedOverride !== null ? websocketMock.isConnectedOverride : Boolean(projectId),
       error: null,
       lastMessage: null,
-      messageQueue: [],
-      clearMessageQueue: vi.fn(),
+      messageQueue: websocketMock.messageQueue,
+      messages: websocketMock.messages,
+      isLoaded: websocketMock.isLoaded,
+      clearMessageQueue: () => {
+        websocketMock.messageQueue = [];
+      },
       sendMessage: (message: unknown) => {
         websocketMock.sentMessages.push(
           typeof message === "object" && message !== null && projectId
@@ -30,8 +38,36 @@ vi.mock("@/hooks/useWebSocket", () => ({
   },
 }));
 
+const pipelineStateMock = vi.hoisted(() => ({
+  currentStep: 1,
+  status: "idle",
+  messages: [] as unknown[],
+  isLoaded: true,
+  updateFromMessage: vi.fn(),
+  addUserMessage: vi.fn(),
+}));
+
+vi.mock("@/hooks/usePipelineState", () => ({
+  usePipelineState: () => ({
+    currentStep: pipelineStateMock.currentStep,
+    status: pipelineStateMock.status,
+    messages: pipelineStateMock.messages,
+    isLoaded: pipelineStateMock.isLoaded,
+    updateFromMessage: pipelineStateMock.updateFromMessage,
+    addUserMessage: pipelineStateMock.addUserMessage,
+  }),
+}));
+
 function jsonResponse(body: unknown, status = 200) {
-  return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get: (name: string) => name.toLowerCase() === "content-type" ? "application/json" : null
+    },
+    json: () => Promise.resolve(body),
+    text: () => Promise.resolve(JSON.stringify(body))
+  } as unknown as Response);
 }
 
 const project = {
@@ -81,6 +117,9 @@ describe("App auth and Alice project resolution", () => {
     vi.restoreAllMocks();
     websocketMock.projectIds = [];
     websocketMock.sentMessages = [];
+    websocketMock.messageQueue = [];
+    websocketMock.messages = [];
+    websocketMock.isLoaded = true;
   });
 
   it("shows the login flow instead of the pipeline for unauthenticated users", async () => {
@@ -196,5 +235,87 @@ describe("App auth and Alice project resolution", () => {
     await waitFor(() => expect(screen.getByText(/admin dashboard/i)).toBeInTheDocument());
     expect(screen.queryByText(/choose where this run belongs/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Please select one project to proceed/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("Bob confirm parent URL popup", () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+    vi.restoreAllMocks();
+    websocketMock.projectIds = [];
+    websocketMock.sentMessages = [];
+    websocketMock.messageQueue = [];
+    websocketMock.isLoaded = true;
+    websocketMock.isConnectedOverride = null;
+    pipelineStateMock.currentStep = 1;
+    pipelineStateMock.status = "idle";
+    pipelineStateMock.messages = [];
+    pipelineStateMock.isLoaded = true;
+  });
+
+  it("shows the confirm-parent popup when Bob sends the is_confirm_parent signal", async () => {
+    mockFetchForUser([project]);
+    websocketMock.isConnectedOverride = true;
+    
+    const { rerender } = renderApp();
+
+    // 1. Advance past Alice step (Step 1)
+    expect(await screen.findByText(/Which AI provider would you like to use/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/Browser Use Cloud/i));
+    fireEvent.change(screen.getByPlaceholderText("Enter your Browser Use API key..."), {
+      target: { value: "test-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    // 2. Simulate being on the Bob step (step 2) and status review_request
+    // We update the hoisted mock state and trigger a re-render or wait for it to be picked up
+    pipelineStateMock.currentStep = 2;
+    pipelineStateMock.status = "review_request";
+
+    // Inject a Bob message asking to confirm parent into the live queue
+    websocketMock.messageQueue = [
+      ...websocketMock.messageQueue,
+      {
+        id: "msg-1",
+        sender: "agent",
+        agentName: "Bob",
+        metadata: {
+          is_confirm_parent: true,
+          suggested_page: "https://test.atlassian.net/wiki/spaces/TEST/pages/123/Requirements"
+        },
+        timestamp: new Date().toISOString()
+      }
+    ];
+
+    // Re-mount the app so the new mock values are read by usePipelineState.
+    // Instead of unmount(), we use rerender() to preserve ProjectContext state!
+    rerender(
+      <AuthProvider>
+        <ProjectProvider>
+          <App />
+        </ProjectProvider>
+      </AuthProvider>
+    );
+
+    // Verify popup appears with correct suggested URL
+    expect(await screen.findByText(/I found the below link contains all requirements/i)).toBeInTheDocument();
+    
+    const input = screen.getByPlaceholderText("Enter the correct page URL...") as HTMLInputElement;
+    expect(input.value).toBe("https://test.atlassian.net/wiki/spaces/TEST/pages/123/Requirements");
+
+    // Edit URL and click OK
+    fireEvent.change(input, { target: { value: "https://test.atlassian.net/wiki/spaces/TEST/pages/999/New" } });
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+
+    // Verify correct message was sent via WebSocket.
+    // handleBobApproveParent sends type="approve" step=2 with data.confirmed_page_name.
+    await waitFor(() => {
+      const lastMessage = websocketMock.sentMessages[websocketMock.sentMessages.length - 1] as any;
+      expect(lastMessage?.type).toBe("approve");
+    });
+    const sent = websocketMock.sentMessages[websocketMock.sentMessages.length - 1] as any;
+    expect(sent.step).toBe(2);
+    expect(sent.projectId).toBe(project.id);
+    expect(sent.data.confirmed_page_name).toBe("https://test.atlassian.net/wiki/spaces/TEST/pages/999/New");
   });
 });

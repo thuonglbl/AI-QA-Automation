@@ -45,12 +45,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     refresh();
 
+    let timeoutId: number | undefined;
     const handleAuthError = () => {
-      refresh();
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+      timeoutId = window.setTimeout(() => {
+        refresh();
+      }, 300);
     };
     
     window.addEventListener("auth-error", handleAuthError);
-    return () => window.removeEventListener("auth-error", handleAuthError);
+    return () => {
+      window.removeEventListener("auth-error", handleAuthError);
+      if (timeoutId) window.clearTimeout(timeoutId);
+    };
   }, [refresh]);
 
   return (

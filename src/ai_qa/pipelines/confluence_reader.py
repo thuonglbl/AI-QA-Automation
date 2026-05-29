@@ -377,7 +377,37 @@ class ConfluenceReader:
                 )
 
             warnings = []
-            content = _safe_get(page_data, "content", "")
+
+            def _extract_html_content(p_data: Any) -> str:
+                c = _safe_get(p_data, "content", "") or _safe_get(p_data, "body", "")
+                if isinstance(c, dict):
+                    if "view" in c and isinstance(c["view"], dict) and c["view"].get("value"):
+                        return str(c["view"]["value"])
+                    if (
+                        "storage" in c
+                        and isinstance(c["storage"], dict)
+                        and c["storage"].get("value")
+                    ):
+                        return str(c["storage"]["value"])
+                    if (
+                        "export_view" in c
+                        and isinstance(c["export_view"], dict)
+                        and c["export_view"].get("value")
+                    ):
+                        return str(c["export_view"]["value"])
+                    if (
+                        "anonymous_export_view" in c
+                        and isinstance(c["anonymous_export_view"], dict)
+                        and c["anonymous_export_view"].get("value")
+                    ):
+                        return str(c["anonymous_export_view"]["value"])
+                    for _, v in c.items():
+                        if isinstance(v, dict) and v.get("value"):
+                            return str(v["value"])
+                    return str(c)
+                return str(c) if c else ""
+
+            content = _extract_html_content(page_data)
             if not content:
                 warnings.append("Page has no content")
 
@@ -470,7 +500,12 @@ class ConfluenceReader:
         try:
             tool_result = await self._mcp_client.call_tool(
                 self._get_tool_name("confluence_get_page"),
-                {"page_id": page_id},
+                {
+                    "pageId": page_id,
+                    "format": "view",
+                    "userPrompt": "User initiated a story creation workflow from a Confluence page link.",
+                    "llmReasoning": "Need to extract the content of the provided Confluence page to fulfill the user's request.",
+                },
             )
 
             if not tool_result.success:
@@ -506,7 +541,37 @@ class ConfluenceReader:
                 )
 
             warnings: list[str] = []
-            content = _safe_get(page_data, "content", "") or _safe_get(page_data, "body", "")
+
+            def _extract_html_content(p_data: Any) -> str:
+                c = _safe_get(p_data, "content", "") or _safe_get(p_data, "body", "")
+                if isinstance(c, dict):
+                    if "view" in c and isinstance(c["view"], dict) and c["view"].get("value"):
+                        return str(c["view"]["value"])
+                    if (
+                        "storage" in c
+                        and isinstance(c["storage"], dict)
+                        and c["storage"].get("value")
+                    ):
+                        return str(c["storage"]["value"])
+                    if (
+                        "export_view" in c
+                        and isinstance(c["export_view"], dict)
+                        and c["export_view"].get("value")
+                    ):
+                        return str(c["export_view"]["value"])
+                    if (
+                        "anonymous_export_view" in c
+                        and isinstance(c["anonymous_export_view"], dict)
+                        and c["anonymous_export_view"].get("value")
+                    ):
+                        return str(c["anonymous_export_view"]["value"])
+                    for _, v in c.items():
+                        if isinstance(v, dict) and v.get("value"):
+                            return str(v["value"])
+                    return str(c)
+                return str(c) if c else ""
+
+            content = _extract_html_content(page_data)
             if not content:
                 warnings.append("Page has no content")
 
@@ -560,13 +625,14 @@ class ConfluenceReader:
                 confidence=0.0,
             )
 
-    async def get_children_by_id(self, page_id: str) -> StageResult:
+    async def get_children_by_id(self, page_id: str, space_key: str = "") -> StageResult:
         """Get all child pages of a Confluence page by its page_id via MCP using confluence_search.
 
         Returns a StageResult whose .data is a list of PageSummary objects.
 
         Args:
             page_id: Numeric Confluence page ID
+            space_key: Optional space key to constrain the search
 
         Returns:
             StageResult with list[PageSummary] or error
@@ -581,12 +647,15 @@ class ConfluenceReader:
             )
 
         try:
-            # We must look up the page first to get its space_key, as search is usually space-scoped
-            # But wait, CQL allows searching globally if space isn't provided: `ancestor = <id>`. Let's try that.
+            # Construct CQL query
+            cql = f"type=page AND (parent={page_id} OR ancestor={page_id})"
+            if space_key:
+                cql = f"space='{space_key}' AND " + cql
+
             tool_result = await self._mcp_client.call_tool(
                 self._get_tool_name("confluence_search"),
                 {
-                    "cql": f"type = page AND ancestor IN ({page_id})",
+                    "cql": cql,
                     "limit": 50,
                     "userPrompt": "User initiated a story creation workflow that requires reading all children pages of a Confluence page.",
                     "llmReasoning": "Need to search for child pages to recursively process all documentation linked to the parent page.",
@@ -664,8 +733,36 @@ class ConfluenceReader:
                 confidence=0.0,
             )
 
+    # Keywords used to identify requirement pages (case-insensitive fuzzy match)
+    _REQUIREMENT_KEYWORDS: tuple[str, ...] = (
+        "requirement",
+        "requirements",
+        " fr ",
+        "functional requirement",
+        "spec",
+        "specification",
+    )
+
+    @classmethod
+    def _is_requirement_title(cls, title: str) -> bool:
+        """Return True if *title* looks like a requirements page."""
+        lower = title.lower()
+        # Exact word-boundary check for short abbreviation "FR"
+        if re.search(r"\bfr\b", lower):
+            return True
+        return any(kw in lower for kw in cls._REQUIREMENT_KEYWORDS)
+
     async def find_parent_pages(self, space_key: str) -> StageResult:
-        """Find candidate parent pages containing 'requirement' or 'plan' in their title."""
+        """Find candidate requirement parent pages in *space_key* by title similarity.
+
+        Searches via CQL for pages whose title contains requirement-related
+        keywords and returns a list of :class:`PageSummary` objects (each with
+        a populated ``url`` field) so that callers can present an actionable
+        Confluence URL to the user.
+
+        Previously this method returned plain title strings; it now returns
+        ``PageSummary`` objects to avoid a second round-trip to resolve URLs.
+        """
         if not self._mcp_client.is_connected:
             return StageResult(
                 success=False,
@@ -675,12 +772,19 @@ class ConfluenceReader:
                 confidence=0.0,
             )
 
-        # Search for pages that might contain requirements using targeted CQL
+        # Build CQL covering the most common requirement-page title patterns.
+        cql = (
+            f"space = {space_key} AND type = page AND ("
+            'title ~ "requirement" OR title ~ "requirements" OR title ~ "FR" '
+            'OR title ~ "functional requirement" OR title ~ "spec")'
+        )
         search_result = await self._mcp_client.call_tool(
             self._get_tool_name("confluence_search"),
             {
-                "cql": f'space = {space_key} AND type = page AND (title ~ "requirement" OR title ~ "requirements" OR title ~ "FR")',
-                "limit": 5,
+                "cql": cql,
+                "limit": 10,
+                "userPrompt": "Find the requirements page in the Confluence space.",
+                "llmReasoning": "Searching for pages with requirement-related titles to suggest the best URL to the user.",
             },
         )
 
@@ -706,25 +810,122 @@ class ConfluenceReader:
                     confidence=0.0,
                 )
 
-        pages = search_data.get("results", []) if isinstance(search_data, dict) else search_data
-        if not isinstance(pages, list):
-            pages = []
+        results = search_data.get("results", []) if isinstance(search_data, dict) else search_data
+        if not isinstance(results, list):
+            results = []
 
-        parent_pages = []
-        for page_data in pages:
+        summaries: list[PageSummary] = []
+        for page_data in results:
             if not isinstance(page_data, dict):
                 continue
             title = page_data.get("title", "")
-            if title:
-                parent_pages.append(title)
+            if not title:
+                continue
+            # Only include pages whose title actually matches our keywords
+            # (CQL `~` is substring so already filtered, but double-check)
+            if not self._is_requirement_title(title):
+                continue
+            page_id = str(page_data.get("id", page_data.get("page_id", "")))
+            # Prefer webui link embedded in response; fall back to constructing from base URL
+            webui = ""
+            links = page_data.get("_links", {})
+            if isinstance(links, dict):
+                webui = links.get("webui", "")
+            if webui and self._confluence_base_url:
+                url = f"{self._confluence_base_url}{webui}"
+            elif page_data.get("url"):
+                url = page_data["url"]
+            elif self._confluence_base_url and page_id:
+                url = f"{self._confluence_base_url}/pages/{page_id}"
+            else:
+                url = ""
+            summaries.append(PageSummary(page_id=page_id, title=title, url=url))
 
         return StageResult(
             success=True,
-            data=parent_pages,
+            data=summaries,
             errors=[],
             warnings=[],
             confidence=1.0,
         )
+
+    async def find_requirement_page_by_parent_id(self, parent_page_id: str) -> StageResult:
+        """Search descendants of *parent_page_id* for a requirements page.
+
+        Used as a fallback when no space key is available but we have a
+        specific ``page_id`` from the Confluence base URL.  Returns a
+        :class:`StageResult` whose ``data`` is the first matching
+        :class:`PageSummary` (or ``None`` if nothing is found).
+        """
+        if not self._mcp_client.is_connected:
+            return StageResult(
+                success=False,
+                data=None,
+                errors=_MCP_NOT_CONNECTED_ERROR,
+                warnings=[],
+                confidence=0.0,
+            )
+
+        cql = (
+            f"type = page AND ancestor IN ({parent_page_id}) AND ("
+            'title ~ "requirement" OR title ~ "requirements" OR title ~ "FR" '
+            'OR title ~ "functional requirement" OR title ~ "spec")'
+        )
+        search_result = await self._mcp_client.call_tool(
+            self._get_tool_name("confluence_search"),
+            {
+                "cql": cql,
+                "limit": 10,
+                "userPrompt": "Find the requirements page under the given parent.",
+                "llmReasoning": "Searching for requirement-related child pages to suggest to the user.",
+            },
+        )
+
+        if not search_result.success:
+            return StageResult(
+                success=True,
+                data=None,
+                errors=[],
+                warnings=[
+                    search_result.error or "Requirement search failed; using base URL instead."
+                ],
+                confidence=0.0,
+            )
+
+        search_data = search_result.data
+        if isinstance(search_data, str):
+            try:
+                search_data = json.loads(search_data)
+            except json.JSONDecodeError:
+                return StageResult(success=True, data=None, errors=[], warnings=[], confidence=0.0)
+
+        results = search_data.get("results", []) if isinstance(search_data, dict) else search_data
+        if not isinstance(results, list):
+            results = []
+
+        for page_data in results:
+            if not isinstance(page_data, dict):
+                continue
+            title = page_data.get("title", "")
+            if not self._is_requirement_title(title):
+                continue
+            page_id = str(page_data.get("id", page_data.get("page_id", "")))
+            webui = ""
+            links = page_data.get("_links", {})
+            if isinstance(links, dict):
+                webui = links.get("webui", "")
+            if webui and self._confluence_base_url:
+                url = f"{self._confluence_base_url}{webui}"
+            elif page_data.get("url"):
+                url = page_data["url"]
+            elif self._confluence_base_url and page_id:
+                url = f"{self._confluence_base_url}/pages/{page_id}"
+            else:
+                url = ""
+            summary = PageSummary(page_id=page_id, title=title, url=url)
+            return StageResult(success=True, data=summary, errors=[], warnings=[], confidence=1.0)
+
+        return StageResult(success=True, data=None, errors=[], warnings=[], confidence=0.0)
 
     async def get_descendants_by_title(self, space_key: str, parent_title: str) -> StageResult:
         """Find the page by title and then retrieve all its descendants."""

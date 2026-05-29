@@ -140,6 +140,8 @@ class BaseAgent(ABC):
         if credential_ref.startswith("env://"):
             env_var = credential_ref[6:]
             api_key = os.getenv(env_var, "")
+        else:
+            api_key = credential_ref
 
         return LLMConfig(
             provider=provider_config.get("provider", "litellm"),

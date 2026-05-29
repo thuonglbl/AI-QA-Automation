@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useAuth } from "@/hooks/useAuth";
 import { Loader2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import type { AuthUser } from "@/lib/auth";
+
 import { normalizeUser } from "@/lib/auth";
 
 interface LoginPageProps {
@@ -32,7 +32,12 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
 
     try {
       await logout();
-      const loginResult = await apiFetch<{ user?: AuthUser; access_token?: string }>("/login", {
+      // Backend returns { access_token, user: UserProfileResponse }
+      // UserProfileResponse has display_name (not name), id, email, role, is_active
+      const loginResult = await apiFetch<{
+        user?: { email?: string; display_name?: string; name?: string; id?: string; role?: string; is_active?: boolean };
+        access_token?: string;
+      }>("/login", {
         method: "POST",
         authRoute: true,
         safeMessage: "Invalid username or password.",
@@ -40,14 +45,27 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
       });
 
       if (loginResult.access_token) {
-        localStorage.setItem("aiqa_access_token", loginResult.access_token);
+        try {
+          localStorage.setItem("aiqa_access_token", loginResult.access_token);
+        } catch {}
+      } else {
+        try {
+          localStorage.removeItem("aiqa_access_token");
+        } catch {}
       }
 
-      if (!loginResult.user?.email) {
+      const rawUser = loginResult.user;
+      if (!rawUser?.email) {
         throw new Error("Login response did not include a user profile.");
       }
 
-      setAuthStatus({ authenticated: true, user: normalizeUser(loginResult.user) });
+      // Normalise: backend may return display_name instead of name
+      const userForNormalize = {
+        ...rawUser,
+        email: rawUser.email as string,
+        name: rawUser.name ?? rawUser.display_name ?? rawUser.email,
+      };
+      setAuthStatus({ authenticated: true, user: normalizeUser(userForNormalize) });
     } catch {
       setAuthStatus({ authenticated: false, user: null });
       setFormError("Invalid username or password.");

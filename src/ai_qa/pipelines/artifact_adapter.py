@@ -34,6 +34,8 @@ class PipelineArtifactAdapter:
 
     def save_requirement_page(self, name: str, markdown: str) -> Artifact:
         """Persist an approved requirement page as project-scoped markdown content."""
+        if not name.endswith(".md"):
+            name += ".md"
         return self._save_text(kind="requirements", name=name, content=markdown)
 
     def load_requirement_markdown(self) -> list[PipelineArtifact]:
@@ -65,14 +67,13 @@ class PipelineArtifactAdapter:
             content=json.dumps(metadata, indent=2, sort_keys=True, default=str),
         )
 
-    def save_raw_html(self, page_id: str, html_content: str) -> Artifact:
-        """Save raw HTML from Confluence page extraction (Phase 1).
-
-        Stored at: {project-id}/mcp/confluence/{page_id}/raw.html
-        """
+    def save_raw_html(self, name: str, html_content: str) -> Artifact:
+        """Save raw HTML from Confluence page extraction (Phase 1)."""
+        if not name.endswith(".html"):
+            name += ".html"
         return self._save_text(
             kind="raw_html",
-            name=f"{page_id}/raw.html",
+            name=name,
             content=html_content,
         )
 
