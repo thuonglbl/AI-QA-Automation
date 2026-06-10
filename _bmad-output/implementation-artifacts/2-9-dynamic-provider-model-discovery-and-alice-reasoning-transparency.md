@@ -200,7 +200,7 @@ so that downstream agents never use nonexistent or hardcoded models.
 - Do not show automatic saved-config welcome-back message:
   "Welcome back! I'm Alice. Using your saved..."
 
-## ULTIMATE DEVELOPER GUARDRAILS & ARCHITECTURE CONTEXT
+## ð¡ï¸ ULTIMATE DEVELOPER GUARDRAILS & ARCHITECTURE CONTEXT
 
 ### 1. Existing Backend State (What you are modifying)
 - **`src/ai_qa/agents/alice.py`**: Currently contains hardcoded `DEFAULT_MODEL_MAPPINGS` and a simulated `_test_connection()` using `asyncio.sleep(1.0)`. You must replace these with real provider discovery.

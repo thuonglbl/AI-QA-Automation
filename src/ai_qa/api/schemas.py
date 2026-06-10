@@ -3,7 +3,7 @@
 These models define the structure of data exchanged between frontend and backend.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -26,6 +26,10 @@ class StartRequest(BaseModel):
     project_id: UUID | None = Field(
         default=None,
         description="Selected project for authenticated project-scoped pipeline execution",
+    )
+    thread_id: UUID | None = Field(
+        default=None,
+        description="Conversation thread ID",
     )
 
 
@@ -50,6 +54,10 @@ class ApproveRequest(BaseModel):
         default=None,
         description="Selected project for authenticated project-scoped pipeline execution",
     )
+    thread_id: UUID | None = Field(
+        default=None,
+        description="Conversation thread ID",
+    )
 
 
 class RejectRequest(BaseModel):
@@ -69,6 +77,10 @@ class RejectRequest(BaseModel):
         default=None,
         description="Selected project for authenticated project-scoped pipeline execution",
     )
+    thread_id: UUID | None = Field(
+        default=None,
+        description="Conversation thread ID",
+    )
 
 
 class ContinueRequest(BaseModel):
@@ -78,6 +90,10 @@ class ContinueRequest(BaseModel):
     project_id: UUID | None = Field(
         default=None,
         description="Selected project for authenticated project-scoped pipeline execution",
+    )
+    thread_id: UUID | None = Field(
+        default=None,
+        description="Conversation thread ID",
     )
 
 
@@ -97,6 +113,10 @@ class SkipRequest(BaseModel):
         default=None,
         description="Selected project for authenticated project-scoped pipeline execution",
     )
+    thread_id: UUID | None = Field(
+        default=None,
+        description="Conversation thread ID",
+    )
 
 
 class NavigateRequest(BaseModel):
@@ -114,6 +134,10 @@ class NavigateRequest(BaseModel):
     project_id: UUID | None = Field(
         default=None,
         description="Selected project for authenticated project-scoped pipeline execution",
+    )
+    thread_id: UUID | None = Field(
+        default=None,
+        description="Conversation thread ID",
     )
 
 
@@ -137,7 +161,7 @@ class ConversationData(BaseModel):
     status: str = Field(default="start", description="Current pipeline status")
     current_agent: str = Field(default="Alice", description="Current agent name")
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow, description="Last update timestamp"
+        default_factory=lambda: datetime.now(UTC), description="Last update timestamp"
     )
 
 

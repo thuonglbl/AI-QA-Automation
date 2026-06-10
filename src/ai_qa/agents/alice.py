@@ -18,19 +18,23 @@ Usage:
 """
 
 # Standard library
+import ast
 import json
 import logging
 import re
 from datetime import UTC, datetime
 from typing import Any
 
-# Third party
-import httpx
-
 # Local
 from ai_qa.agents.base import AgentState, BaseAgent
+from ai_qa.ai_connection.providers import (
+    ConnectionResult,
+    get_provider_adapter,
+    get_provider_benchmark,
+    resolve_base_url,
+)
 from ai_qa.config import AppSettings
-from ai_qa.exceptions import PipelineError
+from ai_qa.exceptions import LLMRateLimitError, PipelineError, PipelineSilentAbortError
 from ai_qa.models import (
     AgentModelConfig,
     AgentsConfig,
@@ -49,7 +53,7 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
     {
         "id": "browser-use-cloud",
         "name": "Browser Use Cloud",
-        "description": "Highest quality · Cloud servers · Personal API key required",
+        "description": "Cloud · Personal API key",
         "quality_rank": 1,
         "security_level": "cloud",
         "credential_fields": [
@@ -60,8 +64,8 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
     },
     {
         "id": "claude",
-        "name": "Claude (Anthropic)",
-        "description": "Second highest quality · Enterprise license · API key or SSO login",
+        "name": "Anthropic / Claude",
+        "description": "Cloud · Enterprise API key or SSO",
         "quality_rank": 2,
         "security_level": "enterprise",
         "credential_fields": [
@@ -77,18 +81,36 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
         "env_key": "ANTHROPIC_API_KEY",
     },
     {
-        "id": "gemini-chatgpt",
-        "name": "Gemini / ChatGPT",
-        "description": "Good quality · Cloud · Personal API key from Google or OpenAI",
+        "id": "gemini",
+        "name": "Google / Gemini",
+        "description": "Cloud · Personal API key",
         "quality_rank": 3,
-        "security_level": "cloud",
+        "security_level": "good",
         "credential_fields": [
             {
                 "name": "api_key",
                 "label": "API Key",
                 "type": "password",
                 "required": True,
-                "placeholder": "Enter your Gemini or OpenAI API key...",
+                "placeholder": "Enter your Google Gemini API key...",
+            }
+        ],
+        "endpoint_setting": "gemini_api_base_url",
+        "env_key": "GEMINI_API_KEY",
+    },
+    {
+        "id": "openai",
+        "name": "OpenAI / ChatGPT",
+        "description": "Cloud · Personal API key",
+        "quality_rank": 4,
+        "security_level": "good",
+        "credential_fields": [
+            {
+                "name": "api_key",
+                "label": "API Key",
+                "type": "password",
+                "required": True,
+                "placeholder": "Enter your OpenAI API key...",
             }
         ],
         "endpoint_setting": "openai_api_base_url",
@@ -97,8 +119,8 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
     {
         "id": "on-premises",
         "name": "On-Premises",
-        "description": "Highest security · All data stays on your infrastructure · Company API key",
-        "quality_rank": 4,
+        "description": "Internal infrastructure · Company API key",
+        "quality_rank": 5,
         "security_level": "highest",
         "credential_fields": [
             {
@@ -117,7 +139,7 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
 
 # Agent purposes for display
 AGENT_PURPOSES: dict[str, str] = {
-    "bob": "Requirements extraction from Confluence (requires vision-capable model for image captioning)",
+    "bob": "Requirements conversion from Confluence and Jira",
     "mary": "Test case generation",
     "sarah": "Test script generation with browser automation",
     "jack": "Test execution and analysis",
@@ -167,6 +189,7 @@ class AliceAgent(BaseAgent):
         self._selected_provider: str | None = None
         self._provider_credentials: dict[str, str] = {}
         self._configuration: AliceConfiguration | None = None
+        self._model_reasoning: list[dict[str, str]] = []
         self._settings = AppSettings()
 
     # -------------------------------------------------------------------------
@@ -179,24 +202,73 @@ class AliceAgent(BaseAgent):
         Returns:
             AliceConfiguration if valid config exists, None otherwise
         """
-        if not self.project_context or not self.project_context.artifact_service:
+        if not self.project_context or not self.project_context.thread_id:
+            return None
+
+        if not self.project_context.artifact_service:
             return None
 
         db = self.project_context.artifact_service.db
-        from ai_qa.db.models import User
+        from ai_qa.threads.models import Thread
 
-        user = db.get(User, self.project_context.user_id)
-
-        if not user or not user.ai_provider_config or not user.ai_agents_config:
+        thread = db.get(Thread, self.project_context.thread_id)
+        if not thread or not thread.provider_name:
             return None
 
         try:
-            if not self._is_config_valid(user.ai_provider_config):
-                logger.info("Existing configuration expired or invalid")
-                return None
+            # Reconstruct the expected configurations from the Thread
+            provider_config = ProviderConfig(
+                provider=thread.provider_name,
+                provider_name=thread.provider_name.capitalize(),
+                endpoint=thread.provider_base_url or "",
+                credential_reference="",  # Loaded from user directly via base.py now
+                tested_at="",
+                test_result="success",
+            )
 
-            provider_config = ProviderConfig.model_validate(user.ai_provider_config)
-            agents_config = AgentsConfig.model_validate(user.ai_agents_config)
+            # Build agents config — tolerate both structured dict and legacy flat string.
+            # Structured: {"model": str, "temperature": float, "rationale": str}
+            # Legacy:     "model-id-string"
+            agents_dict: dict[str, Any] = {}
+            loaded_reasoning: list[dict[str, str]] = []
+            for agent_name, agent_cfg in (thread.agent_configs or {}).items():
+                if isinstance(agent_cfg, dict):
+                    model_name = agent_cfg.get("model") or agent_cfg.get("model_name")
+                    temperature = float(agent_cfg.get("temperature", 0.0))
+                    rationale = str(agent_cfg.get("rationale", ""))
+                else:
+                    model_name = agent_cfg if isinstance(agent_cfg, str) else None
+                    temperature = 0.0
+                    rationale = ""
+                agents_dict[agent_name.lower()] = {
+                    "model": model_name,
+                    "temperature": temperature,
+                    "prompt_template": "default",
+                    "tools": [],
+                }
+                if rationale:
+                    loaded_reasoning.append(
+                        {
+                            "agent": agent_name.lower(),
+                            "model": model_name or "",
+                            "rationale": rationale,
+                        }
+                    )
+
+            # Ensure Alice config exists
+            if "alice" not in agents_dict:
+                agents_dict["alice"] = {
+                    "model": "claude-3-5-sonnet-20241022",
+                    "temperature": 0.0,
+                    "prompt_template": "default",
+                    "tools": [],
+                }
+
+            # Restore rationale into _model_reasoning so the inspect view shows real values
+            if loaded_reasoning:
+                self._model_reasoning = loaded_reasoning
+
+            agents_config = AgentsConfig.model_validate({"updated_at": "", "agents": agents_dict})
 
             return AliceConfiguration(provider=provider_config, agents=agents_config)
         except Exception as exc:
@@ -221,24 +293,32 @@ class AliceAgent(BaseAgent):
             for p in PROVIDER_OPTIONS
         ]
 
-    def get_on_prem_defaults(self) -> dict[str, str]:
-        """Get On-Premises default values from .env.
+    def get_on_prem_defaults(self) -> dict[str, object]:
+        """Return non-secret on-premises defaults (status only — never the key).
 
         Returns:
-            Dict with server_url and api_key from user config or settings
+            Dict with ``server_url`` (str) and ``api_key_configured`` (bool).
+            Never returns the decrypted API key (FR57 / FR58 / Task 10).
         """
-        # Use per-user config if available, otherwise empty (user must configure via Alice UI)
         if self.project_context and self.project_context.artifact_service:
             db = self.project_context.artifact_service.db
-            from ai_qa.db.models import User
+            from ai_qa.secrets import SECRET_TYPE_ON_PREMISES
+            from ai_qa.secrets.service import get_user_secret
 
-            user = db.get(User, self.project_context.user_id)
-            if user and user.settings:
-                return {
-                    "server_url": str(user.settings.get("on_premises_ai_server_url", "")),
-                    "api_key": str(user.settings.get("on_premises_ai_server_key", "")),
-                }
-        return {"server_url": "", "api_key": ""}
+            server_url = ""
+            if self.project_context.thread_id:
+                from ai_qa.threads.models import Thread
+
+                thread = db.get(Thread, self.project_context.thread_id)
+                if thread and thread.provider_base_url:
+                    server_url = thread.provider_base_url
+
+            stored = get_user_secret(db, self.project_context.user_id, SECRET_TYPE_ON_PREMISES)
+            return {
+                "server_url": server_url,
+                "api_key_configured": bool(stored),
+            }
+        return {"server_url": "", "api_key_configured": False}
 
     # -------------------------------------------------------------------------
     # BaseAgent Interface
@@ -284,6 +364,45 @@ class AliceAgent(BaseAgent):
 
         self._selected_provider = provider_id
         self._provider_credentials = credentials
+        self._model_reasoning = []
+
+        # Immediately update the thread with the provider info so it's not null in the DB
+        # even if the connection test or LLM assignment fails later.
+        if (
+            self.project_context
+            and self.project_context.artifact_service
+            and self.project_context.thread_id
+        ):
+            try:
+                db = self.project_context.artifact_service.db
+                from ai_qa.threads.models import Thread
+
+                thread = db.get(Thread, self.project_context.thread_id)
+                if thread:
+                    thread.provider_name = provider_id
+                    thread.provider_base_url = provider_info.get("endpoint", "")
+                    db.commit()
+            except Exception as e:
+                logger.warning("Failed to save initial provider info to DB: %s", e)
+
+        # For on-prem with blank api_key, resolve the stored secret BEFORE the connection
+        # test so the adapter receives the real key (Task 10 fix — ordering bug).
+        _original_api_key = credentials.get("api_key", "").strip()
+        if provider_info["id"] == "on-premises" and not _original_api_key:
+            if self.project_context and self.project_context.artifact_service:
+                try:
+                    from ai_qa.secrets import SECRET_TYPE_ON_PREMISES
+                    from ai_qa.secrets.service import get_user_secret
+
+                    _stored = get_user_secret(
+                        self.project_context.artifact_service.db,
+                        self.project_context.user_id,
+                        SECRET_TYPE_ON_PREMISES,
+                    )
+                    if _stored:
+                        credentials = {**credentials, "api_key": _stored}
+                except Exception as _pre_e:
+                    logger.warning("Failed to resolve stored on-prem key for test: %s", _pre_e)
 
         # Test connection
         await self._send_connection_test_status(
@@ -291,44 +410,42 @@ class AliceAgent(BaseAgent):
         )
 
         try:
-            connection_success = await self._test_connection(provider_info, credentials)
+            connection_result = await self._test_connection(provider_info, credentials)
         except Exception as exc:
             logger.error("Connection test failed: %s", exc)
-            connection_success = False
-
-        if not connection_success:
-            await self._send_connection_test_status(
-                "failed", f"Connection to {provider_info['name']} failed"
+            connection_result = ConnectionResult(
+                success=False,
+                provider=provider_info["id"],
+                provider_name=provider_info["name"],
+                status="failed",
+                message=(
+                    f"Could not validate the connection to {provider_info['name']}. "
+                    "Please check your credentials and try again."
+                ),
+                error_category="provider_error",
             )
-            raise PipelineError(
-                f"Failed to connect to {provider_info['name']}. "
-                "Please check your credentials and try again."
-            )
 
-        # Persist credentials if user is authenticated
+        if not connection_result.success:
+            await self._send_connection_test_status("failed", connection_result.message)
+            raise PipelineError(connection_result.message)
+
+        # Persist credentials if user is authenticated.
+        # Use _original_api_key (pre-resolution) so a reused stored key is never
+        # re-written back to storage (Task 10).
         if self.project_context and self.project_context.artifact_service:
             try:
                 db = self.project_context.artifact_service.db
-                from ai_qa.db.models import User
+                from ai_qa.secrets import PROVIDER_SECRET_TYPE_MAP
+                from ai_qa.secrets.service import set_user_secret
 
-                user = db.get(User, self.project_context.user_id)
-                if user:
-                    # SQLAlchemy requires re-assignment or flag_modified for JSON mutation to be tracked
-                    settings = user.settings.copy() if user.settings else {}
-                    api_key = credentials.get("api_key", "")
-                    if provider_info["id"] == "on-premises":
-                        settings["on_premises_ai_server_key"] = api_key
-                    elif provider_info["id"] == "claude":
-                        settings["anthropic_api_key"] = api_key
-                    elif provider_info["id"] == "gemini-chatgpt":
-                        settings["openai_api_key"] = api_key
-                    elif provider_info["id"] == "browser-use-cloud":
-                        settings["browser_use_api_key"] = api_key
-
-                    user.settings = settings
+                secret_type = PROVIDER_SECRET_TYPE_MAP.get(provider_info["id"])
+                if secret_type and _original_api_key:
+                    set_user_secret(
+                        db, self.project_context.user_id, secret_type, _original_api_key
+                    )
                     db.commit()
             except Exception as e:
-                logger.warning(f"Failed to persist user credentials: {e}")
+                logger.warning("Failed to persist user credentials: %s", e)
 
         # Generate configuration
         self._configuration = await self._generate_configuration(provider_info, credentials)
@@ -340,16 +457,111 @@ class AliceAgent(BaseAgent):
                 "configuration": self._configuration.model_dump(),
                 "model_assignments": self._get_model_assignments_display(),
                 "provider_endpoint": self._mask_endpoint(self._configuration.provider.endpoint),
+                "benchmark": get_provider_benchmark(provider_id),
             },
         )
 
     async def handle_start(self, input_data: dict[str, Any]) -> None:
         """Override handle_start to support existing configuration check."""
-        # Check for existing configuration first
+        if not self.project_context or not self.project_context.artifact_service:
+            return
+
+        db = self.project_context.artifact_service.db
+
+        # 1. Project selection logic if thread is unbound
+        if self.project_context.project_id is None:
+            if input_data.get("project_id"):
+                # Bind project
+                from uuid import UUID
+
+                from ai_qa.threads.service import ThreadService
+
+                try:
+                    project_id = UUID(str(input_data["project_id"]))
+                except ValueError:
+                    logger.error("Invalid project_id UUID format: %s", input_data.get("project_id"))
+                    await self.send_message(
+                        content="Invalid project selection payload format.",
+                        message_type="error",
+                    )
+                    return
+
+                thread_id = self.project_context.thread_id
+                if not thread_id:
+                    raise PipelineError("No thread_id in context")
+
+                thread_service = ThreadService(db)
+                try:
+                    thread_service.bind_project(thread_id, project_id, self.project_context.user_id)
+                    self.project_context.project_id = project_id
+                except Exception as e:
+                    logger.error("Failed to bind project to thread: %s", e)
+                    await self.send_message(
+                        content=f"Failed to bind project: {e}",
+                        message_type="error",
+                    )
+                    return
+            else:
+                # Need to prompt for project selection
+                from ai_qa.projects.service import get_user_projects
+
+                projects = get_user_projects(db, self.project_context.user_id)
+                if not projects:
+                    await self.send_message(
+                        content="You are not a member of any projects. Please ask an administrator to add you to a project before continuing.",
+                        message_type="error",
+                    )
+                    return
+                elif len(projects) == 1:
+                    # Auto-bind if exactly 1 project
+                    from ai_qa.threads.service import ThreadService
+
+                    project_id = projects[0].id
+                    thread_id = self.project_context.thread_id
+                    if thread_id:
+                        thread_service = ThreadService(db)
+                        try:
+                            thread_service.bind_project(
+                                thread_id, project_id, self.project_context.user_id
+                            )
+                            self.project_context.project_id = project_id
+
+                            await self.send_message(
+                                content=f"Auto-bound to your only project: {projects[0].name}",
+                                message_type="info",
+                                metadata={
+                                    "type": "project_auto_bind",
+                                    "project_id": str(project_id),
+                                    "project_name": projects[0].name,
+                                },
+                            )
+                        except Exception as e:
+                            logger.error("Failed to auto-bind project: %s", e)
+                            await self.send_message(
+                                content=f"Failed to auto-bind project: {e}",
+                                message_type="error",
+                            )
+                            return
+                    else:
+                        raise PipelineError("No thread_id in context")
+                else:
+                    # Present options
+                    project_options = [{"id": str(p.id), "name": p.name} for p in projects]
+                    await self.send_message(
+                        content="Please select a project for this conversation:",
+                        message_type="info",
+                        metadata={
+                            "type": "project_selection",
+                            "projects": project_options,
+                        },
+                    )
+                    return  # Stop processing until frontend sends project_id back
+
+        # 2. Check existing thread configuration (resume same thread)
         existing_config = await self.check_existing_configuration()
 
         if existing_config and not input_data.get("force_reconfigure"):
-            # Use existing configuration
+            # Use existing thread configuration — this is a RESUME, not a saved-config prompt.
             self._configuration = existing_config
             self._selected_provider = existing_config.provider.provider
 
@@ -360,11 +572,155 @@ class AliceAgent(BaseAgent):
                 message_type="text",
                 metadata={
                     "configuration": existing_config.model_dump(),
-                    "model_assignments": self._get_model_assignments_from_config(existing_config),
+                    "model_assignments": self._get_model_assignments_from_config(
+                        existing_config, self._model_reasoning
+                    ),
                     "provider_endpoint": self._mask_endpoint(existing_config.provider.endpoint),
                 },
             )
             return
+
+        # Handle explicit "use saved configuration" response from frontend
+        if input_data.get("use_saved_config") and not input_data.get("force_reconfigure"):
+            if (
+                self.project_context
+                and self.project_context.artifact_service
+                and self.project_context.project_id  # F3: project must be bound
+            ):
+                db = self.project_context.artifact_service.db
+                from ai_qa.userconfig.service import get_provider_config
+
+                saved = get_provider_config(
+                    db, self.project_context.user_id, self.project_context.project_id
+                )
+                if saved:
+                    try:
+                        prov = saved["provider"] or {}
+                        saved_provider_id_s = prov.get("provider", "")
+                        if not saved_provider_id_s:  # F4: reject empty provider
+                            raise ValueError("Saved config has no provider id")
+                        agt = saved["agents"] or {}
+                        raw_agents_s = agt.get("agents") or {}
+                        agents_dict_s: dict[str, Any] = {}
+                        for agent_name, cfg_s in raw_agents_s.items():
+                            agents_dict_s[agent_name] = {
+                                "model": cfg_s.get("model"),
+                                "temperature": float(cfg_s.get("temperature", 0.0)),
+                                "prompt_template": cfg_s.get("prompt_template", "default"),
+                                "tools": cfg_s.get("tools", []),
+                            }
+                        if not agents_dict_s:  # F5: reject empty agent assignments
+                            raise ValueError("Saved config has no agent assignments")
+                        if "alice" not in agents_dict_s:
+                            agents_dict_s["alice"] = {
+                                "model": "claude-3-5-sonnet-20241022",
+                                "temperature": 0.0,
+                                "prompt_template": "default",
+                                "tools": [],
+                            }
+                        # F2: restore _model_reasoning so _save_configuration writes real
+                        # rationale into the new thread snapshot (not empty strings).
+                        self._model_reasoning = [
+                            {
+                                "agent": n,
+                                "model": cfg_s.get("model", ""),
+                                "rationale": cfg_s.get("rationale", ""),
+                            }
+                            for n, cfg_s in raw_agents_s.items()
+                        ]
+                        from ai_qa.models import AgentsConfig, AliceConfiguration, ProviderConfig
+
+                        loaded_config = AliceConfiguration(
+                            provider=ProviderConfig(
+                                provider=saved_provider_id_s,
+                                provider_name=prov.get("provider_name", ""),
+                                endpoint=prov.get("endpoint", ""),
+                                credential_reference="",
+                                tested_at=prov.get("tested_at", ""),
+                                test_result=prov.get("test_result", "success"),
+                            ),
+                            agents=AgentsConfig.model_validate(
+                                {"updated_at": "", "agents": agents_dict_s}
+                            ),
+                        )
+                        self._configuration = loaded_config
+                        self._selected_provider = loaded_config.provider.provider
+                        self._save_configuration(loaded_config)
+                        await self.transition_to(AgentState.DONE)
+                        return
+                    except Exception as exc:
+                        logger.warning("Failed to apply saved config: %s", exc)
+            # F7+F8: show provider options directly — do NOT fall through to the
+            # saved-config prompt block, which would re-offer the same config.
+            await self.send_message(
+                content="Saved configuration could not be applied. Please select a provider.",
+                message_type="info",
+            )
+            await self.send_message(
+                content="Please select your AI provider:",
+                message_type="info",
+                metadata={
+                    "type": "provider_options",
+                    "options": self.get_provider_options(),
+                    "on_prem_defaults": self.get_on_prem_defaults(),
+                },
+            )
+            return
+
+        # Check if there is a valid saved (user, project) config to offer explicitly
+        if (
+            not input_data.get("provider")
+            and not input_data.get("force_reconfigure")
+            and self.project_context
+            and self.project_context.artifact_service
+            and self.project_context.project_id
+        ):
+            db = self.project_context.artifact_service.db
+            from ai_qa.userconfig.service import get_provider_config
+
+            saved_cfg = get_provider_config(
+                db, self.project_context.user_id, self.project_context.project_id
+            )
+            if saved_cfg and saved_cfg.get("provider"):
+                saved_provider_id = (saved_cfg["provider"] or {}).get("provider", "")
+                # Validity check: provider in project.enabled_providers AND secret configured
+                from ai_qa.db.models import Project
+                from ai_qa.secrets import PROVIDER_SECRET_TYPE_MAP
+                from ai_qa.secrets.service import get_user_secret
+
+                project = db.get(Project, self.project_context.project_id)
+                enabled = (project.enabled_providers if project else []) or []
+                provider_allowed = not enabled or saved_provider_id in enabled
+                secret_type = PROVIDER_SECRET_TYPE_MAP.get(saved_provider_id)
+                secret_ok = bool(
+                    secret_type and get_user_secret(db, self.project_context.user_id, secret_type)
+                )
+                if provider_allowed and secret_ok:
+                    prov_meta = saved_cfg["provider"] or {}
+                    agt_meta = (saved_cfg.get("agents") or {}).get("agents") or {}
+                    agents_summary = [
+                        {
+                            "agent": n,
+                            "model": v.get("model", ""),
+                            "rationale": v.get("rationale", ""),
+                        }
+                        for n, v in agt_meta.items()
+                    ]
+                    await self.send_message(
+                        content="You have a saved provider configuration for this project.",
+                        message_type="info",
+                        metadata={
+                            "type": "saved_config_prompt",
+                            "saved_config": {
+                                "provider_name": prov_meta.get("provider_name", ""),
+                                "endpoint": self._mask_endpoint(prov_meta.get("endpoint", "")),
+                                "agents": agents_summary,
+                            },
+                            "options": self.get_provider_options(),
+                            "enabled_providers": enabled,
+                        },
+                    )
+                    return
 
         # Check if user already selected provider (frontend sent provider in input_data)
         if input_data.get("provider"):
@@ -372,6 +728,8 @@ class AliceAgent(BaseAgent):
             await self.transition_to(AgentState.PROCESSING)
             try:
                 result = await self.process(input_data, feedback=None)
+            except PipelineSilentAbortError:
+                return
             except PipelineError as exc:
                 logger.error("Alice process failed: %s", exc)
                 await self.transition_to(AgentState.ERROR)
@@ -413,6 +771,16 @@ class AliceAgent(BaseAgent):
                 },
             )
 
+    def _format_error_message(self, errors: list[str]) -> str:
+        """Override base error formatting to remove generic text for Rate Limit errors."""
+        error_text = errors[0] if errors else "An unexpected error occurred"
+        if "Rate Limit Error:" in error_text:
+            return (
+                f"**What happened:** {error_text}\n\n"
+                f"**What to do:** Please check your provider subscription plan and billing details, or create a new thread using a different API key."
+            )
+        return super()._format_error_message(errors)
+
     async def handle_approve(self, data: dict[str, Any] | None = None) -> None:
         """Save configuration and complete Alice step."""
         if self._configuration is None:
@@ -440,11 +808,117 @@ class AliceAgent(BaseAgent):
             await self.transition_to(AgentState.ERROR)
             return
 
+        # Persist non-secret config per (user, project) for future threads
+        if (
+            self.project_context
+            and self.project_context.artifact_service
+            and self.project_context.project_id
+        ):
+            try:
+                db = self.project_context.artifact_service.db
+                from ai_qa.userconfig.service import save_provider_config
+
+                provider_cfg = {
+                    "provider": self._configuration.provider.provider,
+                    "provider_name": self._configuration.provider.provider_name,
+                    "endpoint": self._configuration.provider.endpoint,
+                    "tested_at": self._configuration.provider.tested_at,
+                    "test_result": self._configuration.provider.test_result,
+                    "rationale": "",
+                }
+                reasoning_map = {
+                    r["agent"]: r.get("rationale", "")
+                    for r in self._model_reasoning
+                    if isinstance(r, dict) and "agent" in r
+                }
+                agents_cfg: dict[str, Any] = {"version": "1", "updated_at": "", "agents": {}}
+                for name, cfg in self._configuration.agents.agents.items():
+                    agents_cfg["agents"][name] = {
+                        "model": cfg.model,
+                        "temperature": cfg.temperature,
+                        "prompt_template": cfg.prompt_template,
+                        "tools": list(cfg.tools),
+                        "rationale": reasoning_map.get(name, ""),
+                    }
+                save_provider_config(
+                    db,
+                    self.project_context.user_id,
+                    self.project_context.project_id,
+                    provider_cfg,
+                    agents_cfg,
+                )
+                db.commit()
+            except Exception as exc:
+                logger.warning("Failed to persist per-project provider config: %s", exc)
+
         await self.transition_to(AgentState.DONE)
+
+    async def handle_reject(self, feedback: str) -> None:
+        """Reject the model assignment review and return to provider configuration.
+
+        Does NOT persist any approved configuration. Only creates a conversational
+        acknowledgment message and resets the thread to configuration adjustment.
+        """
+        await self.send_message(
+            content="Understood. Let's adjust your provider configuration.",
+            message_type="text",
+        )
+        # Clear generated configuration so re-selection starts fresh
+        self._configuration = None
+        self._model_reasoning = []
+        await self.transition_to(AgentState.START)
+        # Re-show provider options so the user can reconfigure
+        await self.send_message(
+            content="Please select your AI provider:",
+            message_type="info",
+            metadata={
+                "type": "provider_options",
+                "options": self.get_provider_options(),
+                "on_prem_defaults": self.get_on_prem_defaults(),
+            },
+        )
 
     # -------------------------------------------------------------------------
     # Private Helpers
     # -------------------------------------------------------------------------
+
+    def _assign_fallback_models(self, models_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # Per-agent capability preferences (ordered keyword hints).
+        # Uses first matching hint (deterministic) — no randomization.
+        fallback_models = {
+            "Alice": ["claude-3-5-sonnet", "gpt-4o", "pro", "sonnet"],
+            "Bob": ["opus", "gpt-4o", "gpt-5", "pro", "vision", "sonnet"],
+            "Mary": ["sonnet", "gpt-4", "pro", "flash"],
+            "Sarah": ["opus", "coder", "sonnet", "gpt-4", "pro"],
+            "Jack": ["haiku", "mini", "flash", "lite", "sonnet"],
+        }
+
+        reasoning = []
+        for agent, candidates in fallback_models.items():
+            assigned_model = None
+            for candidate in candidates:
+                if any(candidate in m["id"].lower() for m in models_list):
+                    assigned_model = next(
+                        m["id"] for m in models_list if candidate in m["id"].lower()
+                    )
+                    break
+
+            # Fallback to the first available model if no hint matched
+            if not assigned_model and models_list:
+                assigned_model = models_list[0]["id"]
+
+            if not assigned_model:
+                assigned_model = "Unavailable"
+
+            reasoning.append(
+                {
+                    "agent": agent,
+                    "purpose": AGENT_PURPOSES.get(agent, ""),
+                    "model": assigned_model,
+                    "reasoning": "Fallback selection due to empty or rate-limited models.",
+                }
+            )
+        return reasoning
 
     def _get_provider_info(self, provider_id: str) -> dict[str, Any] | None:
         """Get provider info by ID."""
@@ -453,40 +927,40 @@ class AliceAgent(BaseAgent):
                 info = p.copy()
                 setting_name = info.get("endpoint_setting")
                 if setting_name:
-                    info["endpoint"] = getattr(self._settings, setting_name, "")
+                    # Resolve the config-owned base URL through the registry so the
+                    # provider adapters and Alice share a single source of truth
+                    # (avoids drift between PROVIDER_OPTIONS and the registry map).
+                    info["endpoint"] = resolve_base_url(self._settings, provider_id)
                 return info
         return None
 
     async def _test_connection(
         self, provider_info: dict[str, Any], credentials: dict[str, str]
-    ) -> bool:
-        """Test connection to provider.
+    ) -> ConnectionResult:
+        """Test connection to provider via its adapter.
+
+        Delegates auth + reachability validation to the provider adapter, which
+        owns the on-prem config guard, the api-key format floor, and all
+        provider-specific header/endpoint details. Base URLs are config-owned
+        (resolved via ``resolve_base_url`` in ``_get_provider_info``); credentials
+        are passed in by the caller.
 
         Args:
-            provider_info: Provider configuration
+            provider_info: Provider configuration (includes config-owned endpoint)
             credentials: User-provided credentials
 
         Returns:
-            True if connection successful, False otherwise
+            A normalized, secret-free ``ConnectionResult``.
         """
-        # Real connection test
+        provider_id = provider_info["id"]
         endpoint = provider_info.get("endpoint", "")
-        if provider_info["id"] == "on-premises":
-            if not endpoint or not endpoint.startswith("http"):
-                return False
-
-        api_key = credentials.get("api_key", "").strip()
-        if not api_key or len(api_key) < 8:
-            return False
-
-        available_models = await self._fetch_available_models(
-            provider_info["id"], endpoint, api_key
+        adapter = get_provider_adapter(provider_id)
+        result = await adapter.validate_connection(
+            {"api_key": credentials.get("api_key", "")}, endpoint
         )
-        if not available_models:
-            return False
-
-        logger.info("Connection test passed for %s", provider_info["name"])
-        return True
+        if result.success:
+            logger.info("Connection test passed for %s", provider_info["name"])
+        return result
 
     async def _simulate_delay(self, seconds: float) -> None:
         """Simulate processing delay."""
@@ -525,33 +999,158 @@ class AliceAgent(BaseAgent):
         endpoint = provider_info.get("endpoint", "")
         api_key = credentials.get("api_key", "")
 
-        # 1. Fetch available models
-        available_models = await self._fetch_available_models(provider_id, endpoint, api_key)
+        # 1. Discover available models via the provider adapter (Story 9.4).
+        #    Discovery runs only after a successful validate_connection in
+        #    process(), so the AC1 precondition is satisfied. The adapter returns
+        #    the raw discovered set; Alice owns ranking/assignment + the gate.
+        adapter = get_provider_adapter(provider_id)
+        discovered = await adapter.list_models({"api_key": api_key}, endpoint)
 
-        if not available_models:
-            raise PipelineError(
-                "No models discovered from provider. Please check the provider configuration."
+        # Categorize models into available and unavailable
+        available_models: list[dict[str, Any]] = []
+        unavailable_models: list[dict[str, Any]] = []
+
+        unsupported_keywords = [
+            "embed",
+            "tts",
+            "whisper",
+            "audio",
+            "dall-e",
+            "babbage",
+            "davinci",
+            "instruct",
+            "realtime",
+            "moderation",
+            "text-search",
+            "text-similarity",
+            "code-search",
+            "edit",
+        ]
+
+        for dm in discovered:
+            # Match whole words or prefixed segments to avoid false positives
+            # e.g., "embedding" should match "text-embedding-ada-002" but not "my-embedding-model"
+            is_unsupported = any(
+                kw == dm.id.lower()
+                or dm.id.lower().startswith(kw + "-")
+                or dm.id.lower().endswith("-" + kw)
+                or f"-{kw}-" in dm.id.lower()
+                for kw in unsupported_keywords
             )
 
+            if is_unsupported:
+                unavailable_models.append(
+                    {"id": dm.id, "name": dm.display_name, "status": "not support / outdated"}
+                )
+            else:
+                available_models.append({"id": dm.id, "name": dm.display_name})
+
+        if not available_models:
+            # Emit trace to show the models that were discovered but unavailable
+            fallback_assignments = self._assign_fallback_models(unavailable_models)
+            error_trace = {
+                "connection_status": "success",
+                "available_models": [],
+                "unavailable_models": unavailable_models,
+                "chain_of_thought": [
+                    "[What happened] No available models were found. "
+                    "The provider may have rejected model-listing requests (check that your "
+                    "key has model-listing permissions) or no models match your credentials.",
+                    "[What to do] Verify your API key has access to list models, "
+                    "then create a new thread to try again.",
+                ],
+                "assignments": fallback_assignments,
+            }
+            await self.send_message(
+                content="Finished model assignment reasoning.",
+                message_type="info",
+                metadata={"type": "thinking_trace", "trace": error_trace},
+            )
+
+            # Transition to ERROR and abort silently to prevent plaintext bubble
+            await self.transition_to(AgentState.ERROR)
+            raise PipelineSilentAbortError()
+
         # 2. Bootstrap Alice model
-        alice_model = self._bootstrap_alice_model(available_models)
+        alice_model, alice_rationale = self._bootstrap_alice_model(available_models)
         if not alice_model:
             raise PipelineError(
-                "Could not bootstrap a reasoning model for Alice from the available models."
+                "No available model to proceed. Please check your subscription then create a new thread to continue."
             )
 
         # 3. Assign models via LLM
-        model_mappings, reasoning = await self._assign_models_via_llm(
-            provider_id, endpoint, api_key, alice_model, available_models
-        )
+        try:
+            model_mappings, reasoning = await self._assign_models_via_llm(
+                provider_id, endpoint, api_key, alice_model, available_models
+            )
+        except PipelineError as e:
+            error_str = str(e)
+            formatted_message = error_str
+
+            # Try to format the ugly Litellm JSON error nicely
+            if "LLM rate limit error" in error_str or "Error code:" in error_str:
+                # Move all available models to unavailable models
+                for m in available_models:
+                    unavailable_models.append(
+                        {"id": m["id"], "name": m["name"], "status": "rate limit"}
+                    )
+                available_models.clear()
+
+                match = re.search(r"Error code: \d+ - (.*)", error_str)
+                if match:
+                    try:
+                        parsed = ast.literal_eval(match.group(1).strip())
+                        if isinstance(parsed, list) and len(parsed) > 0:
+                            parsed = parsed[0]
+                        if (
+                            isinstance(parsed, dict)
+                            and "error" in parsed
+                            and "message" in parsed["error"]
+                        ):
+                            formatted_message = f"Rate Limit Error: {parsed['error']['message']}"
+                    except Exception:
+                        msg_match = re.search(r"'message':\s*'([^']+)'", error_str)
+                        if msg_match:
+                            formatted_message = f"Rate Limit Error: {msg_match.group(1)}"
+
+            # Determine if it's a rate limit error to provide specific guidance
+            if "Rate Limit Error:" in formatted_message:
+                what_happened = f"[What happened] {formatted_message}"
+                what_to_do = "[What to do] Please check your provider subscription plan and billing details, or create a new thread using a different API key."
+                chain_of_thought = [what_happened, what_to_do]
+            else:
+                chain_of_thought = [f"[What happened] {formatted_message}"]
+
+            fallback_assignments = self._assign_fallback_models(unavailable_models)
+            trace_payload: dict[str, Any] = {
+                "connection_status": "success",
+                "available_models": available_models,
+                "unavailable_models": unavailable_models,
+                "bootstrap_model": alice_model,
+                "bootstrap_rationale": alice_rationale,
+                "agent_needs": AGENT_PURPOSES,
+                "assignments": fallback_assignments,
+                "chain_of_thought": chain_of_thought,
+            }
+            await self.send_message(
+                content="Finished model assignment reasoning.",
+                message_type="info",
+                metadata={"type": "thinking_trace", "trace": trace_payload},
+            )
+
+            await self.transition_to(AgentState.ERROR)
+            raise PipelineSilentAbortError() from e
 
         # 4. Emit thinking trace
         trace_payload = {
             "connection_status": "success",
             "available_models": available_models,
+            "unavailable_models": unavailable_models,
             "bootstrap_model": alice_model,
+            "bootstrap_rationale": alice_rationale,
             "agent_needs": AGENT_PURPOSES,
             "assignments": reasoning,
+            "benchmark": get_provider_benchmark(provider_id),
         }
         await self.send_message(
             content="Finished model assignment reasoning.",
@@ -564,7 +1163,7 @@ class AliceAgent(BaseAgent):
             provider=provider_id,
             provider_name=provider_info["name"],
             endpoint=endpoint,
-            credential_reference=f"env://{provider_info['env_key']}",
+            credential_reference="",
             tested_at=now,
             test_result="success",
         )
@@ -590,26 +1189,67 @@ class AliceAgent(BaseAgent):
             agents=agents,
         )
 
+        # Store rationale for display in the review panel (threaded through
+        # _get_model_assignments_display / _format_model_assignments).
+        self._model_reasoning = reasoning
+
+        # Immediately update the thread with the provider info so it's not null in the DB
+        # before the user approves the agent configurations.
+        if (
+            self.project_context
+            and self.project_context.artifact_service
+            and self.project_context.thread_id
+        ):
+            db = self.project_context.artifact_service.db
+            from ai_qa.threads.models import Thread
+
+            thread = db.get(Thread, self.project_context.thread_id)
+            if thread:
+                thread.provider_name = provider_id
+                thread.provider_base_url = endpoint
+                db.commit()
+
         return AliceConfiguration(provider=provider_config, agents=agents_config)
 
     def _save_configuration(self, config: AliceConfiguration) -> None:
-        """Save configuration to User database."""
-        if not self.project_context or not self.project_context.artifact_service:
-            logger.error("No project context available to save configuration.")
-            raise OSError("No project context available to save configuration.")
+        """Save configuration to Thread database."""
+        if (
+            not self.project_context
+            or not self.project_context.artifact_service
+            or not self.project_context.thread_id
+        ):
+            logger.error("No project context or thread_id available to save configuration.")
+            raise OSError("No thread_id available to save configuration.")
 
         db = self.project_context.artifact_service.db
-        from ai_qa.db.models import User
+        from ai_qa.threads.models import Thread
 
-        user = db.get(User, self.project_context.user_id)
+        thread = db.get(Thread, self.project_context.thread_id)
+        if thread:
+            thread.provider_name = config.provider.provider
+            thread.provider_base_url = config.provider.endpoint
 
-        if user:
-            user.ai_provider_config = config.provider.model_dump()
-            user.ai_agents_config = config.agents.model_dump()
+            # Write structured per-agent entries (model + temperature + rationale)
+            # so check_existing_configuration and _load_agent_config can round-trip.
+            reasoning_map = {
+                r["agent"]: r.get("rationale", "")
+                for r in self._model_reasoning
+                if isinstance(r, dict) and "agent" in r
+            }
+            new_configs = {}
+            for agent_name, agent_cfg in config.agents.agents.items():
+                new_configs[agent_name] = {
+                    "model": agent_cfg.model,
+                    "temperature": agent_cfg.temperature,
+                    "rationale": reasoning_map.get(agent_name, ""),
+                }
+
+            thread.agent_configs = new_configs
+
             db.commit()
-            logger.info("Configuration saved to database for user %s", user.email)
+            logger.info("Configuration saved to database for thread %s", thread.id)
         else:
-            raise OSError("User not found to save configuration.")
+            raise OSError("Thread not found to save configuration.")
 
     def _is_config_valid(self, provider_data: dict[str, Any]) -> bool:
         """Check if existing configuration is still valid (not expired)."""
@@ -621,16 +1261,24 @@ class AliceAgent(BaseAgent):
             return False
 
     def _get_model_assignments_display(self) -> list[dict[str, str]]:
-        """Get model assignments for display in review."""
+        """Get model assignments for display in review (with rationale)."""
         if not self._configuration:
             return []
 
-        return self._get_model_assignments_from_config(self._configuration)
+        return self._get_model_assignments_from_config(self._configuration, self._model_reasoning)
 
     def _get_model_assignments_from_config(
-        self, config: AliceConfiguration
+        self,
+        config: AliceConfiguration,
+        reasoning: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
         """Get model assignments from configuration."""
+        reasoning_map: dict[str, str] = {}
+        if reasoning:
+            for r in reasoning:
+                if isinstance(r, dict) and "agent" in r and "rationale" in r:
+                    reasoning_map[str(r["agent"])] = str(r["rationale"])
+
         assignments = []
         for agent_name, agent_config in config.agents.agents.items():
             if agent_name == "alice":
@@ -643,14 +1291,19 @@ class AliceAgent(BaseAgent):
                     "agent": agent_display,
                     "model": agent_config.model,
                     "purpose": purpose,
+                    "rationale": reasoning_map.get(agent_name, ""),
                 }
             )
         return assignments
 
-    def _bootstrap_alice_model(self, available_models: list[dict[str, Any]]) -> str:
-        """Bootstrap Alice's reasoning model using keyword heuristics."""
+    def _bootstrap_alice_model(self, available_models: list[dict[str, Any]]) -> tuple[str, str]:
+        """Bootstrap Alice's reasoning model using keyword heuristics.
+
+        Returns:
+            tuple of (model_id, rationale)
+        """
         if not available_models:
-            return ""
+            return "", ""
 
         model_ids = [m["id"] for m in available_models]
 
@@ -674,10 +1327,10 @@ class AliceAgent(BaseAgent):
         for p in priorities:
             for m_id in model_ids:
                 if p in str(m_id).lower():
-                    return str(m_id)
+                    return str(m_id), f"Chosen based on capability priority keyword '{p}'."
 
         # Fallback to first available
-        return str(model_ids[0])
+        return str(model_ids[0]), "Fallback to first available model."
 
     async def _assign_models_via_llm(
         self,
@@ -793,28 +1446,73 @@ Respond with a JSON object exactly in this format:
                     return final_assignments, final_reasoning
             else:
                 logger.warning("LLM response did not contain JSON block.")
-                error_msg = f"No JSON found. Response: {response_text[:200]}"
-        except (json.JSONDecodeError, KeyError, Exception) as e:
-            logger.warning(f"Failed LLM assignment: {e}")
-            error_msg = f"Exception: {str(e)}"
-            if "response_text" in locals():
-                error_msg += f" | Response: {response_text[:200]}"
+                error_msg = "No JSON found in LLM response."
+        except LLMRateLimitError as e:
+            # Surface the provider's rate-limit / quota / billing message verbatim
+            # so the user knows to upgrade their plan or top up credits. These
+            # provider messages never contain the api_key (AC2: secret-free).
+            raise PipelineError(str(e)) from e
+        except (json.JSONDecodeError, KeyError) as e:
+            # Expected parsing errors - log technical detail, keep out of user-facing text
+            logger.warning("Failed LLM assignment (parsing): %s", e)
+            error_msg = type(e).__name__
+        except Exception as e:
+            # Other unexpected errors - log full detail but fall back to heuristic
+            # assignment so the user can still proceed. The raw error is logged
+            # and intentionally not surfaced to the user-facing rationale.
+            logger.warning("Failed LLM assignment (unexpected): %s", e)
+            error_msg = type(e).__name__
 
-        # Fallback mapping
+        # Fallback assignment: the LLM-driven assignment was unavailable (e.g. the
+        # provider has no chat-completions endpoint, or a transient error). Pick a
+        # sensible model per agent from the DISCOVERED set so assignments are
+        # differentiated and never reference an undiscovered model (AC3). The raw
+        # error is logged above and intentionally not surfaced to the user.
+        logger.info("Applying fallback model assignment (reason: %s)", error_msg)
+        model_ids = [str(m["id"]) for m in available_models]
+
+        def _pick(keywords: list[str]) -> str:
+            for kw in keywords:
+                for mid in model_ids:
+                    if kw in mid.lower():
+                        return mid
+            return alice_model
+
+        # Per-agent capability preferences (ordered keyword hints).
+        fallback_models = {
+            "Alice": _pick(["claude-3-5-sonnet", "gpt-4o", "pro", "sonnet"]),
+            "bob": _pick(["opus", "gpt-4o", "gpt-5", "pro", "vision", "sonnet"]),
+            "mary": _pick(["sonnet", "gpt-4", "pro", "flash"]),
+            "sarah": _pick(["opus", "coder", "sonnet", "gpt-4", "pro"]),
+            "jack": _pick(["haiku", "mini", "flash", "lite", "sonnet"]),
+        }
+
+        fallback_reasons = {
+            "alice": "Chosen for general reasoning and configuration capabilities.",
+            "bob": "Chosen for vision-capability, strong reasoning, and long-context processing.",
+            "mary": "Chosen for structured output and instruction-following capabilities.",
+            "sarah": "Chosen for strong coding and tool execution capabilities.",
+            "jack": "Chosen for fast, cost-effective summarization.",
+        }
+
         mappings = {}
         reasoning = []
         for agent in ["bob", "mary", "sarah", "jack"]:
-            mappings[agent] = alice_model
+            chosen = fallback_models.get(agent) or alice_model
+            mappings[agent] = chosen
             reasoning.append(
                 {
                     "agent": agent,
-                    "model": alice_model,
-                    "rationale": f"Fallback heuristic applied: {error_msg}",
+                    "model": chosen,
+                    "rationale": fallback_reasons.get(
+                        agent, "Chosen based on discovered model capabilities."
+                    ),
                 }
             )
         return mappings, reasoning
 
-    def _mask_endpoint(self, endpoint: str) -> str:
+    @staticmethod
+    def _mask_endpoint(endpoint: str) -> str:
         """Mask sensitive parts of endpoint for display."""
         if not endpoint:
             return "N/A"
@@ -848,13 +1546,14 @@ Respond with a JSON object exactly in this format:
             "",
             "### Model Assignments",
             "",
-            "| Agent | Model | Purpose |",
-            "|-------|-------|---------|",
+            "| Agent | Model | Purpose | Rationale |",
+            "|-------|-------|---------|-----------|",
         ]
 
         for assignment in assignments:
+            rationale = assignment.get("rationale", "")
             lines.append(
-                f"| {assignment['agent']} | {assignment['model']} | {assignment['purpose']} |"
+                f"| {assignment['agent']} | {assignment['model']} | {assignment['purpose']} | {rationale} |"
             )
 
         lines.extend(
@@ -867,89 +1566,9 @@ Respond with a JSON object exactly in this format:
 
         return "\n".join(lines)
 
-    async def _fetch_available_models(
-        self, provider_id: str, server_url: str, api_key: str
-    ) -> list[dict[str, Any]]:
-        """Fetch available models from on-premise LLM server or return known models for cloud.
-
-        Tries common endpoints: /v1/models, /models, /api/models, /api/tags (Ollama)
-        """
-        if provider_id == "claude":
-            return [
-                {"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet"},
-                {"id": "claude-3-opus-latest", "name": "Claude 3 Opus"},
-                {"id": "claude-3-5-haiku-latest", "name": "Claude 3.5 Haiku"},
-            ]
-        elif provider_id == "gemini-chatgpt":
-            return [
-                {"id": "gpt-4o", "name": "GPT-4o"},
-                {"id": "gpt-4o-mini", "name": "GPT-4o Mini"},
-                {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro"},
-                {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash"},
-            ]
-        elif provider_id == "browser-use-cloud":
-            return [
-                {"id": "gpt-4o", "name": "GPT-4o"},
-                {"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet"},
-            ]
-
-        endpoints_to_try = [
-            f"{server_url.rstrip('/')}/v1/models",
-            f"{server_url.rstrip('/')}/models",
-            f"{server_url.rstrip('/')}/api/tags",  # Ollama
-            f"{server_url.rstrip('/')}/api/models",
-        ]
-
-        headers = {"Authorization": f"Bearer {api_key}"}
-        verify_ssl = provider_id != "on-premises"
-
-        for endpoint in endpoints_to_try:
-            try:
-                # Use verify_ssl to support self-signed certificates common in on-premise setups
-                async with httpx.AsyncClient(
-                    timeout=10.0, verify=verify_ssl, follow_redirects=True
-                ) as client:
-                    response = await client.get(endpoint, headers=headers)
-                    if response.status_code == 200:
-                        data = response.json()
-                        # Handle different response formats
-                        if isinstance(data, list):
-                            return [
-                                {
-                                    "id": m.get("id", m.get("name", str(m))),
-                                    "name": m.get("name", m.get("id", str(m))),
-                                }
-                                for m in data
-                                if isinstance(m, dict)
-                            ]
-                        elif isinstance(data, dict) and "data" in data:
-                            return [
-                                {
-                                    "id": m.get("id", m.get("name", str(m))),
-                                    "name": m.get("name", m.get("id", str(m))),
-                                }
-                                for m in data["data"]
-                                if isinstance(m, dict)
-                            ]
-                        elif isinstance(data, dict) and "models" in data:
-                            # Ollama /api/tags uses 'models' with 'name'
-                            return [
-                                {
-                                    "id": m.get("id", m.get("name", str(m))),
-                                    "name": m.get("name", m.get("id", str(m))),
-                                }
-                                for m in data["models"]
-                                if isinstance(m, dict)
-                            ]
-            except Exception as exc:
-                logger.debug("Failed to fetch models from %s: %s", endpoint, exc)
-                continue
-
-        return []
-
     def _format_model_assignments(self, config: AliceConfiguration) -> str:
         """Format model assignments from existing config."""
-        assignments = self._get_model_assignments_from_config(config)
+        assignments = self._get_model_assignments_from_config(config, self._model_reasoning)
         endpoint = self._mask_endpoint(config.provider.endpoint)
 
         lines = [
@@ -960,13 +1579,14 @@ Respond with a JSON object exactly in this format:
             "",
             "### Model Assignments",
             "",
-            "| Agent | Model | Purpose |",
-            "|-------|-------|---------|",
+            "| Agent | Model | Purpose | Rationale |",
+            "|-------|-------|---------|-----------|",
         ]
 
         for assignment in assignments:
+            rationale = assignment.get("rationale", "")
             lines.append(
-                f"| {assignment['agent']} | {assignment['model']} | {assignment['purpose']} |"
+                f"| {assignment['agent']} | {assignment['model']} | {assignment['purpose']} | {rationale} |"
             )
 
         lines.extend(

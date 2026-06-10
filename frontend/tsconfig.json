@@ -1,4 +1,9 @@
 {
+  "compilerOptions": {
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "ignoreDeprecations": "5.0"
+  },
   "files": [],
   "references": [
     { "path": "./tsconfig.app.json" },

@@ -1,6 +1,14 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { ApiError, getSafeApiErrorMessage } from "@/lib/api";
-import { listProjects } from "@/lib/projects";
+import { getUserProjects } from "@/lib/projects";
 import { useAuth } from "@/hooks/useAuth";
 import type { Project } from "@/types/project";
 
@@ -23,8 +31,8 @@ const ProjectContext = createContext<ProjectContextType | undefined>(undefined);
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, refresh } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() =>
-    localStorage.getItem(SELECTED_PROJECT_KEY),
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    () => localStorage.getItem(SELECTED_PROJECT_KEY),
   );
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
@@ -40,16 +48,23 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (message) setProjectError(message);
   }, []);
 
-  const selectProject = useCallback((projectId: string) => {
-    const projectExists = projects.some((project) => project.id === projectId);
-    if (!projectExists) {
-      clearSelectedProject("That project is no longer available. Please choose another project.");
-      return;
-    }
-    localStorage.setItem(SELECTED_PROJECT_KEY, projectId);
-    setSelectedProjectId(projectId);
-    setProjectError(null);
-  }, [clearSelectedProject, projects]);
+  const selectProject = useCallback(
+    (projectId: string) => {
+      const projectExists = projects.some(
+        (project) => project.id === projectId,
+      );
+      if (!projectExists) {
+        clearSelectedProject(
+          "That project is no longer available. Please choose another project.",
+        );
+        return;
+      }
+      localStorage.setItem(SELECTED_PROJECT_KEY, projectId);
+      setSelectedProjectId(projectId);
+      setProjectError(null);
+    },
+    [clearSelectedProject, projects],
+  );
 
   const reloadProjects = useCallback(async () => {
     if (!isAuthenticated) {
@@ -61,15 +76,24 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setIsLoadingProjects(true);
     setProjectError(null);
     try {
-      const accessibleProjects = await listProjects();
+      const accessibleProjects = await getUserProjects();
       setProjects(accessibleProjects);
       const storedProjectId = localStorage.getItem(SELECTED_PROJECT_KEY);
-      if (storedProjectId && !accessibleProjects.some((project) => project.id === storedProjectId)) {
-        clearSelectedProject("Your previous project selection is no longer available.");
+      if (
+        storedProjectId &&
+        !accessibleProjects.some((project) => project.id === storedProjectId)
+      ) {
+        clearSelectedProject(
+          "Your previous project selection is no longer available.",
+        );
       }
     } catch (error) {
       setProjects([]);
-      clearSelectedProject(error instanceof ApiError && error.kind === "auth" ? undefined : getSafeApiErrorMessage(error));
+      clearSelectedProject(
+        error instanceof ApiError && error.kind === "auth"
+          ? undefined
+          : getSafeApiErrorMessage(error),
+      );
       if (error instanceof ApiError && error.kind === "auth") {
         await refresh();
       }
@@ -82,20 +106,33 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     void reloadProjects();
   }, [reloadProjects]);
 
+  const value = useMemo<ProjectContextType>(
+    () => ({
+      projects,
+      selectedProject,
+      selectedProjectId,
+      isLoadingProjects,
+      projectError,
+      isProjectReady: Boolean(selectedProject),
+      selectProject,
+      clearSelectedProject,
+      reloadProjects,
+    }),
+    [
+      clearSelectedProject,
+      isLoadingProjects,
+      projectError,
+      projects,
+      reloadProjects,
+      selectProject,
+      selectedProject,
+      selectedProjectId,
+    ],
+  );
 
-  const value = useMemo<ProjectContextType>(() => ({
-    projects,
-    selectedProject,
-    selectedProjectId,
-    isLoadingProjects,
-    projectError,
-    isProjectReady: Boolean(selectedProject),
-    selectProject,
-    clearSelectedProject,
-    reloadProjects,
-  }), [clearSelectedProject, isLoadingProjects, projectError, projects, reloadProjects, selectProject, selectedProject, selectedProjectId]);
-
-  return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;
+  return (
+    <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>
+  );
 }
 
 export function useProjectContext(): ProjectContextType {

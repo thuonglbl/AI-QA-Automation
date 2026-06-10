@@ -4,6 +4,8 @@ Provides REST endpoints for pipeline control and WebSocket for real-time
 communication between agents and the frontend.
 """
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -18,6 +20,8 @@ from ai_qa.api.auth import AuthMiddleware, get_auth_router
 from ai_qa.api.projects import router as projects_router
 from ai_qa.api.routes import register_agent
 from ai_qa.api.routes import router as api_router
+from ai_qa.api.secrets import router as secrets_router
+from ai_qa.api.threads import router as threads_router
 from ai_qa.api.websocket import websocket_endpoint
 from ai_qa.config import AppSettings
 
@@ -37,10 +41,43 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     if settings is None:
         settings = AppSettings()
 
+    @asynccontextmanager
+    async def lifespan(app_inst: FastAPI) -> AsyncGenerator[None, None]:
+        # Ensure SeaweedFS bucket exists
+        try:
+            import boto3
+            from botocore.config import Config
+            from botocore.exceptions import ClientError
+
+            s3 = boto3.client(
+                "s3",
+                endpoint_url=f"{'https' if settings.seaweedfs_secure else 'http'}://{settings.seaweedfs_endpoint}",
+                aws_access_key_id=settings.seaweedfs_access_key,
+                aws_secret_access_key=settings.seaweedfs_secret_key,
+                config=Config(
+                    signature_version="s3v4",
+                    connect_timeout=settings.s3_connect_timeout,
+                    read_timeout=settings.s3_read_timeout,
+                    retries={"max_attempts": 0},
+                ),
+            )
+            bucket = settings.seaweedfs_bucket
+            try:
+                s3.head_bucket(Bucket=bucket)
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "404":
+                    s3.create_bucket(Bucket=bucket)
+        except Exception as e:
+            import logging
+
+            logging.warning(f"Failed to initialize SeaweedFS bucket on startup: {e}")
+        yield
+
     app = FastAPI(
         title="AI QA Automation API",
         description="Backend API for AI-powered QA test automation pipeline",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     # Store settings in app state for middleware and websocket access
@@ -78,6 +115,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     app.include_router(projects_router, prefix="/api")
     app.include_router(artifacts_router, prefix="/api")
     app.include_router(admin_router, prefix="/api")
+    app.include_router(threads_router, prefix="/api")
+    app.include_router(secrets_router, prefix="/api")
 
     # WebSocket endpoint (protected by auth middleware)
     app.add_api_websocket_route("/ws", websocket_endpoint)

@@ -1,9 +1,22 @@
-import { Briefcase, CheckCircle2, FolderKanban, RefreshCw, ShieldAlert } from "lucide-react";
+import {
+  Briefcase,
+  CheckCircle2,
+  FolderKanban,
+  RefreshCw,
+  ShieldAlert,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useProject } from "@/hooks/useProject";
 
 export function ProjectPicker() {
-  const { projects, selectedProjectId, selectProject, isLoadingProjects, projectError, reloadProjects } = useProject();
+  const {
+    projects,
+    selectedProjectId,
+    selectProject,
+    isLoadingProjects,
+    projectError,
+    reloadProjects,
+  } = useProject();
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 px-6 py-10 text-slate-100">
@@ -14,9 +27,12 @@ export function ProjectPicker() {
               <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-blue-400/10 px-4 py-2 text-sm font-semibold text-blue-100">
                 <FolderKanban className="h-4 w-4" /> Project workspace
               </div>
-              <h1 className="text-4xl font-bold tracking-tight md:text-5xl">Choose where this run belongs</h1>
+              <h1 className="text-4xl font-bold tracking-tight md:text-5xl">
+                Choose where this run belongs
+              </h1>
               <p className="mt-3 max-w-2xl text-base leading-7 text-slate-300">
-                Every agent result is scoped to a shared project. Pick an accessible project before the AI QA pipeline starts.
+                Every agent result is scoped to a shared project. Pick an
+                accessible project before the AI QA pipeline starts.
               </p>
             </div>
             <Button
@@ -27,7 +43,9 @@ export function ProjectPicker() {
               disabled={isLoadingProjects}
               className="min-h-11 gap-2 bg-white/90 text-slate-900 hover:bg-white"
             >
-              <RefreshCw className={`h-4 w-4 ${isLoadingProjects ? "animate-spin" : ""}`} />
+              <RefreshCw
+                className={`h-4 w-4 ${isLoadingProjects ? "animate-spin" : ""}`}
+              />
               Refresh
             </Button>
           </div>
@@ -50,7 +68,8 @@ export function ProjectPicker() {
               <Briefcase className="mx-auto mb-4 h-12 w-12 text-blue-200" />
               <h2 className="text-2xl font-bold">No projects assigned yet</h2>
               <p className="mx-auto mt-3 max-w-xl text-slate-300">
-                Contact an administrator to be added to a project before running the agent pipeline.
+                Contact an administrator to be added to a project before running
+                the agent pipeline.
               </p>
             </div>
           ) : (
@@ -73,15 +92,24 @@ export function ProjectPicker() {
                       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-400/20 text-blue-100">
                         <Briefcase className="h-6 w-6" />
                       </div>
-                      {selected && <CheckCircle2 className="h-6 w-6 text-emerald-300" />}
+                      {selected && (
+                        <CheckCircle2 className="h-6 w-6 text-emerald-300" />
+                      )}
                     </div>
-                    <h2 className="mt-5 text-xl font-bold text-white">{project.name}</h2>
+                    <h2 className="mt-5 text-xl font-bold text-white">
+                      {project.name}
+                    </h2>
                     <p className="mt-2 line-clamp-3 text-sm leading-6 text-slate-300">
-                      {project.description || "Shared project workspace for generated requirements, test cases, scripts, and reports."}
+                      {project.description ||
+                        "Shared project workspace for generated requirements, test cases, scripts, and reports."}
                     </p>
                     <div className="mt-5 flex flex-wrap gap-2 text-xs font-semibold">
-                      <span className="rounded-full bg-white/10 px-3 py-1 text-blue-100">Role: {project.current_user_role || "admin"}</span>
-                      <span className="rounded-full bg-white/10 px-3 py-1 text-slate-200">{project.membership_count} members</span>
+                      <span className="rounded-full bg-white/10 px-3 py-1 text-blue-100">
+                        Role: {project.current_user_role || "admin"}
+                      </span>
+                      <span className="rounded-full bg-white/10 px-3 py-1 text-slate-200">
+                        {project.membership_count} members
+                      </span>
                     </div>
                   </button>
                 );

@@ -1,32 +1,17 @@
 # AI QA Automation
 
-AI QA Automation turns Jira and Confluence requirements into reviewed QA assets and Playwright automation scripts. After Epic 12, the project is no longer a single-user workspace prototype: it now has a multi-user FastAPI backend, React frontend, PostgreSQL persistence, local authentication, role-based administration, project-scoped artifacts, and project-aware agent pipelines.
+AI QA Automation turns Jira and Confluence requirements into reviewed QA assets and Playwright automation scripts. It has a multi-user FastAPI backend, React frontend, PostgreSQL persistence, role-based administration, project-scoped artifacts, and project-aware agent pipelines.
 
 ## What the System Does
 
 The application guides QA teams through an AI-assisted workflow:
 
-1. **Bob** reads Confluence content and extracts requirements.
+1. **Bob** reads Confluence and Jira content and extracts requirements.
 2. **Mary** turns approved requirements into structured test cases.
 3. **Sarah** generates Playwright scripts from approved test cases.
-4. **Jack** is planned next in Epic 6 to execute scripts and report results.
+4. **Jack** execute scripts and report results.
 
-Each stage supports human review before outputs move forward. In project mode, generated requirements, test cases, scripts, reports, and metadata are persisted as versioned project artifacts instead of being written directly to global `workspace/*` folders.
-
-## Current Project State
-
-Epic 12 is complete.
-
-| Area | Current state |
-| --- | --- |
-| Backend | FastAPI REST and WebSocket API with project-aware pipeline dispatch |
-| Frontend | React + TypeScript + Vite UI with login, project selection, and admin basics |
-| Database | PostgreSQL via SQLAlchemy 2.x and Alembic |
-| Authentication | Local email/password auth with Argon2 password hashes and signed sessions |
-| Authorization | Database-revalidated RBAC and project membership checks |
-| Storage | Project-scoped artifact metadata in PostgreSQL and local content storage abstraction |
-| Pipeline | Bob, Mary, and Sarah can run with project context and persist outputs through `ArtifactService` |
-| Quality | Pytest, Vitest, Ruff, mypy, TypeScript, pre-commit |
+Each stage supports human review before outputs move forward. In project mode, generated requirements, test cases, scripts, reports, and metadata are persisted as versioned project artifacts.
 
 ## Architecture Snapshot
 
@@ -57,7 +42,7 @@ flowchart TD
     SARAH --> LLM
 
     ARTIFACTS --> STORAGE[S3ArtifactStorage]
-    STORAGE --> MINIO[(MinIO Object Storage)]
+    STORAGE --> SeaweedFS[(SeaweedFS Object Storage)]
     BOB --> ADAPTER[PipelineArtifactAdapter]
     MARY --> ADAPTER
     SARAH --> ADAPTER
@@ -120,12 +105,6 @@ Generated outputs are stored as project-scoped artifacts:
 
 `ArtifactService` writes metadata to PostgreSQL and delegates content bytes to `LocalArtifactStorage`. Every update appends an immutable `ArtifactVersion` row, updates the artifact's `current_version`, and records a content hash.
 
-### Pipeline Runs
-
-Project-mode pipeline execution records `PipelineRun` rows with project, user, status, timestamps, provider/model/config summary, and failure/summary details where available. Artifacts created during a run are linked back to the run.
-
-Legacy workspace behavior is preserved only as a compatibility seam. New project-mode pipeline logic should use `PipelineContext`, `PipelineRunService`, and `PipelineArtifactAdapter`.
-
 ## API Overview
 
 ### Auth Routes
@@ -134,11 +113,12 @@ Auth routes are mounted outside `/api`:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/auth/register` | Register a standard user |
 | `POST` | `/auth/login` | Log in and set the signed session cookie |
 | `POST` | `/auth/logout` | Clear the session |
 | `GET` | `/auth/me` | Return the current database-revalidated user |
 | `GET` | `/auth/status` | Lightweight auth status check |
+
+> Public self-service registration is disabled. User accounts are created only by admins via `POST /api/admin/users`.
 
 ### Project and Admin Routes
 
@@ -192,9 +172,10 @@ OpenAPI documentation is available at:
 
 ### Database & File Storage Setup
 
-We recommend running PostgreSQL and MinIO via Docker to avoid local environment conflicts. We have provided a `docker-compose.yml` for this purpose. Ensure Docker (or Rancher Desktop) is running, then execute:
+We recommend running PostgreSQL and SeaweedFS via Docker to avoid local environment conflicts. We have provided a `docker-compose.yml` for this purpose. Ensure Docker (or Rancher Desktop) is running, then execute:
 
 ```powershell
+docker compose down -v
 docker compose up -d
 docker ps
 ```
@@ -202,7 +183,7 @@ docker ps
 This will spin up:
 
 - PostgreSQL on port `5432`
-- MinIO (S3-compatible storage) on port `9000` (Console on `9001`)
+- SeaweedFS (S3-compatible storage) on port `8333` (Master UI on `9333`)
 - An initialization container that automatically creates the `ai-qa-artifacts` bucket.
 
 ### Backend Setup
@@ -211,12 +192,20 @@ This will spin up:
 uv venv
 .venv\Scripts\activate
 uv sync
+uv add --dev pytest
 uv run playwright install
 
 copy .env.example .env
 ```
 
-Configure your .env file to connect to the local Docker database
+Configure your `.env` file to connect to the local Docker database.
+You MUST also generate a secure database encryption key for storing API credentials securely:
+
+```powershell
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Copy the generated 32-byte base64 string and set it as `DB_ENCRYPTION_KEY` in your `.env` file.
 
 ### Bootstrap an Admin
 
@@ -227,19 +216,13 @@ uv run alembic upgrade head
 uv run python -m ai_qa.auth.bootstrap_admin --email admin@example.com --name "Admin User"
 ```
 
-Automation-friendly environment variable flow:
-
-```powershell
-$env:AI_QA_BOOTSTRAP_ADMIN_PASSWORD = "<long-random-admin-password>"
-uv run python -m ai_qa.auth.bootstrap_admin --email admin@example.com --name "Admin User"
-Remove-Item Env:\AI_QA_BOOTSTRAP_ADMIN_PASSWORD
-```
-
 ### Frontend Setup
 
 ```powershell
 Set-Location frontend
 npm install
+npm install -D @playwright/test
+npx playwright install chromium --with-deps
 ```
 
 The frontend API client defaults protected API calls to `/api`. To target a different protected API base path later, set `VITE_API_BASE_PATH`.
@@ -288,6 +271,25 @@ Set-Location frontend
 npm run dev
 ```
 
+Frontend e2e test:
+
+```powershell
+Set-Location frontend
+npx playwright test e2e
+$env:PLAYWRIGHT_SLOW_MO='2000'; npx playwright test e2e --headed --workers=1
+npx playwright test e2e/story-7-1-auth.spec.ts --headed --workers=1 --debug
+```
+
+`PLAYWRIGHT_SLOW_MO` is configured in `frontend/playwright.config.ts` and slows browser actions in milliseconds.
+
+Backend tests:
+
+```powershell
+.venv\Scripts\activate
+uv run pytest tests -k api --no-cov -q
+uv run pytest
+```
+
 Default local URLs:
 
 - Backend: `http://localhost:8000`
@@ -295,7 +297,8 @@ Default local URLs:
 - OpenAPI schema: `http://localhost:8000/openapi.json`
 - Frontend: `http://localhost:5173`
 - WebSocket: `ws://localhost:8000/ws`
-- FileStorage: `http://localhost:9001/`
+- FileStorage UI: `http://localhost:8888/`
+- FileStorage Infra: `http://localhost:9333/`
 
 ## Docker Build, Push, and UAT Deployment
 
@@ -306,8 +309,7 @@ The production deployment now uses separate images for frontend and backend:
 | Backend | ai-qa-backend:v0.2.2 |
 | Frontend | ai-qa-frontend:v0.2.2 |
 | Database | ai-qa-db:18 |
-| Storage Server | minio/minio:RELEASE.2025-09-07T16-13-09Z |
-| Storage Client | minio/mc:RELEASE.2025-08-13T08-35-41Z |
+| Storage Server | chrislusf/seaweedfs:4.31 |
 
 ### Configure deployment variables
 
@@ -346,12 +348,11 @@ http://localhost:8080
 docker stop ai-qa-frontend-test
 ```
 
-DB and MinIO images (update only when version change)
+DB and SeaweedFS images (update only when version change)
 
 ```powershell
 docker pull postgres:18-alpine
-docker pull minio/minio:RELEASE.2025-09-07T16-13-09Z
-docker pull minio/mc:RELEASE.2025-08-13T08-35-41Z
+docker pull chrislusf/seaweedfs:4.31
 # Tag and push to your private registry if necessary
 ```
 
@@ -500,13 +501,3 @@ uv run playwright install --force
 ```
 
 If protected API calls unexpectedly return `401`, log in again and confirm the session cookie is being sent. If a standard user sees an empty project list, assign them to a project through an admin account before starting the pipeline.
-
-## Roadmap
-
-Next planned work resumes at **Epic 6**:
-
-- Story 6.1: Script runner pipeline stage
-- Story 6.2: Execution report generation
-- Story 6.3: Jack agent test execution and final report presentation
-
-Deferred work includes Azure Entra SSO in Epic 11 and broader audit/metrics/reporting epics later in the backlog.

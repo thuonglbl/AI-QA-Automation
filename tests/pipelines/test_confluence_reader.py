@@ -459,6 +459,55 @@ class TestConfluenceReaderParameterConsistency:
         params = call_args.args[1]
         assert params == {
             "page_id": "789",
+            "format": "view",
             "userPrompt": "User initiated a story creation workflow from a Confluence page link.",
             "llmReasoning": "Need to extract the content of the provided Confluence page to fulfill the user's request.",
         }
+
+
+class TestConfluenceReaderChildrenAndSearch:
+    """Tests for child pages and finding parent pages."""
+
+    async def test_get_children_by_id_success(
+        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
+    ) -> None:
+        """Test getting child pages successfully."""
+        mock_mcp_client.call_tool.return_value = ToolResult.from_data(
+            {
+                "results": [
+                    {"id": "111", "title": "Child 1", "url": "url1"},
+                    {"id": "222", "title": "Child 2"},
+                ]
+            }
+        )
+        result = await confluence_reader.get_children_by_id("123", "SPACE")
+        assert result.success is True
+        assert len(result.data) == 2
+        assert result.data[0].page_id == "111"
+        assert result.data[0].title == "Child 1"
+        assert result.data[0].url == "url1"
+
+    async def test_get_children_by_id_error(
+        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
+    ) -> None:
+        """Test getting child pages with error."""
+        mock_mcp_client.call_tool.return_value = ToolResult.from_error("Search failed")
+        result = await confluence_reader.get_children_by_id("123")
+        assert result.success is False
+        assert any("Search failed" in str(e) for e in result.errors)
+
+    async def test_find_parent_pages_success(
+        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
+    ) -> None:
+        """Test finding parent pages."""
+        mock_mcp_client.call_tool.return_value = ToolResult.from_data(
+            {
+                "results": [
+                    {"id": "111", "title": "Requirements"},
+                ]
+            }
+        )
+        result = await confluence_reader.find_parent_pages("SPACE")
+        assert result.success is True
+        assert len(result.data) == 1
+        assert result.data[0].page_id == "111"

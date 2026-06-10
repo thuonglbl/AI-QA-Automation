@@ -107,47 +107,100 @@ class BaseAgent(ABC):
         db = self.project_context.artifact_service.db
 
         # Lazy import to avoid circular dependency
-        from ai_qa.db.models import User
 
-        user = db.get(User, self.project_context.user_id)
-        if user:
-            from typing import cast
+        from ai_qa.threads.models import Thread
 
-            if user.ai_agents_config:
-                self._agent_config = cast(
-                    dict[str, Any], user.ai_agents_config.get(self.name.lower(), {})
-                )
-            if user.ai_provider_config:
-                self._provider_config = cast(dict[str, Any], user.ai_provider_config)
-            logger.info("Loaded agent config for %s from database", self.name)
+        if self.project_context.thread_id:
+            thread = db.get(Thread, self.project_context.thread_id)
+            if thread:
+                if thread.provider_name:
+                    self._provider_config = {
+                        "provider_name": thread.provider_name,
+                        "base_url": thread.provider_base_url,
+                    }
+                if thread.agent_configs:
+                    raw = thread.agent_configs.get(self.name.lower())
+                    if raw is not None:
+                        if isinstance(raw, dict):
+                            # Structured shape written by _save_configuration in 9.7+
+                            model_name = raw.get("model") or raw.get("model_name")
+                            temperature = float(raw.get("temperature", 0.0))
+                        else:
+                            # Legacy flat-string shape — tolerate old threads
+                            model_name = raw if isinstance(raw, str) else None
+                            temperature = 0.0
+                        self._agent_config = {
+                            "model_name": model_name,
+                            "temperature": temperature,
+                        }
+                logger.info("Loaded agent config for %s from thread database", self.name)
+            else:
+                logger.info("No Thread found for agent %s", self.name)
         else:
-            logger.info(
-                "No ai_agents_config found in database for user, using defaults for %s", self.name
-            )
+            logger.info("No thread_id in context, using defaults for %s", self.name)
 
     # ------------------------------------------------------------------
     # Agent LLM Configuration
     # ------------------------------------------------------------------
 
     def get_llm_config(self) -> "LLMConfig":
-        """Build LLMConfig for this agent using database configuration."""
-        import os
+        """Build LLMConfig for this agent using database configuration.
 
-        # Get api key from provider config
-        api_key = ""
+        Raises:
+            PipelineError: When the provider API key is missing from both the
+                encrypted secret store and environment variables (UX-DR12 format).
+        """
         provider_config = getattr(self, "_provider_config", {})
-        credential_ref = provider_config.get("credential_reference", "")
-        if credential_ref.startswith("env://"):
-            env_var = credential_ref[6:]
-            api_key = os.getenv(env_var, "")
-        else:
-            api_key = credential_ref
+        provider_name = provider_config.get("provider_name", "claude").lower()
+        base_url = provider_config.get("base_url", "")
+        model_name = self._agent_config.get("model_name", "claude-3-5-sonnet-20241022")
+
+        api_key = ""
+        # Fetch the key from the User's encrypted secret store
+        if (
+            self.project_context
+            and self.project_context.user_id
+            and self.project_context.artifact_service
+        ):
+            db = self.project_context.artifact_service.db
+            from ai_qa.secrets import PROVIDER_SECRET_TYPE_MAP
+            from ai_qa.secrets.service import get_user_secret
+
+            secret_type = PROVIDER_SECRET_TYPE_MAP.get(provider_name)
+            if secret_type:
+                api_key = get_user_secret(db, self.project_context.user_id, secret_type) or ""
+
+        if not api_key:
+            import os
+
+            # Fallback to env vars for local dev testing
+            if provider_name == "claude" or provider_name == "anthropic":
+                api_key = os.getenv("ANTHROPIC_API_KEY", "")
+            elif provider_name == "openai":
+                api_key = os.getenv("OPENAI_API_KEY", "")
+            elif provider_name == "gemini" or provider_name == "google":
+                api_key = os.getenv("GEMINI_API_KEY", "")
+
+        if not api_key:
+            # Only raise when we have a project context (production path).
+            # During app init or local dev without DB, env var fallback is expected.
+            if self.project_context and self.project_context.user_id is not None:
+                from ai_qa.exceptions import PipelineError
+
+                display_name = provider_name.replace("_", " ").replace("-", " ").title()
+                raise PipelineError(
+                    f"**What happened:** {display_name} API key not configured.\n\n"
+                    f"**Why:** The secret is required for {display_name} authentication but was "
+                    f"not found in your encrypted secret store.\n\n"
+                    f"**What to do:** Add your {display_name} API key in the provider "
+                    f"configuration and try again."
+                )
 
         return LLMConfig(
-            provider=provider_config.get("provider", "litellm"),
-            model_name=self._agent_config.get("model", "claude-sonnet-4-6"),
+            provider=provider_name,
+            model_name=model_name,
             temperature=self._agent_config.get("temperature", 0.0),
-            base_url=provider_config.get("endpoint", ""),
+            base_url=base_url,
             api_key=api_key,
             max_retries=3,
         )
@@ -170,12 +223,19 @@ class BaseAgent(ABC):
                 ``warning``, ``info``.
             metadata: Optional extra payload attached to the message.
         """
+        meta = metadata.copy() if metadata is not None else {}
+        if self.project_context:
+            if self.project_context.project_id and "project_id" not in meta:
+                meta["project_id"] = str(self.project_context.project_id)
+            if self.project_context.thread_id and "thread_id" not in meta:
+                meta["thread_id"] = str(self.project_context.thread_id)
+
         message = AgentMessage(
             sender="agent",
             agentName=self.name,  # type: ignore[arg-type]
             content=content,
             messageType=message_type,  # type: ignore[arg-type]
-            metadata=metadata,
+            metadata=meta or None,
         )
         # Lazy import to break potential circular-import with api.routes
         from ai_qa.api.websocket import broadcast_message  # noqa: PLC0415
@@ -193,12 +253,19 @@ class BaseAgent(ABC):
         """
         logger.info("Agent %s: %s → %s", self.name, self.state.value, new_state.value)
         self.state = new_state
+        meta: dict[str, Any] = {"state": new_state.value, "step": self.step_number}
+        if self.project_context:
+            if self.project_context.project_id:
+                meta["project_id"] = str(self.project_context.project_id)
+            if self.project_context.thread_id:
+                meta["thread_id"] = str(self.project_context.thread_id)
+
         status_msg = AgentMessage(
             sender="system",
             agentName=self.name,  # type: ignore[arg-type]
             content=new_state.value,
             messageType="info",
-            metadata={"state": new_state.value, "step": self.step_number},
+            metadata=meta,
         )
         # Lazy import to break potential circular-import with api.routes
         from ai_qa.api.websocket import broadcast_message  # noqa: PLC0415

@@ -31,11 +31,11 @@ def get_artifact_storage() -> ArtifactStorage:
     """Return default artifact storage; tests may override this dependency."""
     settings = AppSettings()
     return S3ArtifactStorage(
-        endpoint_url=settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        bucket_name=settings.minio_bucket,
-        secure=settings.minio_secure,
+        endpoint_url=settings.seaweedfs_endpoint,
+        access_key=settings.seaweedfs_access_key,
+        secret_key=settings.seaweedfs_secret_key,
+        bucket_name=settings.seaweedfs_bucket,
+        secure=settings.seaweedfs_secure,
     )
 
 
@@ -65,12 +65,15 @@ class ArtifactResponse(BaseModel):
 
     id: UUID
     project_id: UUID
-    pipeline_run_id: UUID | None
+    agent_run_id: UUID | None
     kind: str
     name: str
     current_version: int
     created_at: datetime
     updated_at: datetime
+    created_by_user_id: UUID | None = None
+    updated_by_user_id: UUID | None = None
+    thread_id: UUID | None = None
 
 
 class ArtifactDetailResponse(ArtifactResponse):
@@ -95,7 +98,7 @@ class ArtifactCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     content: str = Field(max_length=MAX_ARTIFACT_CONTENT_CHARS)
     content_encoding: Literal["text", "base64"] = "text"
-    pipeline_run_id: UUID | None = None
+    agent_run_id: UUID | None = None
 
     @field_validator("kind")
     @classmethod
@@ -141,12 +144,15 @@ def _artifact_detail_response(artifact: Artifact) -> ArtifactDetailResponse:
     return ArtifactDetailResponse(
         id=artifact.id,
         project_id=artifact.project_id,
-        pipeline_run_id=artifact.pipeline_run_id,
+        agent_run_id=artifact.agent_run_id,
         kind=artifact.kind,
         name=artifact.name,
         current_version=artifact.current_version,
         created_at=artifact.created_at,
         updated_at=artifact.updated_at,
+        created_by_user_id=artifact.created_by_user_id,
+        updated_by_user_id=artifact.updated_by_user_id,
+        thread_id=artifact.thread_id,
         versions=[ArtifactVersionSummary.model_validate(version) for version in versions],
     )
 
@@ -205,10 +211,23 @@ async def create_artifact(
             kind=request.kind,
             name=request.name,
             content=_decode_content(request.content, request.content_encoding),
-            pipeline_run_id=request.pipeline_run_id,
+            agent_run_id=request.agent_run_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Broadcast artifact change event (best-effort, non-blocking)
+    try:
+        from ai_qa.api.websocket import broadcast_artifact_change
+
+        await broadcast_artifact_change(
+            project_id=str(project.id),
+            artifact_id=str(artifact.id),
+            change_type="created",
+        )
+    except Exception:
+        pass
+
     return _artifact_response(artifact)
 
 
@@ -257,6 +276,36 @@ async def read_artifact_content(
     return _content_response(artifact, content)
 
 
+@router.delete("/{artifact_id}", status_code=204)
+async def delete_artifact(
+    project_id: UUID,
+    artifact_id: UUID,
+    project: Project = ProjectAccessDependency,
+    storage: ArtifactStorage = ArtifactStorageDependency,
+    db: Session = DbSessionDependency,
+) -> None:
+    """Delete an artifact and its storage objects after project access check."""
+    if project.id != project_id:
+        raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND_DETAIL)
+    deleted = ArtifactService(db, storage).delete_artifact(
+        project_id=project.id, artifact_id=artifact_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND_DETAIL)
+
+    # Broadcast artifact change event (best-effort, non-blocking)
+    try:
+        from ai_qa.api.websocket import broadcast_artifact_change
+
+        await broadcast_artifact_change(
+            project_id=str(project.id),
+            artifact_id=str(artifact_id),
+            change_type="deleted",
+        )
+    except Exception:
+        pass
+
+
 @router.post("/{artifact_id}/versions", response_model=ArtifactResponse)
 async def create_artifact_version(
     project_id: UUID,
@@ -282,6 +331,19 @@ async def create_artifact_version(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND_DETAIL)
+
+    # Broadcast artifact change event (best-effort, non-blocking)
+    try:
+        from ai_qa.api.websocket import broadcast_artifact_change
+
+        await broadcast_artifact_change(
+            project_id=str(project.id),
+            artifact_id=str(artifact_id),
+            change_type="updated",
+        )
+    except Exception:
+        pass
+
     return _artifact_response(updated)
 
 

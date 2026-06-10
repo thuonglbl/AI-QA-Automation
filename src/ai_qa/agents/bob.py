@@ -5,12 +5,15 @@ from typing import Any
 from ai_qa.agents.base import AgentState, BaseAgent
 from ai_qa.ai_connection.client import LLMClient
 from ai_qa.config import AppSettings
+from ai_qa.exceptions import PipelineError
 from ai_qa.mcp.client import MCPClient
 from ai_qa.models import StageResult
 from ai_qa.pipelines.artifact_adapter import PipelineArtifactAdapter
 from ai_qa.pipelines.confluence_reader import ConfluenceReader, ConfluenceURLParser
 from ai_qa.pipelines.models import ConfluencePage
 from ai_qa.pipelines.requirement_formatter import RequirementFormatter
+from ai_qa.secrets import SECRET_TYPE_MCP
+from ai_qa.secrets.service import get_user_secret
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +35,50 @@ class BobAgent(BaseAgent):
         self.pages: list[Any] = []
         self.current_page_index = 0
         self.output_files_saved = 0
-        self._mcp_pat: str | None = None
         self._space_key: str | None = None
         self._page_id: str | None = None
         self.phase = "init"
+
+    def _resolve_mcp_pat(self) -> str:
+        """Resolve MCP PAT from the thread owner's encrypted secrets.
+
+        Returns:
+            The decrypted MCP PAT string.
+
+        Raises:
+            PipelineError: When project context, user ID, or secret is missing.
+        """
+        if not self.project_context or not self.project_context.user_id:
+            raise PipelineError(
+                "**What happened:** Cannot resolve MCP secret.\n\n"
+                "**Why:** No project context or user ID is available for this agent run.\n\n"
+                "**What to do:** Ensure the agent is started within an active thread with a "
+                "valid user session."
+            )
+        if not self.project_context.artifact_service:
+            raise PipelineError(
+                "**What happened:** Cannot resolve MCP secret.\n\n"
+                "**Why:** The artifact service is not available.\n\n"
+                "**What to do:** Contact support — the backend configuration may be incomplete."
+            )
+        db = self.project_context.artifact_service.db
+        try:
+            mcp_pat = get_user_secret(db, self.project_context.user_id, SECRET_TYPE_MCP)
+        except Exception as exc:
+            logger.error("Failed to read MCP secret from DB: %s", exc, exc_info=True)
+            raise PipelineError(
+                "**What happened:** Failed to read MCP secret from the database.\n\n"
+                f"**Why:** A database error occurred while retrieving the secret: {type(exc).__name__}.\n\n"
+                "**What to do:** Try again. If the problem persists, contact support."
+            ) from exc
+        if not mcp_pat:
+            raise PipelineError(
+                "**What happened:** MCP PAT not configured.\n\n"
+                "**Why:** The MCP personal access token is required for Confluence access but was "
+                "not found in your encrypted secret store.\n\n"
+                "**What to do:** Add your MCP key in the provider configuration and try again."
+            )
+        return mcp_pat
 
     async def handle_start(self, input_data: dict[str, Any]) -> None:
         """Override to parse multiple pages immediately."""
@@ -128,9 +171,8 @@ class BobAgent(BaseAgent):
         page_id = parser.extract_page_id(confluence_url) if confluence_url else None
         logger.debug("BobAgent.process: page_id=%r", page_id)
 
-        # Connect to MCP first
-        mcp_pat = input_data.get("mcp_pat")
-        self._mcp_pat = mcp_pat
+        # Resolve MCP PAT from thread owner's encrypted secrets
+        mcp_pat = self._resolve_mcp_pat()
         settings = AppSettings()
 
         await self.send_message(
@@ -283,17 +325,11 @@ class BobAgent(BaseAgent):
         If self._page_id is set, uses confluence_get_children directly (faster).
         Otherwise falls back to searching by title within the space.
         """
-        if not self._mcp_pat:
-            return StageResult(
-                success=False,
-                data=None,
-                errors=["Missing MCP PAT for extraction."],
-                warnings=[],
-                confidence=0.0,
-            )
+        # Resolve MCP PAT from thread owner's encrypted secrets
+        mcp_pat = self._resolve_mcp_pat()
 
         settings = AppSettings()
-        client = MCPClient(auth_token=self._mcp_pat, settings=settings)
+        client = MCPClient(auth_token=mcp_pat, settings=settings)
         try:
             await client.connect()
         except Exception as e:
@@ -409,12 +445,6 @@ class BobAgent(BaseAgent):
                 await self.send_message(f"✓ Extracted '{summary.title}'", "info")
                 raw_pages.append(page)
 
-            # Proactively disconnect from MCP session after all pages are extracted
-            try:
-                await client.disconnect()
-            except Exception as e:
-                logger.warning(f"Failed to disconnect MCP client cleanly: {e}")
-
             # Setup LLM for Bob
             config = self.get_llm_config()
             llm_client = LLMClient(config)
@@ -476,12 +506,9 @@ class BobAgent(BaseAgent):
 
         except Exception as e:
             logger.error(f"Error in Bob _extract_descendants: {e}", exc_info=True)
-            # Try to disconnect if an exception occurred before phase 1 finished
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
             raise
+        finally:
+            await client.disconnect()
 
     async def handle_approve(self, data: dict[str, Any] | None = None) -> None:
         """Override to handle paginated approval and parent confirmation."""

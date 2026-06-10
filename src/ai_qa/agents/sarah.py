@@ -91,7 +91,7 @@ class SarahAgent(BaseAgent):
 
     def _load_chrome_path(self) -> None:
         """Load Chrome path from project context."""
-        if self.project_context is None:
+        if self.project_context is None or self.project_context.project_id is None:
             return
 
         try:

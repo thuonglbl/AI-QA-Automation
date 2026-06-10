@@ -1,5 +1,5 @@
 # generated: 2026-05-29T00:14:09.493182
-# last_updated: 2026-05-29T00:30:35.000000
+# last_updated: 2026-06-07T12:00:00.000000
 # project: ai qa automation
 # project_key: NOKEY
 # tracking_system: file-system
@@ -36,11 +36,26 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-29T00:14:09.493182
-last_updated: 2026-05-29T00:30:35.000000
+last_updated: 2026-06-10T23:59:00.000000
 project: ai qa automation
 project_key: NOKEY
 tracking_system: file-system
 story_location: "{project-root}/_bmad-output/implementation-artifacts"
+
+quality_testing_progress:
+  test_framework_validation: completed
+  test_framework_edit: completed
+  framework: Playwright + Vitest + pytest
+  last_completed: 2026-05-31T20:00:00.000000
+  final_report: _bmad-output/test-artifacts/framework-validation-report-final.md
+  validation_result: PASS
+  evidence:
+    frontend_lint: pass
+    frontend_typecheck: pass
+    frontend_unit: "100 passed"
+    frontend_e2e: "1 passed"
+    backend_api: "60 passed"
+  notes: "Added Playwright fixtures, data factory, helpers, CI workflow, docs updates, retry-aware trace policy, and verified compact API test command."
 
 development_status:
   epic-1: done
@@ -49,10 +64,10 @@ development_status:
   1-3-custom-exception-hierarchy: done
   1-4-shared-pydantic-models-stageresult-agentmessage: done
   1-5-dev-tooling-setup-ruff-mypy-pytest-pre-commit: done
-  epic-1-retrospective: optional
-  epic-2: in-progress
+  epic-1-retrospective: done
+  epic-2: done
   2-1-fastapi-server-foundation-with-websocket-support: done
-  2-2-react-frontend-scaffold-with-shadcnui: backlog
+  2-2-admin-user-management: done
   2-3-baseagent-lifecycle-start-processing-review-done: done
   2-4-agenttopbar-and-stepdots-components: done
   2-5-chatmessage-component-with-rich-content: done
@@ -60,68 +75,160 @@ development_status:
   2-7-processingindicator-and-error-feedback: done
   2-8-alice-agent-ai-provider-selection-configuration: done
   2-9-dynamic-provider-model-discovery-and-alice-reasoning-transparency: done
-  epic-2-retrospective: optional
+  epic-2-retrospective: done
   epic-3: done
   3-1-mcp-client-foundation: done
   3-2-confluence-reader-pipeline-stage: done
   3-3-content-parser-markdown-mermaid-and-images: done
   3-4-output-writer-pipeline-stage: done
   3-5-bob-agent-extract-requirements-with-paginated-review: done
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
   epic-4: done
   4-1-llm-abstraction-layer-langchain-litellm: done
   4-2-test-case-extractor-pipeline-stage: done
   4-3-mary-agent-create-test-cases-with-per-item-review: done
-  epic-4-retrospective: optional
+  epic-4-retrospective: done
   epic-5: done
   5-1-browser-use-agent-configuration-and-session-management: done
   5-2-script-generator-pipeline-stage: done
   5-3-vision-assisted-locator-identification: done
   5-4-sarah-agent-generate-scripts-with-side-by-side-review: done
-  epic-5-retrospective: optional
-  epic-6: backlog
-  6-1-script-runner-pipeline-stage: backlog
-  6-2-execution-report-generation: backlog
-  6-3-jack-agent-run-tests-and-present-final-report: backlog
-  epic-6-retrospective: optional
-  epic-7: backlog
-  7-1-confluence-content-variation-handling: backlog
-  7-2-input-quality-detection-and-pre-generation-warning: backlog
-  7-3-low-confidence-generation-flagging: backlog
-  epic-7-retrospective: optional
-  epic-8: backlog
-  8-1-script-editing-before-approval: backlog
-  8-2-side-by-side-source-and-script-review-enhancement: backlog
-  8-3-multi-provider-llm-switching: backlog
-  8-4-llm-comparison-testing: backlog
-  epic-8-retrospective: optional
-  epic-9: backlog
-  9-1a-jira-mcp-integration: backlog
-  9-1b-audit-logger-foundation: backlog
-  9-2-audit-trail-logger-extended-event-types: backlog
-  9-3-audit-integration-across-all-agents: backlog
-  epic-9-retrospective: optional
-  epic-10: backlog
-  10-1-metrics-collection-service: backlog
-  10-3-rest-api-for-metrics-data: backlog
-  10-2-metrics-dashboard-frontend: backlog
+  epic-5-retrospective: done
+  epic-6: done
+  6-1-postgresql-persistence-foundation-with-sqlalchemy-and-alembic: done
+  6-2-local-authentication-and-admin-bootstrap: done
+  6-3-role-based-access-control-for-admin-and-standard-users: done
+  6-4-project-and-membership-management-api: done
+  6-5-project-scoped-artifact-service: done
+  6-6-frontend-login-project-selection-and-api-client-foundation: done
+  6-7-refactor-existing-pipeline-from-workspace-paths-to-project-context: done
+  6-8-bugfix---admin-routing-and-dashboard-enhancements: done
+  6-9-admin-dashboard-refinement-and-fixes: done
+  6-10-user-project-selection-in-alice-configuration-flow: done
+  6-11-fix-api-tests-broken-by-db-migration: done
+  6-12-fix-frontend-401-unauthorized-api-calls: done
+  6-13-fix-mcp-extraction-failure-and-implement-proactive-session-cleanup: done
+  epic-6-retrospective: done
+  epic-7: done
+  7-1-local-login-and-authenticated-session-foundation: done
+  7-2-project-membership-access-for-standard-users: done
+  7-3-new-conversation-thread-creation-with-alice-project-selection: done
+  7-4-thread-scoped-messages-and-agent-run-records: done
+  7-5-conversation-history-and-thread-resume: done
+  7-6-membership-removal-access-enforcement: done
+  7-7-standard-user-workspace-shell-routing: done
+  7-8-refactor-agent-runs-and-pipeline-runs: done
+  epic-7-retrospective: done
+  epic-8: done
+  8-1-admin-dashboard-routing-and-access-control: done
+  8-2-admin-user-management: done
+  8-3-admin-project-management: done
+  8-4-project-membership-assignment: done
+  8-5-admin-dashboard-ui-layout: done
+  8-6-admin-e2e-test-execution: done
+  8-7-lock-down-public-self-service-registration-endpoint: done
+  epic-8-retrospective: done
+  epic-9: done
+  9-1-encrypted-per-user-secret-storage-foundation: done
+  9-2-secret-status-and-replacement-api: done
+  9-3-provider-adapter-interface-and-connection-validation: done
+  9-4-dynamic-model-discovery: done
+  9-5-agent-model-assignment-review: done
+  9-6-runtime-secret-resolution-for-agent-runs: done
+  9-7-saved-provider-configuration-and-rotation-behavior: done
+  epic-9-retrospective: done
+  epic-10: in-progress
+  10-1-project-artifact-storage-foundation: review
+  10-2-artifact-list-and-empty-folder-browsing: backlog
+  10-3-artifact-read-and-preview-access: backlog
+  10-4-artifact-edit-delete-and-version-metadata: backlog
+  10-5-agent-artifact-service-integration: backlog
+  10-6-project-scoped-artifact-change-events: backlog
+  10-7-realtime-artifact-refresh-ux: done
+  10-8-open-artifact-update-delete-notice: done
   epic-10-retrospective: optional
-  epic-11: deferred
-  11-1-azure-entra-id-sso-authentication-foundation: backlog
-  11-2-sync-company-users-via-oracle-sharederp: backlog
+  epic-11: backlog
+  11-1-mcp-client-foundation-for-confluence-and-jira: backlog
+  11-2-bob-confluence-url-intake-and-pipeline-trigger: backlog
+  11-3-confluence-content-retrieval-and-parsing: backlog
+  11-4-jira-requirements-retrieval: backlog
+  11-5-input-quality-detection-before-generation: backlog
+  11-6-bob-reviewable-extraction-output: backlog
+  11-7-requirements-artifact-save: backlog
   epic-11-retrospective: optional
-  epic-12: in-progress
-  12-1-postgresql-persistence-foundation-with-sqlalchemy-and-alembic: done
-  12-2-local-authentication-and-admin-bootstrap: done
-  12-3-role-based-access-control-for-admin-and-standard-users: done
-  12-4-project-and-membership-management-api: done
-  12-5-project-scoped-artifact-service: done
-  12-6-frontend-login-project-selection-and-api-client-foundation: done
-  12-7-refactor-existing-pipeline-from-workspace-paths-to-project-context: done
-  12-8-bugfix---admin-routing-and-dashboard-enhancements: backlog
-  12-9-admin-dashboard-refinement-and-fixes: backlog
-  12-10-user-project-selection-in-alice-configuration-flow: done
-  12-11-fix-api-tests-broken-by-db-migration: done
-  12-12-fix-frontend-401-unauthorized-api-calls: done
-  12-13-fix-mcp-extraction-failure-and-implement-proactive-session-cleanup: done
+  epic-12: backlog
+  12-1-test-case-generation-input-selection: backlog
+  12-2-browser-automation-oriented-test-case-generation: backlog
+  12-3-confidence-scoring-for-generated-test-cases: backlog
+  12-4-mary-review-workflow: backlog
+  12-5-test-case-artifact-save: backlog
   epic-12-retrospective: optional
+  epic-13: backlog
+  13-1-approved-test-case-input-selection: backlog
+  13-2-python-playwright-script-generation: backlog
+  13-3-stable-selector-and-assertion-mapping: backlog
+  13-4-browser-sso-session-compatibility: backlog
+  13-5-sarah-side-by-side-review-ux: backlog
+  13-6-script-edit-before-approval: backlog
+  13-7-script-approval-rejection-and-regeneration: backlog
+  13-8-test-script-artifact-save: backlog
+  epic-13-retrospective: optional
+  epic-14: backlog
+  14-1-audit-event-model-and-persistence: backlog
+  14-2-pipeline-audit-logging: backlog
+  14-3-admin-audit-trail-view: backlog
+  14-4-execution-metrics-aggregation: backlog
+  14-5-leadership-metrics-dashboard: backlog
+  14-6-llm-cost-tracking: backlog
+  14-7-provider-comparison-backlog-support: backlog
+  epic-14-retrospective: optional
+  epic-15: backlog
+  15-1-approved-script-execution-input-selection: backlog
+  15-2-playwright-execution-runner: backlog
+  15-3-configurable-execution-output-path: backlog
+  15-4-multi-browser-execution-support: backlog
+  15-5-execution-result-report-generation: backlog
+  15-6-execution-report-review-ux: backlog
+  epic-15-retrospective: optional
+  epic-16: backlog
+  16-1-agent-based-conversational-shell: backlog
+  16-2-stateful-workflow-controls: backlog
+  16-3-processing-and-progress-indicators: backlog
+  16-4-rich-review-panels: backlog
+  16-5-error-empty-and-recovery-states: backlog
+  16-6-keyboard-and-accessibility-support: backlog
+  16-7-alice-configuration-review-ux-integration: backlog
+  epic-16-retrospective: optional
+  epic-17: deferred
+  17-1-test-case-generation-input-selection: deferred
+  17-2-browser-automation-oriented-test-case-generation: deferred
+  17-3-confidence-scoring-for-generated-test-cases: deferred
+  17-4-mary-review-workflow: deferred
+  17-5-test-case-artifact-save: deferred
+  epic-17-retrospective: optional
+  epic-18: deferred
+  18-1-confluence-content-variation-handling: deferred
+  18-2-input-quality-detection-and-pre-generation-warning: deferred
+  18-3-low-confidence-generation-flagging: deferred
+  epic-18-retrospective: optional
+  epic-19: deferred
+  19-1-script-editing-before-approval: deferred
+  19-2-side-by-side-source-and-script-review-enhancement: deferred
+  19-3-multi-provider-llm-switching: deferred
+  19-4-llm-comparison-testing: deferred
+  epic-19-retrospective: optional
+  epic-20: deferred
+  20-1a-jira-mcp-integration: deferred
+  20-1b-audit-logger-foundation: deferred
+  20-2-audit-trail-logger-extended-event-types: deferred
+  20-3-audit-integration-across-all-agents: deferred
+  epic-20-retrospective: optional
+  epic-21: deferred
+  21-1-metrics-collection-service: deferred
+  21-2-rest-api-for-metrics-data: deferred
+  21-3-metrics-dashboard-frontend: deferred
+  epic-21-retrospective: optional
+  epic-22: deferred
+  22-1-azure-entra-id-sso-authentication-foundation: deferred
+  22-2-sync-company-users-via-oracle-sharederp: deferred
+  epic-22-retrospective: optional

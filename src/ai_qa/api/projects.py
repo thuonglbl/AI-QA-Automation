@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session, selectinload
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.rbac import FORBIDDEN_DETAIL, get_current_active_user
 from ai_qa.auth.service import ADMIN_ROLE
-from ai_qa.db.models import Project, ProjectMembership, User
+from ai_qa.db.models import Project, User
+from ai_qa.projects.service import get_user_projects
 
 DbSessionDependency = Depends(get_db_session_dependency)
 CurrentUserDependency = Depends(get_current_active_user)
@@ -39,6 +40,8 @@ class ProjectResponse(BaseModel):
     name: str
     description: str | None
     confluence_base_url: str | None
+    jira_base_url: str | None
+    enabled_providers: list[str]
     created_by_user_id: UUID | None
     current_user_role: str | None
     membership_count: int
@@ -60,6 +63,8 @@ def _response_for_project(project: Project, current_user: User) -> ProjectRespon
         name=project.name,
         description=project.description,
         confluence_base_url=project.confluence_base_url,
+        jira_base_url=project.jira_base_url,
+        enabled_providers=project.enabled_providers or [],
         created_by_user_id=project.created_by_user_id,
         current_user_role=current_membership.role if current_membership else None,
         membership_count=len(memberships),
@@ -102,11 +107,11 @@ async def list_projects(
     db: Session = DbSessionDependency,
 ) -> list[ProjectResponse]:
     """List all projects for admins and only memberships for standard users."""
-    query = select(Project).options(selectinload(Project.memberships)).order_by(Project.name)
-    if current_user.role != ADMIN_ROLE:
-        query = query.join(ProjectMembership).where(ProjectMembership.user_id == current_user.id)
-
-    projects = db.execute(query).scalars().unique().all()
+    if current_user.role == ADMIN_ROLE:
+        query = select(Project).options(selectinload(Project.memberships)).order_by(Project.name)
+        projects = db.execute(query).scalars().unique().all()
+    else:
+        projects = get_user_projects(db, current_user.id)
     return [_response_for_project(project, current_user) for project in projects]
 
 

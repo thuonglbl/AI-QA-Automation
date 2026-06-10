@@ -29,8 +29,15 @@ class PipelineArtifactAdapter:
     def __init__(self, context: PipelineContext) -> None:
         if context.artifact_service is None:
             raise ValueError("PipelineArtifactAdapter requires an ArtifactService")
+        if context.project_id is None:
+            raise ValueError("PipelineArtifactAdapter requires a bound project_id")
         self.context = context
         self.service: ArtifactService = context.artifact_service
+
+    @property
+    def project_id(self) -> UUID:
+        assert self.context.project_id is not None
+        return self.context.project_id
 
     def save_requirement_page(self, name: str, markdown: str) -> Artifact:
         """Persist an approved requirement page as project-scoped markdown content."""
@@ -79,7 +86,7 @@ class PipelineArtifactAdapter:
 
     def load_raw_html(self, page_id: str) -> str | None:
         """Load previously saved raw HTML for a page."""
-        artifacts = self.service.list_artifacts(project_id=self.context.project_id, kind="raw_html")
+        artifacts = self.service.list_artifacts(project_id=self.project_id, kind="raw_html")
         for artifact in artifacts:
             if artifact.name == f"{page_id}/raw.html":
                 return self.service.read_current_content(artifact).decode("utf-8")
@@ -88,9 +95,9 @@ class PipelineArtifactAdapter:
     def save_image(self, name: str, image_bytes: bytes) -> Artifact:
         """Persist a downloaded image artifact."""
         return self.service.save_artifact(
-            project_id=self.context.project_id,
+            project_id=self.project_id,
             owner_user_id=self.context.user_id,
-            pipeline_run_id=self.context.pipeline_run_id,
+            agent_run_id=self.context.agent_run_id,
             kind="image",
             name=name,
             content=image_bytes,
@@ -98,16 +105,16 @@ class PipelineArtifactAdapter:
 
     def _save_text(self, *, kind: str, name: str, content: str) -> Artifact:
         return self.service.save_artifact(
-            project_id=self.context.project_id,
+            project_id=self.project_id,
             owner_user_id=self.context.user_id,
-            pipeline_run_id=self.context.pipeline_run_id,
+            agent_run_id=self.context.agent_run_id,
             kind=kind,
             name=name,
             content=content,
         )
 
     def _load_text_artifacts(self, *, kind: str) -> list[PipelineArtifact]:
-        artifacts = self.service.list_artifacts(project_id=self.context.project_id, kind=kind)
+        artifacts = self.service.list_artifacts(project_id=self.project_id, kind=kind)
         return [self._to_pipeline_artifact(artifact) for artifact in artifacts]
 
     def _to_pipeline_artifact(self, artifact: Artifact) -> PipelineArtifact:

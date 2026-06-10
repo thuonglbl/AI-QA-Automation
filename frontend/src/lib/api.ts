@@ -1,4 +1,10 @@
-export type ApiErrorKind = "auth" | "forbidden" | "not_found" | "validation" | "network" | "server";
+export type ApiErrorKind =
+  | "auth"
+  | "forbidden"
+  | "not_found"
+  | "validation"
+  | "network"
+  | "server";
 
 export interface ApiRequestOptions extends RequestInit {
   authRoute?: boolean;
@@ -10,7 +16,12 @@ export class ApiError extends Error {
   status?: number;
   details?: unknown;
 
-  constructor(kind: ApiErrorKind, message: string, status?: number, details?: unknown) {
+  constructor(
+    kind: ApiErrorKind,
+    message: string,
+    status?: number,
+    details?: unknown,
+  ) {
     super(message);
     this.name = "ApiError";
     this.kind = kind;
@@ -23,19 +34,28 @@ export const API_BASE_PATH = import.meta.env.VITE_API_BASE_PATH ?? "/api";
 
 function buildUrl(path: string, authRoute = false): string {
   if (/^https?:\/\//.test(path)) return path;
-  if (authRoute) return path.startsWith("/auth") ? path : `/auth${path.startsWith("/") ? path : `/${path}`}`;
+  if (authRoute)
+    return path.startsWith("/auth")
+      ? path
+      : `/auth${path.startsWith("/") ? path : `/${path}`}`;
   if (path.startsWith(API_BASE_PATH)) return path;
   return `${API_BASE_PATH}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 function safeMessage(kind: ApiErrorKind): string {
   switch (kind) {
-    case "auth": return "Your session has expired. Please sign in again.";
-    case "forbidden": return "You do not have access to perform this action.";
-    case "not_found": return "The requested resource could not be found.";
-    case "validation": return "Please check the form and try again.";
-    case "network": return "Network connection failed. Please try again.";
-    default: return "Something went wrong. Please try again.";
+    case "auth":
+      return "Your session has expired. Please sign in again.";
+    case "forbidden":
+      return "You do not have access to perform this action.";
+    case "not_found":
+      return "The requested resource could not be found.";
+    case "validation":
+      return "Please check the form and try again.";
+    case "network":
+      return "Network connection failed. Please try again.";
+    default:
+      return "Something went wrong. Please try again.";
   }
 }
 
@@ -47,12 +67,20 @@ function kindForStatus(status: number): ApiErrorKind {
   return "server";
 }
 
-export async function apiFetch<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
-  const { authRoute = false, safeMessage: overrideMessage, headers, ...request } = options;
+export async function apiFetch<T>(
+  path: string,
+  options: ApiRequestOptions = {},
+): Promise<T> {
+  const {
+    authRoute = false,
+    safeMessage: overrideMessage,
+    headers,
+    ...request
+  } = options;
   let token = null;
   try {
     token = localStorage.getItem("aiqa_access_token");
-  } catch (e) {}
+  } catch (_e) {}
 
   let response: Response;
   try {
@@ -61,30 +89,47 @@ export async function apiFetch<T>(path: string, options: ApiRequestOptions = {})
       credentials: "include",
       headers: {
         ...(request.body ? { "Content-Type": "application/json" } : {}),
-        ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...headers,
       },
     });
   } catch (error) {
-    throw new ApiError("network", overrideMessage ?? safeMessage("network"), undefined, error);
+    throw new ApiError(
+      "network",
+      overrideMessage ?? safeMessage("network"),
+      undefined,
+      error,
+    );
   }
 
   const contentType = response.headers.get("content-type") ?? "";
   const hasJson = contentType.includes("application/json");
-  const payload = hasJson ? await response.json().catch(() => null) : await response.text().catch(() => "");
+  const payload = hasJson
+    ? await response.json().catch(() => null)
+    : await response.text().catch(() => "");
 
   if (!response.ok) {
     const kind = kindForStatus(response.status);
     // Only dispatch auth-error for non-auth-route API calls.
     // Auth route calls (login, status, me) returning 401 are expected and should NOT
     // trigger a refresh loop — that would cause infinite recursion.
-    if (kind === "auth" && !authRoute && !path.includes("/login") && !path.includes("/refresh")) {
+    if (
+      kind === "auth" &&
+      !authRoute &&
+      !path.includes("/login") &&
+      !path.includes("/refresh")
+    ) {
       try {
         localStorage.removeItem("aiqa_access_token");
-      } catch (e) {}
+      } catch (_e) {}
       window.dispatchEvent(new Event("auth-error"));
     }
-    throw new ApiError(kind, overrideMessage ?? safeMessage(kind), response.status, payload);
+    throw new ApiError(
+      kind,
+      overrideMessage ?? safeMessage(kind),
+      response.status,
+      payload,
+    );
   }
 
   return payload as T;

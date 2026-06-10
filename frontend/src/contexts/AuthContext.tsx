@@ -1,4 +1,11 @@
-import { createContext, useContext, useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useCallback,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import type { AuthStatus, AuthUser } from "@/lib/auth";
 import { checkAuthStatus, logout as logoutApi } from "@/lib/auth";
 
@@ -29,7 +36,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const status = await checkAuthStatus();
       setAuthStatus(status);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to check auth status");
+      setError(
+        err instanceof Error ? err.message : "Failed to check auth status",
+      );
       setAuthStatus({ authenticated: false, user: null });
     } finally {
       setIsLoading(false);
@@ -54,7 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         refresh();
       }, 300);
     };
-    
+
     window.addEventListener("auth-error", handleAuthError);
     return () => {
       window.removeEventListener("auth-error", handleAuthError);

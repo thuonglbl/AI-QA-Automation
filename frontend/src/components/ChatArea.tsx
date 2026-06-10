@@ -1,9 +1,9 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import type { AgentMessage } from '@/types/pipeline';
-import { ChatMessage } from './ChatMessage';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { cn } from '@/lib/utils';
-import { ArrowDown } from 'lucide-react';
+import React, { useRef, useEffect, useState, useCallback } from "react";
+import type { AgentMessage } from "@/types/pipeline";
+import { ChatMessage } from "./ChatMessage";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
+import { ArrowDown } from "lucide-react";
 
 export interface ChatAreaProps {
   messages: AgentMessage[];
@@ -13,7 +13,7 @@ export interface ChatAreaProps {
 // Debounce hook for scroll events
 function useDebounce<T extends (...args: Parameters<T>) => void>(
   callback: T,
-  delay: number
+  delay: number,
 ): T {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -24,7 +24,7 @@ function useDebounce<T extends (...args: Parameters<T>) => void>(
       }
       timeoutRef.current = setTimeout(() => callback(...args), delay);
     },
-    [callback, delay]
+    [callback, delay],
   ) as T;
 }
 
@@ -37,7 +37,7 @@ export function ChatArea({ messages, className }: ChatAreaProps) {
   useEffect(() => {
     const currentLength = messages.length;
     const isNewMessage = currentLength > previousMessageCount.current;
-    
+
     if (isNewMessage) {
       if (isScrolledUp) {
         setHasNewMessage(true);
@@ -47,13 +47,14 @@ export function ChatArea({ messages, className }: ChatAreaProps) {
     } else if (!isScrolledUp) {
       scrollToBottom();
     }
-    
+
     previousMessageCount.current = currentLength;
   }, [messages, isScrolledUp]);
 
   const scrollToBottom = () => {
     if (scrollViewportRef.current) {
-      scrollViewportRef.current.scrollTop = scrollViewportRef.current.scrollHeight;
+      scrollViewportRef.current.scrollTop =
+        scrollViewportRef.current.scrollHeight;
       setHasNewMessage(false);
     }
   };
@@ -64,7 +65,7 @@ export function ChatArea({ messages, className }: ChatAreaProps) {
     const scrollPosition = target.scrollTop + target.clientHeight;
     // Use Math.ceil for fractional pixels, 1px threshold for precision
     const isAtBottom = Math.ceil(target.scrollHeight - scrollPosition) <= 1;
-    
+
     if (isAtBottom) {
       setIsScrolledUp(false);
       setHasNewMessage(false);
@@ -75,8 +76,8 @@ export function ChatArea({ messages, className }: ChatAreaProps) {
 
   return (
     <div className={cn("relative flex w-full flex-col", className)}>
-      <ScrollArea 
-        className="flex-1 w-full" 
+      <ScrollArea
+        className="flex-1 w-full"
         viewportRef={scrollViewportRef}
         onScroll={handleScroll}
       >
@@ -86,7 +87,7 @@ export function ChatArea({ messages, className }: ChatAreaProps) {
           ))}
         </div>
       </ScrollArea>
-      
+
       {hasNewMessage && isScrolledUp && (
         <button
           type="button"

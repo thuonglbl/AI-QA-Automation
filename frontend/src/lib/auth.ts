@@ -35,7 +35,9 @@ interface AuthProfileResponse {
   is_active?: boolean;
 }
 
-export function normalizeUser(data: AuthProfileResponse | AuthStatusResponse): AuthUser | null {
+export function normalizeUser(
+  data: AuthProfileResponse | AuthStatusResponse,
+): AuthUser | null {
   if (!data.email) return null;
   const displayName = "display_name" in data ? data.display_name : data.name;
   return {
@@ -53,17 +55,17 @@ export function normalizeUser(data: AuthProfileResponse | AuthStatusResponse): A
 // API client that includes credentials. Kept for existing callers that need raw Response access.
 export async function fetchWithAuth(
   url: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
 ): Promise<Response> {
   let token = null;
   try {
     token = localStorage.getItem("aiqa_access_token");
-  } catch (e) {}
+  } catch (_e) {}
   return fetch(url, {
     ...options,
     credentials: "include",
     headers: {
-      ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
   });
@@ -72,7 +74,9 @@ export async function fetchWithAuth(
 // Check authentication status
 export async function checkAuthStatus(): Promise<AuthStatus> {
   try {
-    const data = await apiFetch<AuthStatusResponse>("/status", { authRoute: true });
+    const data = await apiFetch<AuthStatusResponse>("/status", {
+      authRoute: true,
+    });
     if (data.authenticated && data.email) {
       return { authenticated: true, user: normalizeUser(data) };
     }
@@ -85,7 +89,9 @@ export async function checkAuthStatus(): Promise<AuthStatus> {
 // Get current user info
 export async function getCurrentUser(): Promise<AuthUser | null> {
   try {
-    const data = await apiFetch<AuthProfileResponse>("/me", { authRoute: true });
+    const data = await apiFetch<AuthProfileResponse>("/me", {
+      authRoute: true,
+    });
     return normalizeUser(data);
   } catch {
     return null;
@@ -95,7 +101,10 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
 // Logout
 export async function logout(): Promise<void> {
   try {
-    await apiFetch<{ success: boolean }>("/logout", { method: "POST", authRoute: true });
+    await apiFetch<{ success: boolean }>("/logout", {
+      method: "POST",
+      authRoute: true,
+    });
   } catch {
     // Ignore errors
   } finally {

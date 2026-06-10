@@ -1,4 +1,4 @@
-import type { ErrorInfo, ErrorType } from '@/types/pipeline';
+import type { ErrorInfo, ErrorType } from "@/types/pipeline";
 
 /**
  * Error message mapping with 3-part structure:
@@ -9,7 +9,7 @@ import type { ErrorInfo, ErrorType } from '@/types/pipeline';
  * UX-DR12: No technical jargon, stack traces, or HTTP status codes
  */
 
-export const ERROR_MESSAGES: Record<ErrorType, Omit<ErrorInfo, 'type'>> = {
+export const ERROR_MESSAGES: Record<ErrorType, Omit<ErrorInfo, "type">> = {
   MCP_TIMEOUT: {
     what: "Couldn't retrieve content from Confluence",
     why: "The connection timed out after 30 seconds",
@@ -57,25 +57,45 @@ export function mapBackendError(backendError: {
   type?: string;
 }): ErrorInfo {
   // Map backend error codes/patterns to ErrorType
-  const code = backendError.code?.toUpperCase() || '';
-  const _type = backendError.type?.toUpperCase() || '';
-  const message = (backendError.message || '').toLowerCase();
+  const code = backendError.code?.toUpperCase() || "";
+  const _type = backendError.type?.toUpperCase() || "";
+  const message = (backendError.message || "").toLowerCase();
 
-  if (code.includes('MCP') || code.includes('TIMEOUT') || message.includes('timeout')) {
-    return createErrorInfo('MCP_TIMEOUT');
+  if (
+    code.includes("MCP") ||
+    code.includes("TIMEOUT") ||
+    message.includes("timeout")
+  ) {
+    return createErrorInfo("MCP_TIMEOUT");
   }
 
-  if (code.includes('LLM') || code.includes('AI') || _type.includes('LLM') || message.includes('ai') || message.includes('language model')) {
-    return createErrorInfo('LLM_FAILURE');
+  if (
+    code.includes("LLM") ||
+    code.includes("AI") ||
+    _type.includes("LLM") ||
+    message.includes("ai") ||
+    message.includes("language model")
+  ) {
+    return createErrorInfo("LLM_FAILURE");
   }
 
-  if (code.includes('NETWORK') || code.includes('CONNECTION') || message.includes('network') || message.includes('connection')) {
-    return createErrorInfo('NETWORK_ERROR');
+  if (
+    code.includes("NETWORK") ||
+    code.includes("CONNECTION") ||
+    message.includes("network") ||
+    message.includes("connection")
+  ) {
+    return createErrorInfo("NETWORK_ERROR");
   }
 
-  if (code.includes('CONFIG') || code.includes('MISSING') || message.includes('config') || message.includes('required')) {
-    return createErrorInfo('CONFIG_ERROR');
+  if (
+    code.includes("CONFIG") ||
+    code.includes("MISSING") ||
+    message.includes("config") ||
+    message.includes("required")
+  ) {
+    return createErrorInfo("CONFIG_ERROR");
   }
 
-  return createErrorInfo('UNKNOWN_ERROR');
+  return createErrorInfo("UNKNOWN_ERROR");
 }

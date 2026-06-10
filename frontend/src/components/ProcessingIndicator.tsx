@@ -1,4 +1,4 @@
-import type { ProcessingIndicatorProps } from '@/types/pipeline';
+import type { ProcessingIndicatorProps } from "@/types/pipeline";
 
 export function ProcessingIndicator({
   message,
@@ -10,16 +10,16 @@ export function ProcessingIndicator({
       <div className="p-4 bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-sm text-[#0f172a] leading-relaxed">
         <div className="flex items-center gap-1">
           <span
-            className={`w-1.5 h-1.5 rounded-full bg-[#94a3b8] ${isActive ? 'animate-bounce' : ''}`}
-            style={{ animationDelay: '0s' }}
+            className={`w-1.5 h-1.5 rounded-full bg-[#94a3b8] ${isActive ? "animate-bounce" : ""}`}
+            style={{ animationDelay: "0s" }}
           />
           <span
-            className={`w-1.5 h-1.5 rounded-full bg-[#94a3b8] ${isActive ? 'animate-bounce' : ''}`}
-            style={{ animationDelay: '0.2s' }}
+            className={`w-1.5 h-1.5 rounded-full bg-[#94a3b8] ${isActive ? "animate-bounce" : ""}`}
+            style={{ animationDelay: "0.2s" }}
           />
           <span
-            className={`w-1.5 h-1.5 rounded-full bg-[#94a3b8] ${isActive ? 'animate-bounce' : ''}`}
-            style={{ animationDelay: '0.4s' }}
+            className={`w-1.5 h-1.5 rounded-full bg-[#94a3b8] ${isActive ? "animate-bounce" : ""}`}
+            style={{ animationDelay: "0.4s" }}
           />
         </div>
         <span className="text-sm text-[#64748b] ml-2">{message}</span>

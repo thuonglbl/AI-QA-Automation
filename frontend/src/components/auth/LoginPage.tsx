@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { useAuth } from "@/hooks/useAuth";
 import { Loader2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
@@ -11,8 +17,14 @@ interface LoginPageProps {
 }
 
 export function LoginPage({ onLoginSuccess }: LoginPageProps) {
-  const { isAuthenticated, isLoading, error: authError, logout, setAuthStatus } = useAuth();
-  
+  const {
+    isAuthenticated,
+    isLoading,
+    error: authError,
+    logout,
+    setAuthStatus,
+  } = useAuth();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -35,7 +47,14 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
       // Backend returns { access_token, user: UserProfileResponse }
       // UserProfileResponse has display_name (not name), id, email, role, is_active
       const loginResult = await apiFetch<{
-        user?: { email?: string; display_name?: string; name?: string; id?: string; role?: string; is_active?: boolean };
+        user?: {
+          email?: string;
+          display_name?: string;
+          name?: string;
+          id?: string;
+          role?: string;
+          is_active?: boolean;
+        };
         access_token?: string;
       }>("/login", {
         method: "POST",
@@ -65,7 +84,10 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
         email: rawUser.email as string,
         name: rawUser.name ?? rawUser.display_name ?? rawUser.email,
       };
-      setAuthStatus({ authenticated: true, user: normalizeUser(userForNormalize) });
+      setAuthStatus({
+        authenticated: true,
+        user: normalizeUser(userForNormalize),
+      });
     } catch {
       setAuthStatus({ authenticated: false, user: null });
       setFormError("Invalid username or password.");
@@ -106,12 +128,17 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
           {isLoading ? (
             <div className="flex flex-col items-center justify-center py-8 space-y-4">
               <Loader2 className="w-8 h-8 animate-spin text-primary" />
-              <p className="text-sm text-surface-500">Checking authentication...</p>
+              <p className="text-sm text-surface-500">
+                Checking authentication...
+              </p>
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-surface-700" htmlFor="email">
+                <label
+                  className="text-sm font-medium text-surface-700"
+                  htmlFor="email"
+                >
                   Email
                 </label>
                 <input
@@ -125,7 +152,10 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-medium text-surface-700" htmlFor="password">
+                <label
+                  className="text-sm font-medium text-surface-700"
+                  htmlFor="password"
+                >
                   Password
                 </label>
                 <input
@@ -149,7 +179,9 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
                 disabled={isSubmitting}
                 className="w-full py-2 px-4 bg-primary text-white rounded-md hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 flex items-center justify-center"
               >
-                {isSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                {isSubmitting && (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                )}
                 Sign In
               </button>
             </form>

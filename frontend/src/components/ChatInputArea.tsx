@@ -1,17 +1,25 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from '@/components/ui/tooltip';
-import { Label } from '@/components/ui/label';
-import type { ChatInputAreaProps } from '@/types/pipeline';
-import { Loader2, Check, X, ArrowRight, CheckCircle, ChevronLeft, ChevronRight } from 'lucide-react';
-import { cn } from '@/lib/utils';
+} from "@/components/ui/tooltip";
+import { Label } from "@/components/ui/label";
+import type { ChatInputAreaProps } from "@/types/pipeline";
+import {
+  Loader2,
+  Check,
+  X,
+  ArrowRight,
+  CheckCircle,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export function ChatInputArea({
   state,
@@ -31,15 +39,22 @@ export function ChatInputArea({
   onPrevious,
 }: ChatInputAreaProps) {
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
-  const [feedback, setFeedback] = useState('');
-  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
-  
+  const [feedback, setFeedback] = useState("");
+  const [validationErrors, setValidationErrors] = useState<
+    Record<string, string>
+  >({});
+
   const primaryButtonRef = useRef<HTMLButtonElement>(null);
   const feedbackTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Focus primary action when state changes (AC 9)
   useEffect(() => {
-    if (state === 'start' || state === 'review' || state === 'reject_feedback' || state === 'done') {
+    if (
+      state === "start" ||
+      state === "review" ||
+      state === "reject_feedback" ||
+      state === "done"
+    ) {
       // Small delay to ensure DOM is ready
       const timer = setTimeout(() => {
         primaryButtonRef.current?.focus();
@@ -50,7 +65,7 @@ export function ChatInputArea({
 
   // Auto-focus feedback textarea when entering reject_feedback state (AC 5)
   useEffect(() => {
-    if (state === 'reject_feedback') {
+    if (state === "reject_feedback") {
       const timer = setTimeout(() => {
         feedbackTextareaRef.current?.focus();
       }, 100);
@@ -60,21 +75,21 @@ export function ChatInputArea({
 
   // Reset input values when entering start state
   useEffect(() => {
-    if (state === 'start') {
+    if (state === "start") {
       const initialValues: Record<string, string> = {};
-      
+
       // Auto-load values from localStorage for certain fields
       if (inputConfig?.fields) {
-        inputConfig.fields.forEach(field => {
-          if (field.name === 'mcp_pat') {
-            const savedToken = localStorage.getItem('mcp_pat');
+        inputConfig.fields.forEach((field) => {
+          if (field.name === "mcp_pat") {
+            const savedToken = localStorage.getItem("mcp_pat");
             if (savedToken) {
               initialValues[field.name] = savedToken;
             }
           }
         });
       }
-      
+
       setInputValues(initialValues);
       setValidationErrors({});
     }
@@ -82,18 +97,21 @@ export function ChatInputArea({
 
   // Reset feedback when leaving reject_feedback state
   useEffect(() => {
-    if (state !== 'reject_feedback') {
-      setFeedback('');
+    if (state !== "reject_feedback") {
+      setFeedback("");
     }
   }, [state]);
 
-  const handleInputChange = useCallback((fieldName: string, value: string) => {
-    setInputValues((prev) => ({ ...prev, [fieldName]: value }));
-    // Clear validation error when user types
-    if (validationErrors[fieldName]) {
-      setValidationErrors((prev) => ({ ...prev, [fieldName]: '' }));
-    }
-  }, [validationErrors]);
+  const handleInputChange = useCallback(
+    (fieldName: string, value: string) => {
+      setInputValues((prev) => ({ ...prev, [fieldName]: value }));
+      // Clear validation error when user types
+      if (validationErrors[fieldName]) {
+        setValidationErrors((prev) => ({ ...prev, [fieldName]: "" }));
+      }
+    },
+    [validationErrors],
+  );
 
   const validateInputs = useCallback((): boolean => {
     if (!inputConfig?.fields) return true;
@@ -102,8 +120,8 @@ export function ChatInputArea({
     let isValid = true;
 
     for (const field of inputConfig.fields) {
-      const value = inputValues[field.name] || '';
-      
+      const value = inputValues[field.name] || "";
+
       // Check required
       if (field.required && !value.trim()) {
         errors[field.name] = `${field.label} is required`;
@@ -129,7 +147,7 @@ export function ChatInputArea({
     if (validateInputs()) {
       // Save specific values to local storage
       if (inputValues.mcp_pat) {
-        localStorage.setItem('mcp_pat', inputValues.mcp_pat);
+        localStorage.setItem("mcp_pat", inputValues.mcp_pat);
       }
       onStart(inputValues);
     }
@@ -142,59 +160,70 @@ export function ChatInputArea({
   }, [feedback, onSubmitFeedback]);
 
   // Check if start button should be disabled
-  const canStart = inputConfig?.fields.every((field) => {
-    if (!field.required) return true;
-    return (inputValues[field.name] || '').trim().length > 0;
-  }) ?? true;
+  const canStart =
+    inputConfig?.fields.every((field) => {
+      if (!field.required) return true;
+      return (inputValues[field.name] || "").trim().length > 0;
+    }) ?? true;
 
   // Render Start State (AC 1, 7)
   const renderStartState = () => {
     return (
-      <div 
-        className="space-y-4 animate-slide-up"
-        aria-live="polite"
-      >
+      <div className="space-y-4 animate-slide-up" aria-live="polite">
         {inputConfig?.fields.map((field) => (
           <div key={field.name} className="space-y-2">
             <Label htmlFor={field.name} className="text-sm font-medium">
               {field.label}
-              {field.required && <span className="text-destructive ml-1">*</span>}
+              {field.required && (
+                <span className="text-destructive ml-1">*</span>
+              )}
             </Label>
-            {field.type === 'textarea' ? (
+            {field.type === "textarea" ? (
               <Textarea
                 id={field.name}
                 placeholder={field.placeholder}
-                value={inputValues[field.name] || ''}
+                value={inputValues[field.name] || ""}
                 onChange={(e) => handleInputChange(field.name, e.target.value)}
                 className={cn(
                   "min-h-[100px]",
-                  validationErrors[field.name] && "border-destructive"
+                  validationErrors[field.name] && "border-destructive",
                 )}
                 aria-invalid={!!validationErrors[field.name]}
-                aria-describedby={validationErrors[field.name] ? `${field.name}-error` : undefined}
+                aria-describedby={
+                  validationErrors[field.name]
+                    ? `${field.name}-error`
+                    : undefined
+                }
               />
             ) : (
               <Input
                 id={field.name}
                 type={field.type}
                 placeholder={field.placeholder}
-                value={inputValues[field.name] || ''}
+                value={inputValues[field.name] || ""}
                 onChange={(e) => handleInputChange(field.name, e.target.value)}
                 className={cn(
-                  validationErrors[field.name] && "border-destructive"
+                  validationErrors[field.name] && "border-destructive",
                 )}
                 aria-invalid={!!validationErrors[field.name]}
-                aria-describedby={validationErrors[field.name] ? `${field.name}-error` : undefined}
+                aria-describedby={
+                  validationErrors[field.name]
+                    ? `${field.name}-error`
+                    : undefined
+                }
               />
             )}
             {validationErrors[field.name] && (
-              <p id={`${field.name}-error`} className="text-sm text-destructive">
+              <p
+                id={`${field.name}-error`}
+                className="text-sm text-destructive"
+              >
                 {validationErrors[field.name]}
               </p>
             )}
           </div>
         ))}
-        
+
         <div className="flex justify-end pt-2">
           <TooltipProvider>
             <Tooltip>
@@ -216,7 +245,9 @@ export function ChatInputArea({
               </TooltipTrigger>
               {!canStart && (
                 <TooltipContent side="top">
-                  <p>{disabledReason || "Enter required information to start"}</p>
+                  <p>
+                    {disabledReason || "Enter required information to start"}
+                  </p>
                 </TooltipContent>
               )}
             </Tooltip>
@@ -229,7 +260,7 @@ export function ChatInputArea({
   // Render Processing State (AC 2)
   const renderProcessingState = () => {
     return (
-      <div 
+      <div
         className="flex items-center justify-center p-6 rounded-lg bg-surface-100 border border-surface-200 animate-slide-up"
         aria-live="polite"
       >
@@ -243,15 +274,13 @@ export function ChatInputArea({
 
   // Render Review State (AC 3, 6, 8)
   const renderReviewState = () => {
-    const hasNavigation = currentIndex !== undefined && totalCount !== undefined && totalCount > 1;
+    const hasNavigation =
+      currentIndex !== undefined && totalCount !== undefined && totalCount > 1;
     const canGoPrevious = hasNavigation && currentIndex > 0;
     const canGoNext = hasNavigation && currentIndex < totalCount - 1;
 
     return (
-      <div 
-        className="flex flex-col gap-3 animate-slide-up"
-        aria-live="polite"
-      >
+      <div className="flex flex-col gap-3 animate-slide-up" aria-live="polite">
         {/* Navigation bar for per-item review (UX-DR14) */}
         {hasNavigation && (
           <div className="flex items-center justify-between px-4 py-2 bg-slate-50 rounded-lg border border-slate-200">
@@ -295,7 +324,7 @@ export function ChatInputArea({
             <X className="w-4 h-4 mr-2" />
             Reject
           </Button>
-          
+
           {/* Approve button - primary, right (AC 6) */}
           <Button
             ref={primaryButtonRef}
@@ -314,10 +343,7 @@ export function ChatInputArea({
   // Render Reject Feedback State (AC 4, 5)
   const renderRejectFeedbackState = () => {
     return (
-      <div 
-        className="space-y-4 animate-slide-up"
-        aria-live="polite"
-      >
+      <div className="space-y-4 animate-slide-up" aria-live="polite">
         <div className="space-y-2">
           <Label htmlFor="feedback" className="text-sm font-medium">
             Please explain what needs to be corrected
@@ -336,7 +362,7 @@ export function ChatInputArea({
             <span>{feedback.length}/1000</span>
           </div>
         </div>
-        
+
         <div className="flex justify-end">
           <Button
             ref={primaryButtonRef}
@@ -358,23 +384,22 @@ export function ChatInputArea({
   // Render Done State (AC 5)
   const renderDoneState = () => {
     const isFinalStep = isLastStep && stepNumber === 5;
-    
+
     return (
-      <div 
-        className="flex justify-end animate-slide-up"
-        aria-live="polite"
-      >
+      <div className="flex justify-end animate-slide-up" aria-live="polite">
         <Button
           ref={primaryButtonRef}
           onClick={onContinue}
           disabled={isLoading}
           className={cn(
             "min-w-[120px]",
-            isFinalStep 
-              ? "bg-green-500 hover:bg-green-600 text-white" 
-              : "bg-blue-500 hover:bg-blue-600 text-white"
+            isFinalStep
+              ? "bg-green-500 hover:bg-green-600 text-white"
+              : "bg-blue-500 hover:bg-blue-600 text-white",
           )}
-          aria-label={isFinalStep ? "Complete workflow" : "Continue to next step"}
+          aria-label={
+            isFinalStep ? "Complete workflow" : "Continue to next step"
+          }
         >
           {isLoading ? (
             <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -397,15 +422,15 @@ export function ChatInputArea({
   // Render based on state
   const renderContent = () => {
     switch (state) {
-      case 'start':
+      case "start":
         return renderStartState();
-      case 'processing':
+      case "processing":
         return renderProcessingState();
-      case 'review':
+      case "review":
         return renderReviewState();
-      case 'reject_feedback':
+      case "reject_feedback":
         return renderRejectFeedbackState();
-      case 'done':
+      case "done":
         return renderDoneState();
       default:
         return null;

@@ -356,14 +356,17 @@ This is a strategic response to competitive pressure: competitors are already ap
 
 ### Configuration
 
-- FR14: System-level service URLs must be configured through environment variables, including Browser Use Cloud URL, Claude API base URL, Gemini API base URL, ChatGPT/OpenAI API base URL, On-Premises API base URL, and MCP server URL. Provider API keys and MCP API keys must not be stored in `.env`; they must be collected from the user and stored securely per user account. Target page URL and SSO options are workflow inputs provided by the user and must not be stored in `.env`.
+- FR14: Provider API keys and MCP API keys must not be stored in `.env` or plaintext JSON columns. They must be collected from the user and stored in encrypted PostgreSQL fields, with only non-secret metadata persisted separately from encrypted secret material.
+- FR14a: Users can update or replace expired MCP and AI provider API keys from the UI without admin support. The UI must never display stored secret values.
+- FR14b: `ai_provider_config` and `ai_agents_config` must not duplicate system-level environment settings. PostgreSQL may store selected provider, selected model assignments, non-secret model-selection rationale, and non-secret runtime settings. Secrets remain in secret storage.
 - FR15: Alice must dynamically validate the selected AI provider and discover available models from the selected provider/server where supported. Engineer-managed LLM parameter tuning is not part of the MVP because available models are dynamic and cannot be safely predetermined.
-- FR15a: Alice must only assign downstream agent models from the provider's discovered available model list. If model discovery fails, returns no models, or cannot verify a selected model exists, Alice must block successful configuration review and show an actionable recovery message.
-- FR15b: Alice must provide a user-reviewable model-selection rationale for each downstream agent, including provider connection status, discovered models, agent model needs, selected model, and selection rationale.
+- FR15a: Alice must only assign downstream agent models from the provider's discovered available model list. Models must be categorized into two distinct groups: "Available" and "Unavailable" (quota exceeded, not supported, outdated). If the "Available" group is empty, Alice must stop the thread and show the exact message: "No available model to proceed. Please check your subscription then create a new thread to continue."
+- FR15b: Alice must provide a user-reviewable provider/model review for each downstream agent, including provider connection status, discovered models, agent model needs, selected model, selected temperature or other non-secret runtime parameters, and selection rationale.
 
 ### Administration
 
-- FR16: Admin can manage users and projects. Admin is not responsible for switching LLM providers for users in the MVP.
+- FR16: Admin can create, read, update, and delete users and projects, and can assign or remove users from projects. Admin users are routed only to the admin dashboard and do not enter the standard project/thread workspace flow.
+- FR16a: Admin can trigger an automated E2E test run directly from the dashboard. The tests run in headed mode with slow motion for visual monitoring, and the report is automatically downloaded to the admin's machine upon completion.
 
 ### Backlog
 
@@ -396,6 +399,59 @@ This is a strategic response to competitive pressure: competitors are already ap
 - FR28: Leadership can view metrics dashboard showing scripts generated, success rates, and effort reduction
 - FR29: Leadership can view LLM cost tracking and comparison data
 
+### Collaborative Project Threads and Agent Runs
+
+- FR30: Each project can have one or more conversation threads.
+- FR31: A user can create a new thread, return to previous threads, and continue from saved thread state.
+- FR32: Conversation threads are private to the user who created them; other users assigned to the same project cannot view or continue those threads.
+- FR33: At the beginning of a new thread, Alice asks the user to select one accessible project.
+- FR34: Once Alice binds a project to the thread, the project cannot be changed within that thread.
+- FR35: Users on the same project can view project-level generated artifacts from other users, subject to project assignment and role.
+- FR36: User secrets are per-user. AI provider API keys and MCP keys belong to the user, not the project.
+- FR37: Agent workflow executions are stored as `agent_runs`, scoped only by `thread_id`; user and project scope are derived from the referenced thread.
+- FR38: `agent_runs` records `thread_id`, status, timestamps, summary, and non-secret execution metadata. An `agent_run` cannot be reassigned to another thread after creation.
+- FR39: Agent run execution updates only the referenced `conversation_threads.current_step` and `conversation_threads.status`.
+- FR40: User and agent messages are persisted as append-only `messages` for the referenced thread.
+- FR41: If a user is removed from a project, threads bound to that project are hidden from that user's Conversation History and API access is denied.
+
+### Output and Shared Artifact Storage
+
+- FR42: The SeaweedFS artifact tree is shared at project level.
+- FR43: Required logical artifact folders are `projects/{project_id}/requirements/`, `projects/{project_id}/test_cases/`, and `projects/{project_id}/test_scripts/`.
+- FR44: If a PostgreSQL project exists but SeaweedFS has no objects for it, the UI still shows the required empty folders for the selected project.
+- FR45: Artifact metadata preserves ownership, kind, storage path, creator, updater, optional version history, optional originating thread, and optional originating agent run.
+- FR46: Project members can list, read, edit, and delete artifacts from other users in the same project, subject to project assignment and role.
+
+### Collaborative Workspace UX
+
+- FR47: Login opens the collaborative workspace shell for standard users.
+- FR48: The workspace shell includes a collapsible left sidebar, New Conversation, Conversation History, and a singular Project / Artifacts section for the active thread's bound project.
+- FR49: Before Alice project selection, the Project / Artifacts section is empty.
+- FR50: After project selection, the sidebar shows only the selected project for the active thread and the selected project is locked for that thread.
+- FR51: Conversation History reopens only the current user's existing threads with bound project, messages, current step, status, and latest agent run restored.
+- FR52: Authorized project users can browse, open, edit, and delete shared artifacts for assigned projects regardless of creator.
+- FR53: Zero-project users receive a no-access message.
+
+### Secure User Secret Storage and Rotation
+
+- FR54: Store AI provider API keys as per-user encrypted PostgreSQL fields; a user may store one or more provider keys for Browser Use, Claude, Gemini, ChatGPT, and on-premises providers.
+- FR55: Store one MCP key as a per-user encrypted PostgreSQL field.
+- FR56: PostgreSQL separates encrypted secret values from non-secret status and metadata.
+- FR57: API and WebSocket responses never return secrets.
+- FR58: UI shows secret status and allows replacement without revealing existing values.
+- FR59: Alice and downstream agents resolve the current user's secrets at execution time.
+- FR60: Rotated secrets apply to future runs while existing thread/message history remains unchanged.
+
+### Project Artifact Realtime Sync
+
+- FR61: Backend emits artifact change events after application-managed artifact create, update, delete, or metadata-change operations.
+- FR62: Event payload includes `project_id`, artifact identifier, change type, and timestamp.
+- FR63: WebSocket clients for users assigned to the changed project receive the event, even if the changed project is not attached to the currently active thread.
+- FR64: Frontend refetches the visible Project / Artifacts tree when the changed project is currently displayed.
+- FR65: Artifact refresh does not reset chat, current input, current step, or scroll position.
+- FR66: If the currently opened artifact is updated or deleted, the UI shows a non-disruptive notice and offers to reload or close the preview.
+- FR67: Direct external SeaweedFS notifications and artifact version rollback are out of MVP scope.
+
 ## Non-Functional Requirements
 
 ### Performance
@@ -408,7 +464,10 @@ This is a strategic response to competitive pressure: competitors are already ap
 ### Security
 
 - No data transmitted outside company infrastructure — on-prem constraint enforced at all phases
-- API keys and credentials in `.env` only — never committed to version control, never logged
+- System-level non-secret service URLs may be stored in environment configuration
+- User-provided MCP keys and AI provider API keys must be stored only in encrypted PostgreSQL fields and must never appear in `.env`, plaintext JSON columns, logs, WebSocket payload history, conversation history, artifacts, or generated files
+- Secret encryption uses `USER_SECRETS_ENCRYPTION_KEY`, mapped to `AppSettings.user_secrets_encryption_key`; the encryption key must not be stored in PostgreSQL
+- Passwords are stored as one-way password hashes, not reversible encryption or plaintext
 - Browser sessions reuse existing SSO — pipeline must not store, cache, or log credentials
 - AI browser agent restricted to read-only navigation — no form submissions, data modifications, or write operations during generation
 - Milestone 1: audit logging of all pipeline executions (who, when, which page, which scripts)

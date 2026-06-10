@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ai_qa.config import AppSettings
-from ai_qa.exceptions import MCPConnectionError
+from ai_qa.exceptions import MCPConnectionError, MCPTimeoutError
 from ai_qa.mcp.connection import ConnectionManager, ConnectionState, MCPConnection
 from ai_qa.mcp.tools import Tool
 
@@ -252,3 +252,45 @@ class TestToolCache:
 
         cache.set_many(tools)
         assert len(cache.list_cached()) == 2
+
+
+@pytest.mark.asyncio
+async def test_connect_sse_timeout():
+    conn = MCPConnection("http://localhost:3000/sse", timeout=0.001)
+    with pytest.raises(MCPTimeoutError):
+        await conn.connect()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_timeout():
+    conn = MCPConnection("http://localhost:3000/sse", timeout=0.001)
+    conn._state = ConnectionState.CONNECTED
+    conn._session = AsyncMock()
+    conn._session.call_tool.side_effect = TimeoutError()
+    with pytest.raises(MCPTimeoutError):
+        await conn.call_tool("test", {})
+
+
+@pytest.mark.asyncio
+async def test_list_tools_timeout():
+    conn = MCPConnection("http://localhost:3000/sse", timeout=0.001)
+    conn._state = ConnectionState.CONNECTED
+    conn._session = AsyncMock()
+    conn._session.list_tools.side_effect = TimeoutError()
+    with pytest.raises(MCPTimeoutError):
+        await conn.list_tools()
+
+
+@pytest.mark.asyncio
+async def test_connect_stdio_success():
+    conn = MCPConnection("stdio:python test.py")
+    with patch("ai_qa.mcp.connection.stdio_client") as mock_stdio:
+        mock_ctx = AsyncMock()
+        mock_transport = (AsyncMock(), AsyncMock())
+        mock_ctx.__aenter__.return_value = mock_transport
+        mock_stdio.return_value = mock_ctx
+        with patch("ai_qa.mcp.connection.ClientSession") as mock_session_class:
+            mock_session = AsyncMock()
+            mock_session_class.return_value.__aenter__.return_value = mock_session
+            await conn.connect()
+            assert conn.is_connected

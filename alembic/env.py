@@ -5,6 +5,8 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 
 import ai_qa.db.models  # noqa: F401  # populate Base.metadata
+import ai_qa.secrets.models  # noqa: F401
+import ai_qa.threads.models  # noqa: F401
 from ai_qa.config import AppSettings
 from ai_qa.db.base import Base
 from alembic import context

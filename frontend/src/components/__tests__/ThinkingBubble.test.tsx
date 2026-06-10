@@ -8,9 +8,7 @@ const mockTrace: ThinkingTrace = {
   available_models: [{ id: "model-1", name: "Model 1" }],
   bootstrap_model: "model-1",
   agent_needs: {},
-  assignments: [
-    { agent: "bob", rationale: "Needs reasoning" },
-  ],
+  assignments: [{ agent: "bob", model: "model-1", rationale: "Needs reasoning" }],
 };
 
 describe("ThinkingBubble", () => {
@@ -28,9 +26,9 @@ describe("ThinkingBubble", () => {
     expect(screen.queryByText(/Success/i)).not.toBeInTheDocument();
   });
 
-  it("renders initially collapsed when isCompleted is true", () => {
+  it("renders expanded by default even when isCompleted is true", () => {
     render(<ThinkingBubble trace={mockTrace} isCompleted={true} />);
-    expect(screen.queryByText(/Success/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Success/i)).toBeInTheDocument();
     expect(screen.getByText(/Complete/i)).toBeInTheDocument();
   });
 });

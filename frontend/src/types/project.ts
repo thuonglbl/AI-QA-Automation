@@ -11,6 +11,8 @@ export interface Project {
   name: string;
   description: string | null;
   confluence_base_url: string | null;
+  jira_base_url: string | null;
+  enabled_providers: string[];
   created_by_user_id: string | null;
   current_user_role: string | null;
   membership_count: number;
@@ -24,7 +26,18 @@ export interface AdminProject {
   name: string;
   description: string | null;
   confluence_base_url: string | null;
+  jira_base_url: string | null;
+  enabled_providers: string[];
   created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminUserProjectMembership {
+  id: string;
+  project_id: string;
+  project_name: string;
+  role: string;
   created_at: string;
   updated_at: string;
 }
@@ -37,12 +50,15 @@ export interface AdminUser {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  project_memberships: AdminUserProjectMembership[];
 }
 
 export interface CreateProjectRequest {
   name: string;
   description?: string | null;
-  confluence_base_url: string;
+  confluence_base_url?: string | null;
+  jira_base_url?: string | null;
+  enabled_providers: string[];
 }
 
 export interface CreateMembershipRequest {
@@ -53,5 +69,14 @@ export interface CreateMembershipRequest {
 export interface CreateAdminUserRequest {
   email: string;
   display_name: string;
+  role: "admin" | "standard";
   initial_password: string;
+}
+
+export interface E2ETestRunResult {
+  exit_code: number;
+  passed: boolean;
+  report_available: boolean;
+  stdout: string;
+  stderr: string;
 }

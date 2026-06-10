@@ -4,7 +4,8 @@ from pathlib import Path
 from urllib.parse import quote_plus, urlsplit, urlunsplit
 
 # Third-party
-from pydantic import BaseModel, Field
+from cryptography.fernet import Fernet
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -36,7 +37,8 @@ class UserConfig(BaseModel):
     """
 
     anthropic_api_key: str = Field(default="", description="User's Claude API key")
-    openai_api_key: str = Field(default="", description="User's OpenAI/Gemini API key")
+    openai_api_key: str = Field(default="", description="User's OpenAI API key")
+    gemini_api_key: str = Field(default="", description="User's Google Gemini API key")
     browser_use_api_key: str = Field(default="", description="User's Browser Use Cloud API key")
     on_premises_ai_server_url: str = Field(default="", description="User's on-prem LiteLLM proxy")
     on_premises_ai_server_key: str = Field(
@@ -77,7 +79,7 @@ class AppSettings(BaseSettings):
 
     # --- External Service URLs ---
     browser_use_cloud_url: str = Field(
-        default="https://api.browser-use.com/api/v3", description="Browser Use Cloud API base URL"
+        default="https://api.browser-use.com/api/v2", description="Browser Use Cloud API base URL"
     )
     claude_api_base_url: str = Field(
         default="https://api.anthropic.com", description="Claude API base URL"
@@ -145,13 +147,58 @@ class AppSettings(BaseSettings):
     database_echo: bool = Field(
         default=False, description="Echo SQL statements for local debugging"
     )
+    db_encryption_key: str = Field(
+        default="ozjY9J56PAawdLJw5Lp8HfL0YUO4NP_PpKNWxgvxGb0=",
+        description="Key for Fernet encryption of DB columns",
+    )
 
-    # --- MinIO Object Storage (Epic 13) ---
-    minio_endpoint: str = Field(default="localhost:9000", description="MinIO server endpoint")
-    minio_access_key: str = Field(default="minioadmin", description="MinIO access key")
-    minio_secret_key: str = Field(default="miniopassword", description="MinIO secret key")
-    minio_secure: bool = Field(default=False, description="Use HTTPS for MinIO")
-    minio_bucket: str = Field(default="ai-qa-artifacts", description="Bucket for storing artifacts")
+    # --- User Secret Encryption (Story 9.1) ---
+    user_secrets_encryption_key: str = Field(
+        default="",
+        description=(
+            "Fernet key for encrypting per-user AI provider / MCP secrets. "
+            "Required at startup; never stored in the database."
+        ),
+    )
+
+    @field_validator("user_secrets_encryption_key")
+    @classmethod
+    def _validate_user_secrets_encryption_key(cls, value: str) -> str:
+        """Fail fast when the user-secrets encryption key is missing or invalid.
+
+        AC3: startup validation must reject a missing or non-Fernet key with an
+        actionable error. ``AppSettings`` is instantiated at import time in
+        ``ai_qa.api`` so this validator fails the process fast on boot.
+        """
+        actionable = (
+            "USER_SECRETS_ENCRYPTION_KEY is missing or invalid. Generate one with: "
+            'python -c "from cryptography.fernet import Fernet; '
+            'print(Fernet.generate_key().decode())"'
+        )
+        if not value:
+            raise ValueError(actionable)
+        try:
+            Fernet(value.encode("utf-8"))
+        except Exception as exc:
+            raise ValueError(actionable) from exc
+        return value
+
+    # --- S3 Compatible Storage (SeaweedFS) ---
+    seaweedfs_endpoint: str = Field(
+        default="localhost:8333", description="SeaweedFS server endpoint"
+    )
+    seaweedfs_access_key: str = Field(default="admin", description="SeaweedFS access key")
+    seaweedfs_secret_key: str = Field(
+        default="seaweedfspassword", description="SeaweedFS secret key"
+    )
+    seaweedfs_secure: bool = Field(default=False, description="Use HTTPS for SeaweedFS storage")
+    seaweedfs_bucket: str = Field(
+        default="ai-qa-artifacts", description="Bucket for storing artifacts"
+    )
+    s3_connect_timeout: int = Field(
+        default=1, description="Connection timeout for S3/SeaweedFS clients"
+    )
+    s3_read_timeout: int = Field(default=1, description="Read timeout for S3/SeaweedFS clients")
 
     @property
     def sqlalchemy_database_url(self) -> str:

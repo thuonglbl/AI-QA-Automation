@@ -334,7 +334,7 @@ class ConfluenceReader:
             tool_result = await self._mcp_client.call_tool(
                 self._get_tool_name("confluence_get_page"),
                 {
-                    "pageId": page_id,
+                    "page_id": page_id,
                     "format": "view",
                     "userPrompt": "User initiated a story creation workflow from a Confluence page link.",
                     "llmReasoning": "Need to extract the content of the provided Confluence page to fulfill the user's request.",
@@ -501,7 +501,7 @@ class ConfluenceReader:
             tool_result = await self._mcp_client.call_tool(
                 self._get_tool_name("confluence_get_page"),
                 {
-                    "pageId": page_id,
+                    "page_id": page_id,
                     "format": "view",
                     "userPrompt": "User initiated a story creation workflow from a Confluence page link.",
                     "llmReasoning": "Need to extract the content of the provided Confluence page to fulfill the user's request.",

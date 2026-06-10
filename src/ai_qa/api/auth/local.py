@@ -5,16 +5,15 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ai_qa.api.auth.session import SessionManager
-from ai_qa.auth.service import AuthFailure, DuplicateUserError, authenticate_user, register_user
+from ai_qa.auth.service import AuthFailure, authenticate_user
 from ai_qa.config import AppSettings
 from ai_qa.db.models import User
 from ai_qa.db.session import get_db_session
-
-_DUPLICATE_REGISTRATION_DETAIL = "Registration could not be completed"
 
 
 def get_db_session_dependency(request: Request) -> Generator[Session]:
@@ -31,16 +30,6 @@ class LoginRequest(BaseModel):
 
     email: EmailStr
     password: str
-
-
-class RegisterRequest(BaseModel):
-    """Public registration request; role fields are ignored if provided."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    email: EmailStr
-    name: str = Field(min_length=1, max_length=255)
-    password: str = Field(min_length=8)
 
 
 class UserProfileResponse(BaseModel):
@@ -79,22 +68,6 @@ def get_auth_router(settings: AppSettings) -> APIRouter:
     router = APIRouter(prefix="/auth", tags=["authentication"])
     session_manager = SessionManager(settings)
 
-    @router.post("/register")
-    async def register(
-        request: RegisterRequest,
-        db: Session = DbSessionDependency,
-    ) -> dict[str, Any]:
-        """Register a new standard user."""
-        try:
-            user = register_user(db, request.email, request.name, request.password)
-        except DuplicateUserError as exc:
-            raise HTTPException(status_code=400, detail=_DUPLICATE_REGISTRATION_DETAIL) from exc
-        return {
-            "success": True,
-            "message": "Registration successful. Please log in.",
-            "user": _profile_response(user),
-        }
-
     @router.post("/login")
     async def login(
         request: LoginRequest,
@@ -102,7 +75,7 @@ def get_auth_router(settings: AppSettings) -> APIRouter:
         db: Session = DbSessionDependency,
     ) -> dict[str, Any]:
         """Log in a user and set a JWT session cookie."""
-        user = authenticate_user(db, request.email, request.password)
+        user = await run_in_threadpool(authenticate_user, db, request.email, request.password)
         if isinstance(user, AuthFailure):
             raise HTTPException(status_code=401, detail=user.reason)
 
@@ -173,6 +146,7 @@ def get_auth_router(settings: AppSettings) -> APIRouter:
         if user and not user.is_expired:
             return {
                 "authenticated": True,
+                "id": user.user_id,
                 "email": user.email,
                 "name": user.name,
                 "role": user.role,

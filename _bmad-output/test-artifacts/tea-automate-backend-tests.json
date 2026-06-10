@@ -1,0 +1,12 @@
+{
+  "success": true,
+  "subagent": "backend",
+  "subagentType": "backend",
+  "testsGenerated": [],
+  "coverageSummary": {
+    "fixtureNeeds": []
+  },
+  "status": "completed",
+  "knowledge_fragments_used": [],
+  "summary": "No backend tests needed. Architecture migration is covered by tests in the dev step."
+}

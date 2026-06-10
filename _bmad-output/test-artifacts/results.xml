@@ -1,0 +1,10 @@
+<testsuites id="" name="" tests="3" failures="0" skipped="0" errors="0" time="50.690805">
+<testsuite name="story-10-8-artifact-notice.spec.ts" timestamp="2026-06-10T14:48:01.247Z" hostname="chromium" tests="3" failures="0" skipped="0" time="39.34" errors="0">
+<testcase name="Story 10.8 Open Artifact Update/Delete Notice › [P1] non-disruptive notice shown on artifact update while viewing" classname="story-10-8-artifact-notice.spec.ts" time="23.284">
+</testcase>
+<testcase name="Story 10.8 Open Artifact Update/Delete Notice › [P1] non-disruptive notice shown on artifact deletion while viewing" classname="story-10-8-artifact-notice.spec.ts" time="2.575">
+</testcase>
+<testcase name="Story 10.8 Open Artifact Update/Delete Notice › [P1] ignoring artifact notice preserves all chat state" classname="story-10-8-artifact-notice.spec.ts" time="13.481">
+</testcase>
+</testsuite>
+</testsuites>

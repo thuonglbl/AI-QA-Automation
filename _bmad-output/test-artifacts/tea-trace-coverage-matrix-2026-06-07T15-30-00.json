@@ -1,0 +1,143 @@
+{
+  "phase": "PHASE_1_COMPLETE",
+  "generated_at": "2026-06-07T15:30:00.000Z",
+  "trace_target": {
+    "type": "story",
+    "id": "9.3",
+    "label": "Provider Adapter Interface and Connection Validation"
+  },
+  "collection_mode": "contract_static",
+  "allow_gate": true,
+  "coverage_basis": "acceptance_criteria",
+  "summary_confidence": "high",
+  "oracle": {
+    "resolution_mode": "formal_requirements",
+    "confidence": "high",
+    "sources": [
+      "_bmad-output/implementation-artifacts/9-3-provider-adapter-interface-and-connection-validation.md"
+    ],
+    "external_pointer_status": "not_used",
+    "synthetic": false
+  },
+  "requirements": [
+    {
+      "id": "9.3-AC1",
+      "title": "Adapter validate_connection + normalized result",
+      "priority": "P0",
+      "coverage": "FULL",
+      "levels": ["unit", "integration"],
+      "tests": [
+        { "id": "test_providers.py::TestValidateConnectionSuccess::test_success_normalized_result", "file": "tests/ai_connection/test_providers.py", "line": 64, "title": "success normalized result (4 providers)", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestProviderSpecificHeaders::test_anthropic_uses_x_api_key_headers", "file": "tests/ai_connection/test_providers.py", "line": 196, "title": "anthropic x-api-key header wiring", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestProviderSpecificHeaders::test_openai_compatible_uses_bearer", "file": "tests/ai_connection/test_providers.py", "line": 210, "title": "bearer header wiring", "level": "unit", "status": "active" },
+        { "id": "test_providers_resilience.py::TestEndpointFallback::test_first_endpoint_network_fails_second_succeeds", "file": "tests/ai_connection/test_providers_resilience.py", "line": 47, "title": "endpoint fallback resilience", "level": "unit", "status": "active" },
+        { "id": "test_providers_resilience.py::TestBaseUrlNormalization::test_trailing_slash_does_not_double_up", "file": "tests/ai_connection/test_providers_resilience.py", "line": 156, "title": "base url trailing-slash normalization", "level": "unit", "status": "active" },
+        { "id": "test_alice.py::TestConnectionAndFetch::test_test_connection_success", "file": "tests/test_agents/test_alice.py", "line": 383, "title": "alice _test_connection success", "level": "integration", "status": "active" },
+        { "id": "test_alice.py::TestProcessWorkflow::test_process_valid_credentials", "file": "tests/test_agents/test_alice.py", "line": 176, "title": "process() success path via adapter", "level": "integration", "status": "active" }
+      ],
+      "heuristics": { "endpoint_coverage": "present", "auth_coverage": "present", "error_path_coverage": "present" }
+    },
+    {
+      "id": "9.3-AC2",
+      "title": "Failure produces secret-free, stack-trace-free recovery message",
+      "priority": "P0",
+      "coverage": "FULL",
+      "levels": ["unit", "integration"],
+      "tests": [
+        { "id": "test_providers.py::TestValidateConnectionFailures::test_auth_401", "file": "tests/ai_connection/test_providers.py", "line": 90, "title": "401 -> auth + leak guard", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestValidateConnectionFailures::test_unreachable_connect_error", "file": "tests/ai_connection/test_providers.py", "line": 102, "title": "connect error -> unreachable + leak guard", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestValidateConnectionFailures::test_unreachable_timeout", "file": "tests/ai_connection/test_providers.py", "line": 114, "title": "timeout -> unreachable + leak guard", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestValidateConnectionFailures::test_provider_error_500", "file": "tests/ai_connection/test_providers.py", "line": 125, "title": "500 -> provider_error + leak guard", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestFormatFloor::test_short_or_empty_key_no_network", "file": "tests/ai_connection/test_providers.py", "line": 150, "title": "format floor: empty/short key, no network (4 cases)", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestFormatFloor::test_key_is_stripped_before_floor", "file": "tests/ai_connection/test_providers.py", "line": 161, "title": "format floor: stripped key", "level": "unit", "status": "active" },
+        { "id": "test_providers_resilience.py::TestFailurePriority::test_provider_error_wins_over_later_unreachable", "file": "tests/ai_connection/test_providers_resilience.py", "line": 78, "title": "provider_error precedence over unreachable + leak guard", "level": "unit", "status": "active" },
+        { "id": "test_providers_resilience.py::TestFailurePriority::test_all_endpoints_unreachable_yields_unreachable", "file": "tests/ai_connection/test_providers_resilience.py", "line": 98, "title": "all-unreachable normalization", "level": "unit", "status": "active" },
+        { "id": "test_providers_resilience.py::TestAuthForbidden::test_403_is_auth_failure", "file": "tests/ai_connection/test_providers_resilience.py", "line": 116, "title": "403 -> auth + leak guard", "level": "unit", "status": "active" },
+        { "id": "test_alice.py::TestProcessWorkflow::test_process_does_not_leak_api_key_into_messages", "file": "tests/test_agents/test_alice.py", "line": 225, "title": "process() does not leak api_key into messages", "level": "integration", "status": "active" },
+        { "id": "test_alice.py::TestProcessWorkflow::test_process_connection_failed", "file": "tests/test_agents/test_alice.py", "line": 267, "title": "process() raises PipelineError with actionable message", "level": "integration", "status": "active" },
+        { "id": "test_alice.py::TestConnectionAndFetch::test_test_connection_auth_failure", "file": "tests/test_agents/test_alice.py", "line": 372, "title": "alice _test_connection auth failure", "level": "integration", "status": "active" }
+      ],
+      "heuristics": { "auth_coverage": "present", "error_path_coverage": "present", "leak_guard": "present" }
+    },
+    {
+      "id": "9.3-AC3",
+      "title": "Config-owned base URLs, secret-storage-owned credentials",
+      "priority": "P1",
+      "coverage": "FULL",
+      "levels": ["unit"],
+      "tests": [
+        { "id": "test_providers.py::TestBaseUrlResolutionAndConfigGuard::test_resolve_base_url_from_settings", "file": "tests/ai_connection/test_providers.py", "line": 184, "title": "resolve_base_url from AppSettings (4 providers)", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestBaseUrlResolutionAndConfigGuard::test_resolve_base_url_unknown_provider", "file": "tests/ai_connection/test_providers.py", "line": 194, "title": "unknown provider -> ConfigError", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestBaseUrlResolutionAndConfigGuard::test_get_provider_adapter_unknown", "file": "tests/ai_connection/test_providers.py", "line": 198, "title": "unknown adapter -> ConfigError", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestBaseUrlResolutionAndConfigGuard::test_on_prem_empty_base_url_is_config_error", "file": "tests/ai_connection/test_providers.py", "line": 203, "title": "on-prem empty base url -> config", "level": "unit", "status": "active" },
+        { "id": "test_providers.py::TestBaseUrlResolutionAndConfigGuard::test_on_prem_non_http_base_url_is_config_error", "file": "tests/ai_connection/test_providers.py", "line": 213, "title": "on-prem non-http base url -> config", "level": "unit", "status": "active" },
+        { "id": "test_providers_resilience.py::TestSslVerification::test_on_premises_disables_ssl_verification", "file": "tests/ai_connection/test_providers_resilience.py", "line": 125, "title": "on-prem verify=False", "level": "unit", "status": "active" },
+        { "id": "test_providers_resilience.py::TestSslVerification::test_public_providers_enforce_ssl_verification", "file": "tests/ai_connection/test_providers_resilience.py", "line": 130, "title": "public providers verify=True (2 cases)", "level": "unit", "status": "active" },
+        { "id": "test_providers_resilience.py::TestSslVerification::test_verify_flag_is_wired_into_async_client", "file": "tests/ai_connection/test_providers_resilience.py", "line": 137, "title": "verify flag wired into AsyncClient", "level": "unit", "status": "active" },
+        { "id": "test_alice.py::TestConnectionAndFetch::test_test_connection_invalid_url", "file": "tests/test_agents/test_alice.py", "line": 355, "title": "alice on-prem invalid url -> config (endpoint from settings)", "level": "integration", "status": "active" }
+      ],
+      "heuristics": { "config_separation": "present", "secret_isolation": "structural_present" }
+    }
+  ],
+  "coverage_statistics": {
+    "total_requirements": 3,
+    "fully_covered": 3,
+    "partially_covered": 0,
+    "uncovered": 0,
+    "overall_coverage_percentage": 100,
+    "priority_breakdown": {
+      "P0": { "total": 2, "covered": 2, "percentage": 100 },
+      "P1": { "total": 1, "covered": 1, "percentage": 100 },
+      "P2": { "total": 0, "covered": 0, "percentage": 100 },
+      "P3": { "total": 0, "covered": 0, "percentage": 100 }
+    }
+  },
+  "gap_analysis": {
+    "critical_gaps": [],
+    "high_gaps": [],
+    "medium_gaps": [],
+    "low_gaps": [],
+    "partial_coverage_items": [],
+    "unit_only_items": []
+  },
+  "coverage_heuristics": {
+    "endpoint_gaps": [],
+    "auth_negative_path_gaps": [],
+    "happy_path_only_gaps": [],
+    "ui_journey_gaps": [],
+    "ui_state_gaps": [],
+    "counts": {
+      "endpoints_without_tests": 0,
+      "auth_missing_negative_paths": 0,
+      "happy_path_only_criteria": 0,
+      "ui_journeys_without_e2e": null,
+      "ui_states_missing_coverage": null
+    }
+  },
+  "test_inventory": {
+    "summary": {
+      "files": 3,
+      "cases": 49,
+      "skipped_cases": 0,
+      "fixme_cases": 0,
+      "pending_cases": 0,
+      "by_level": {
+        "e2e": { "tests": 0, "criteria_covered": 0 },
+        "api": { "tests": 0, "criteria_covered": 0 },
+        "component": { "tests": 0, "criteria_covered": 0 },
+        "unit": { "tests": 44, "criteria_covered": 3 },
+        "other": { "tests": 0, "criteria_covered": 0 }
+      }
+    },
+    "tests": [],
+    "blockers": []
+  },
+  "blockers": [],
+  "recommendations": [
+    {
+      "priority": "LOW",
+      "action": "Run bmad-testarch-test-review to assess test quality (assertion strength, isolation, naming).",
+      "requirements": []
+    }
+  ]
+}

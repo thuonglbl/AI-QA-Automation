@@ -4,10 +4,13 @@ This module provides SessionManager for detecting and reusing active
 Chrome SSO sessions, and managing Chrome path configuration.
 """
 
-import json
 from pathlib import Path
+from uuid import UUID
+
+from sqlalchemy.orm import Session
 
 from ai_qa.config import AppSettings
+from ai_qa.db.models import User
 from ai_qa.exceptions import SessionError
 
 
@@ -19,49 +22,40 @@ class SessionManager:
     configuration persistence.
 
     Attributes:
-        config_path: Path to Chrome path configuration file.
+        db: Database session.
+        user_id: ID of the user owning the session.
         chrome_path: Current Chrome executable path.
     """
 
-    def __init__(self, config_dir: Path | None = None) -> None:
+    def __init__(self, db: Session, user_id: UUID) -> None:
         """Initialize session manager.
 
         Args:
-            config_dir: Directory for storing Chrome path configuration.
-                       Defaults to workspace/configuration/.
+            db: Database session.
+            user_id: ID of the user.
         """
-        if config_dir is None:
-            # Default to a dot folder in project root to avoid 'workspace'
-            project_root = Path(__file__).resolve().parents[3]
-            config_dir = project_root / ".ai_qa" / "configuration"
-
-        self.config_dir = Path(config_dir)
-        self.config_dir.mkdir(parents=True, exist_ok=True)
-
-        self.config_path = self.config_dir / "browser_config.json"
+        self.db = db
+        self.user_id = user_id
         self.chrome_path: str | None = self._load_chrome_path()
 
     def _load_chrome_path(self) -> str | None:
-        """Load Chrome path from configuration file.
+        """Load Chrome path from database for the user.
 
         Returns:
             Chrome path if configured, None otherwise.
         """
-        if not self.config_path.exists():
-            return None
-
         try:
-            with open(self.config_path, encoding="utf-8") as f:
-                config: dict[str, str] = json.load(f)
-                return config.get("chrome_path")
-        except (json.JSONDecodeError, OSError) as e:
+            user = self.db.get(User, self.user_id)
+            if user and user.chrome_path:
+                return user.chrome_path
+            return None
+        except Exception as e:
             raise SessionError(
-                f"Failed to load browser configuration: {e}",
-                details=f"Config path: {self.config_path}",
+                f"Failed to load browser configuration from database: {e}",
             ) from e
 
     def save_chrome_path(self, chrome_path: str) -> None:
-        """Save Chrome path to configuration file for persistence.
+        """Save Chrome path to database for persistence.
 
         Args:
             chrome_path: Path to Chrome executable.
@@ -70,14 +64,17 @@ class SessionManager:
             SessionError: If configuration cannot be saved.
         """
         try:
-            config = {"chrome_path": chrome_path}
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
+            user = self.db.get(User, self.user_id)
+            if not user:
+                raise SessionError(f"User {self.user_id} not found")
+
+            user.chrome_path = chrome_path
+            self.db.commit()
             self.chrome_path = chrome_path
-        except OSError as e:
+        except Exception as e:
+            self.db.rollback()
             raise SessionError(
-                f"Failed to save browser configuration: {e}",
-                details=f"Config path: {self.config_path}",
+                f"Failed to save browser configuration to database: {e}",
             ) from e
 
     def get_chrome_path(self) -> str:

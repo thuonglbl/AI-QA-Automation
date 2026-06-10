@@ -66,15 +66,22 @@ ignore = [
 "tests/*" = ["S101"]  # allow assert in tests
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/unit", "tests/integration", "tests/api", "tests"]
 asyncio_mode = "auto"
-addopts = "--cov=src/ai_qa --cov-report=term-missing --cov-fail-under=50"
+addopts = "--cov=src/ai_qa --cov-report=term-missing --cov-fail-under=80"
 markers = [
     "integration: mark a test as an integration test",
+    "live_provider: real provider model-discovery test; skipped unless TEST_*_KEY is set",
 ]
 filterwarnings = [
-    "ignore::DeprecationWarning:browser_use.*",
-    "ignore::DeprecationWarning:starlette.*",
+    # browser_use uses asyncio.iscoroutinefunction which is deprecated in Python 3.14+
+    # This is a third-party library issue — we cannot fix it upstream
+    "ignore::DeprecationWarning:browser_use",
+    "ignore::DeprecationWarning:observability",
+    # SQLite ResourceWarning: SQLAlchemy connection pool cleanup happens in GC timing
+    # that is outside our control (triggered in third-party unittest.mock or pydantic code)
+    "ignore::ResourceWarning:sqlalchemy",
+    "ignore::ResourceWarning:unittest",
 ]
 
 [tool.coverage.run]

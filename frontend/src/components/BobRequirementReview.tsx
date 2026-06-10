@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { ExternalLink, Check } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { useState, useEffect } from "react";
+import { ExternalLink, Check } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 interface BobRequirementReviewProps {
   data: {
@@ -19,7 +19,7 @@ export function BobRequirementReview({
   totalPages,
   currentIndex,
   onApprove,
-  disabled
+  disabled,
 }: BobRequirementReviewProps) {
   const [markdown, setMarkdown] = useState(data.markdown);
 

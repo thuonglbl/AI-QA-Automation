@@ -29,7 +29,14 @@ export interface AgentMessage {
   /** ISO 8601 timestamp */
   timestamp: string;
   /** Message type for styling */
-  messageType: "text" | "code" | "error" | "success" | "warning" | "info" | "processing";
+  messageType:
+    | "text"
+    | "code"
+    | "error"
+    | "success"
+    | "warning"
+    | "info"
+    | "processing";
   /** Optional metadata */
   metadata?: Record<string, unknown>;
 }
@@ -86,11 +93,11 @@ export interface ActionResponse {
 
 /** Error types for error feedback */
 export type ErrorType =
-  | 'MCP_TIMEOUT'
-  | 'LLM_FAILURE'
-  | 'NETWORK_ERROR'
-  | 'CONFIG_ERROR'
-  | 'UNKNOWN_ERROR';
+  | "MCP_TIMEOUT"
+  | "LLM_FAILURE"
+  | "NETWORK_ERROR"
+  | "CONFIG_ERROR"
+  | "UNKNOWN_ERROR";
 
 /** Error info with 3-part structure (what, why, whatToDo) */
 export interface ErrorInfo {
@@ -131,7 +138,7 @@ export interface AgentConfig {
 export interface InputFieldConfig {
   name: string;
   label: string;
-  type: 'text' | 'url' | 'password' | 'textarea';
+  type: "text" | "url" | "password" | "textarea";
   placeholder?: string;
   required?: boolean;
   validation?: (value: string) => string | null;
@@ -139,7 +146,7 @@ export interface InputFieldConfig {
 
 /** ChatInputArea component props */
 export interface ChatInputAreaProps {
-  state: 'start' | 'processing' | 'review' | 'reject_feedback' | 'done';
+  state: "start" | "processing" | "review" | "reject_feedback" | "done";
   stepNumber: number;
   isLastStep: boolean;
   inputConfig?: {
@@ -189,7 +196,8 @@ export const AGENTS: Record<AgentName, AgentConfig> = {
           name: "jira_url",
           label: "Jira URL (Optional)",
           type: "url",
-          placeholder: "https://company.atlassian.net/jira/software/c/projects/TEST",
+          placeholder:
+            "https://company.atlassian.net/jira/software/c/projects/TEST",
           required: false,
         },
         {
@@ -198,9 +206,9 @@ export const AGENTS: Record<AgentName, AgentConfig> = {
           type: "password",
           placeholder: "Enter token (saved locally)",
           required: true,
-        }
-      ]
-    }
+        },
+      ],
+    },
   },
   Mary: {
     name: "Mary",

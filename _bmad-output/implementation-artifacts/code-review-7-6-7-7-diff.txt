@@ -1,0 +1,2888 @@
+﻿diff --git a/frontend/e2e/story-7-2-project-membership.spec.ts b/frontend/e2e/story-7-2-project-membership.spec.ts
+index 91e0665..00c8e9a 100644
+--- a/frontend/e2e/story-7-2-project-membership.spec.ts
++++ b/frontend/e2e/story-7-2-project-membership.spec.ts
+@@ -134,7 +134,7 @@ test.describe("Story 7.2 project membership access for standard users", () => {
+           headers: { Authorization: `Bearer ${adminToken}` },
+         });
+       }
+-    } catch (e) {
++    } catch (_e) {
+       // Ignore cleanup errors
+     } finally {
+       createdUserIds = [];
+diff --git a/frontend/e2e/story-7-3-project-selection.spec.ts b/frontend/e2e/story-7-3-project-selection.spec.ts
+index 6410c22..a6139a6 100644
+--- a/frontend/e2e/story-7-3-project-selection.spec.ts
++++ b/frontend/e2e/story-7-3-project-selection.spec.ts
+@@ -118,7 +118,7 @@ test.describe("Story 7.3 Alice Agent Project Selection Logic", () => {
+           headers: { Authorization: `Bearer ${adminToken}` },
+         });
+       }
+-    } catch (e) {
++    } catch (_e) {
+       // Ignore cleanup errors
+     } finally {
+       createdUserIds = [];
+@@ -210,7 +210,7 @@ test.describe("Story 7.3 Alice Agent Project Selection Logic", () => {
+     ).toBeVisible();
+   });
+ 
+-  test("[P0] should prompt user to select project when they have multiple accessible projects", async ({
++  test("[P0] should bind a thread per project and skip the chooser for multiple accessible projects (superseded by Story 7.7)", async ({
+     page,
+     request,
+     userFactory,
+@@ -260,20 +260,18 @@ test.describe("Story 7.3 Alice Agent Project Selection Logic", () => {
+     await page.getByRole("button", { name: "Sign In" }).click();
+     await expect(page.getByText(user.displayName)).toBeVisible();
+ 
+-    // 3. The app auto-creates a thread and runs Alice's project-selection flow
+-    // on login, so there is no separate "New Conversation" click in this state.
+-
+-    // 4. Verification
++    // 3. Story 7.7: the project chooser is removed. The app pre-creates one
++    //    starter thread per accessible project and lands directly on Alice's
++    //    provider step for the active thread's bound project.
+     await expect(
+-      page.getByRole("button", { name: projectOne.name }),
++      page.getByText(/Which AI provider would you like to use/i),
+     ).toBeVisible();
+     await expect(
+-      page.getByRole("button", { name: projectTwo.name }),
+-    ).toBeVisible();
++      page.getByText("Please select one project to proceed"),
++    ).toBeHidden();
+ 
+-    // 5. Select project and verify it binds
+-    await page.getByRole("button", { name: projectTwo.name }).click();
+-    // The selected project name is shown in a blue user bubble on the right
+-    await expect(page.getByText(projectTwo.name).last()).toBeVisible();
++    // 4. Both accessible projects are listed in the sidebar.
++    await expect(page.getByText(projectOne.name)).toBeVisible();
++    await expect(page.getByText(projectTwo.name)).toBeVisible();
+   });
+ });
+diff --git a/frontend/e2e/story-7-3-thread-creation.spec.ts b/frontend/e2e/story-7-3-thread-creation.spec.ts
+index e8e0206..a801000 100644
+--- a/frontend/e2e/story-7-3-thread-creation.spec.ts
++++ b/frontend/e2e/story-7-3-thread-creation.spec.ts
+@@ -124,7 +124,7 @@ test.describe("Story 7.3 Thread Creation and RBAC", () => {
+           headers: { Authorization: `Bearer ${adminToken}` },
+         });
+       }
+-    } catch (e) {
++    } catch (_e) {
+       // Ignore cleanup errors
+     } finally {
+       createdUserIds = [];
+@@ -167,7 +167,7 @@ test.describe("Story 7.3 Thread Creation and RBAC", () => {
+     // Setup request interception to wait for the thread creation
+     const threadPost1 = page.waitForResponse(
+       (response) =>
+-        response.url().includes("/api/threads") &&
++        new URL(response.url()).pathname.endsWith("/api/threads") &&
+         response.request().method() === "POST",
+     );
+ 
+@@ -180,7 +180,7 @@ test.describe("Story 7.3 Thread Creation and RBAC", () => {
+     // Now click "New Conversation" to create a fresh one
+     const threadPost2 = page.waitForResponse(
+       (response) =>
+-        response.url().includes("/api/threads") &&
++        new URL(response.url()).pathname.endsWith("/api/threads") &&
+         response.request().method() === "POST",
+     );
+     await page.getByRole("button", { name: "New Conversation" }).click();
+diff --git a/frontend/e2e/story-7-5-conversation-history.spec.ts b/frontend/e2e/story-7-5-conversation-history.spec.ts
+index 2be0b1e..385fdaf 100644
+--- a/frontend/e2e/story-7-5-conversation-history.spec.ts
++++ b/frontend/e2e/story-7-5-conversation-history.spec.ts
+@@ -114,7 +114,7 @@ test.describe("Story 7.5 Conversation History and Thread Resume", () => {
+           headers: { Authorization: `Bearer ${adminToken}` },
+         });
+       }
+-    } catch (e) {
++    } catch (_e) {
+       // Ignore cleanup errors
+     } finally {
+       createdUserIds = [];
+@@ -157,7 +157,7 @@ test.describe("Story 7.5 Conversation History and Thread Resume", () => {
+ 
+     const threadPost = page.waitForResponse(
+       (response) =>
+-        response.url().includes("/api/threads") &&
++        new URL(response.url()).pathname.endsWith("/api/threads") &&
+         response.request().method() === "POST",
+     );
+ 
+@@ -190,7 +190,7 @@ test.describe("Story 7.5 Conversation History and Thread Resume", () => {
+     // Use the Quick create + button to explicitly create a conversation
+     const quickThreadPost = page.waitForResponse(
+       (response) =>
+-        response.url().includes("/api/threads") &&
++        new URL(response.url()).pathname.endsWith("/api/threads") &&
+         response.request().method() === "POST",
+     );
+     await projectRow.hover();
+diff --git a/frontend/e2e/story-7-6-membership-removal.spec.ts b/frontend/e2e/story-7-6-membership-removal.spec.ts
+new file mode 100644
+index 0000000..1b47e56
+--- /dev/null
++++ b/frontend/e2e/story-7-6-membership-removal.spec.ts
+@@ -0,0 +1,447 @@
++import process from "node:process";
++import type { APIRequestContext } from "@playwright/test";
++import { test, expect } from "../support/fixtures";
++
++const apiBaseUrl = process.env.API_URL ?? "http://localhost:8000";
++const adminEmail =
++  process.env.ADMIN_EMAIL ?? process.env.E2E_ADMIN_EMAIL ?? "admin@example.com";
++const adminPassword =
++  process.env.ADMIN_PASSWORD ?? process.env.E2E_ADMIN_PASSWORD;
++
++if (!adminPassword) {
++  throw new Error(
++    "Story 7.6 E2E needs ADMIN_PASSWORD or E2E_ADMIN_PASSWORD in the environment.",
++  );
++}
++
++type RegisteredUser = {
++  id: string;
++  email: string;
++  display_name: string;
++  role: string;
++};
++
++type LoginResult = {
++  access_token: string;
++  user: RegisteredUser;
++};
++
++type AdminProject = {
++  id: string;
++  name: string;
++  description: string | null;
++};
++
++type Thread = {
++  id: string;
++  user_id: string;
++  project_id: string | null;
++};
++
++type AgentRun = {
++  id: string;
++  thread_id: string;
++  status: string;
++};
++
++async function registerStandardUser(
++  request: APIRequestContext,
++  user: { email: string; displayName: string; password: string },
++): Promise<RegisteredUser> {
++  const response = await request.post(`${apiBaseUrl}/auth/register`, {
++    data: {
++      email: user.email,
++      name: user.displayName,
++      password: user.password,
++    },
++  });
++  expect(response.ok()).toBeTruthy();
++  const payload = await response.json();
++  return payload.user as RegisteredUser;
++}
++
++async function login(
++  request: APIRequestContext,
++  email: string,
++  password: string,
++): Promise<LoginResult> {
++  const response = await request.post(`${apiBaseUrl}/auth/login`, {
++    data: { email, password },
++  });
++  expect(response.ok()).toBeTruthy();
++  return response.json() as Promise<LoginResult>;
++}
++
++async function ensureAdminToken(request: APIRequestContext): Promise<string> {
++  const loginResponse = await request.post(`${apiBaseUrl}/auth/login`, {
++    data: { email: adminEmail, password: adminPassword },
++  });
++  if (loginResponse.ok()) {
++    return ((await loginResponse.json()) as LoginResult).access_token;
++  }
++  throw new Error(
++    "Admin login failed. Story 7.6 E2E requires a valid admin account.",
++  );
++}
++
++async function createAdminProject(
++  request: APIRequestContext,
++  token: string,
++  name: string,
++): Promise<AdminProject> {
++  const response = await request.post(`${apiBaseUrl}/api/admin/projects`, {
++    headers: { Authorization: `Bearer ${token}` },
++    data: {
++      name,
++      description: `${name} description`,
++      confluence_base_url: `https://confluence.example.test/${encodeURIComponent(name)}`,
++    },
++  });
++  expect(response.ok()).toBeTruthy();
++  return response.json() as Promise<AdminProject>;
++}
++
++async function assignMembership(
++  request: APIRequestContext,
++  token: string,
++  projectId: string,
++  userId: string,
++): Promise<void> {
++  const response = await request.post(
++    `${apiBaseUrl}/api/admin/projects/${projectId}/memberships`,
++    {
++      headers: { Authorization: `Bearer ${token}` },
++      data: { user_id: userId, role: "member" },
++    },
++  );
++  expect(response.ok()).toBeTruthy();
++}
++
++async function removeMembership(
++  request: APIRequestContext,
++  token: string,
++  projectId: string,
++  userId: string,
++): Promise<void> {
++  const response = await request.delete(
++    `${apiBaseUrl}/api/admin/projects/${projectId}/memberships/${userId}`,
++    { headers: { Authorization: `Bearer ${token}` } },
++  );
++  expect(response.status()).toBe(204);
++}
++
++async function createThread(
++  request: APIRequestContext,
++  token: string,
++  userId: string,
++  projectId?: string,
++): Promise<Thread> {
++  const data: { user_id: string; project_id?: string } = { user_id: userId };
++  if (projectId) {
++    data.project_id = projectId;
++  }
++  const response = await request.post(`${apiBaseUrl}/api/threads`, {
++    headers: { Authorization: `Bearer ${token}` },
++    data,
++  });
++  expect(response.ok()).toBeTruthy();
++  return response.json() as Promise<Thread>;
++}
++
++async function createRun(
++  request: APIRequestContext,
++  token: string,
++  threadId: string,
++  status: string,
++): Promise<AgentRun> {
++  const response = await request.post(
++    `${apiBaseUrl}/api/threads/${threadId}/runs`,
++    {
++      headers: { Authorization: `Bearer ${token}` },
++      data: { status },
++    },
++  );
++  expect(response.ok()).toBeTruthy();
++  return response.json() as Promise<AgentRun>;
++}
++
++// The backend auth middleware resolves the session COOKIE before the
++// Authorization: Bearer header (see api/auth/middleware.py). Playwright's
++// `request` fixture shares a single cookie jar per test, so logging in as the
++// standard user would otherwise overwrite the admin's cookie and silently
++// downgrade subsequent admin-token calls to the standard user (403). Each
++// identity therefore gets its own isolated APIRequestContext / cookie jar.
++
++test.describe("Story 7.6 Membership Removal Access Enforcement", () => {
++  let createdUserIds: string[] = [];
++  let createdProjectIds: string[] = [];
++
++  test.afterEach(async ({ request }) => {
++    if (createdUserIds.length === 0 && createdProjectIds.length === 0) return;
++    try {
++      const adminToken = await ensureAdminToken(request);
++      for (const projectId of createdProjectIds) {
++        await request.delete(`${apiBaseUrl}/api/admin/projects/${projectId}`, {
++          headers: { Authorization: `Bearer ${adminToken}` },
++        });
++      }
++      for (const userId of createdUserIds) {
++        await request.delete(`${apiBaseUrl}/api/admin/users/${userId}`, {
++          headers: { Authorization: `Bearer ${adminToken}` },
++        });
++      }
++    } catch {
++      // Ignore cleanup errors so a failed assertion still reports cleanly.
++    } finally {
++      createdUserIds = [];
++      createdProjectIds = [];
++    }
++  });
++
++  test("[P0] hides threads of a removed project but keeps unbound and still-member threads (AC1)", async ({
++    request,
++    playwright,
++    userFactory,
++  }) => {
++    const adminToken = await ensureAdminToken(request);
++    const user = userFactory.create({
++      email: `story-7-6-list-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`,
++      displayName: "Story 7.6 List User",
++      password: "list-secret-7-6",
++      role: "standard",
++    });
++    const registeredUser = await registerStandardUser(request, user);
++    createdUserIds.push(registeredUser.id);
++
++    const removedProject = await createAdminProject(
++      request,
++      adminToken,
++      `S7.6 Removed ${Date.now()}`,
++    );
++    createdProjectIds.push(removedProject.id);
++    const keptProject = await createAdminProject(
++      request,
++      adminToken,
++      `S7.6 Kept ${Date.now()}`,
++    );
++    createdProjectIds.push(keptProject.id);
++
++    await assignMembership(request, adminToken, removedProject.id, registeredUser.id);
++    await assignMembership(request, adminToken, keptProject.id, registeredUser.id);
++
++    // Isolated cookie jar for the standard user (see note above).
++    const userContext = await playwright.request.newContext();
++    try {
++      const userLogin = await login(userContext, user.email, user.password);
++      const userToken = userLogin.access_token;
++
++      const removedThread = await createThread(
++        userContext,
++        userToken,
++        registeredUser.id,
++        removedProject.id,
++      );
++      const keptThread = await createThread(
++        userContext,
++        userToken,
++        registeredUser.id,
++        keptProject.id,
++      );
++      const unboundThread = await createThread(
++        userContext,
++        userToken,
++        registeredUser.id,
++      );
++
++      // Admin revokes the user's membership on the first project only. This uses
++      // the admin `request` jar, whose cookie is still the admin's.
++      await removeMembership(request, adminToken, removedProject.id, registeredUser.id);
++
++      const listResponse = await userContext.get(`${apiBaseUrl}/api/threads`, {
++        headers: { Authorization: `Bearer ${userToken}` },
++      });
++      expect(listResponse.ok()).toBeTruthy();
++      const threads = (await listResponse.json()) as Thread[];
++      const visibleIds = threads.map((thread) => thread.id);
++
++      expect(visibleIds).not.toContain(removedThread.id);
++      expect(visibleIds).toContain(keptThread.id);
++      expect(visibleIds).toContain(unboundThread.id);
++    } finally {
++      await userContext.dispose();
++    }
++  });
++
++  test("[P0] denies every project-scoped thread endpoint with a generic 404 and no detail leak (AC2)", async ({
++    request,
++    playwright,
++    userFactory,
++  }) => {
++    const adminToken = await ensureAdminToken(request);
++    const user = userFactory.create({
++      email: `story-7-6-deny-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`,
++      displayName: "Story 7.6 Deny User",
++      password: "deny-secret-7-6",
++      role: "standard",
++    });
++    const registeredUser = await registerStandardUser(request, user);
++    createdUserIds.push(registeredUser.id);
++
++    const removedProject = await createAdminProject(
++      request,
++      adminToken,
++      `S7.6 Deny Removed ${Date.now()}`,
++    );
++    createdProjectIds.push(removedProject.id);
++    const keptProject = await createAdminProject(
++      request,
++      adminToken,
++      `S7.6 Deny Kept ${Date.now()}`,
++    );
++    createdProjectIds.push(keptProject.id);
++
++    await assignMembership(request, adminToken, removedProject.id, registeredUser.id);
++    await assignMembership(request, adminToken, keptProject.id, registeredUser.id);
++
++    // Isolated cookie jar for the standard user (see note above).
++    const userContext = await playwright.request.newContext();
++    try {
++      const userLogin = await login(userContext, user.email, user.password);
++      const userToken = userLogin.access_token;
++      const authHeaders = { Authorization: `Bearer ${userToken}` };
++
++      const boundThread = await createThread(
++        userContext,
++        userToken,
++        registeredUser.id,
++        removedProject.id,
++      );
++      const keptThread = await createThread(
++        userContext,
++        userToken,
++        registeredUser.id,
++        keptProject.id,
++      );
++      // Create a run while still a member so the PATCH endpoint has a real run id.
++      const run = await createRun(userContext, userToken, boundThread.id, "running");
++
++      // Membership revoked (admin jar): every project-scoped endpoint on
++      // boundThread must now return a generic 404 with no thread/project/
++      // artifact/agent-run detail.
++      await removeMembership(request, adminToken, removedProject.id, registeredUser.id);
++
++      const validConversation = {
++        conversation: {
++          messages: [],
++          current_step: 1,
++          status: "start",
++          current_agent: "Alice",
++          updated_at: new Date().toISOString(),
++        },
++      };
++
++      const deniedRequests: Array<{
++        label: string;
++        send: () => Promise<import("@playwright/test").APIResponse>;
++      }> = [
++        {
++          label: "GET /threads/{id}",
++          send: () =>
++            userContext.get(`${apiBaseUrl}/api/threads/${boundThread.id}`, {
++              headers: authHeaders,
++            }),
++        },
++        {
++          label: "GET /threads/{id}/conversation",
++          send: () =>
++            userContext.get(
++              `${apiBaseUrl}/api/threads/${boundThread.id}/conversation`,
++              { headers: authHeaders },
++            ),
++        },
++        {
++          label: "POST /threads/{id}/conversation",
++          send: () =>
++            userContext.post(
++              `${apiBaseUrl}/api/threads/${boundThread.id}/conversation`,
++              { headers: authHeaders, data: validConversation },
++            ),
++        },
++        {
++          label: "GET /threads/{id}/messages",
++          send: () =>
++            userContext.get(
++              `${apiBaseUrl}/api/threads/${boundThread.id}/messages`,
++              { headers: authHeaders },
++            ),
++        },
++        {
++          label: "POST /threads/{id}/messages",
++          send: () =>
++            userContext.post(
++              `${apiBaseUrl}/api/threads/${boundThread.id}/messages`,
++              {
++                headers: authHeaders,
++                data: { role: "user", content: "should not be accepted" },
++              },
++            ),
++        },
++        {
++          label: "POST /threads/{id}/runs",
++          send: () =>
++            userContext.post(`${apiBaseUrl}/api/threads/${boundThread.id}/runs`, {
++              headers: authHeaders,
++              data: { status: "running" },
++            }),
++        },
++        {
++          label: "PATCH /threads/{id}/runs/{run_id}",
++          send: () =>
++            userContext.patch(
++              `${apiBaseUrl}/api/threads/${boundThread.id}/runs/${run.id}`,
++              {
++                headers: authHeaders,
++                data: { status: "completed" },
++              },
++            ),
++        },
++      ];
++
++      const leakNeedles = [
++        removedProject.name,
++        "confluence",
++        "conversation_data",
++        "agent_runs",
++        "password",
++      ];
++
++      for (const denied of deniedRequests) {
++        const response = await denied.send();
++        expect(response.status(), `${denied.label} should be denied`).toBe(404);
++        const body = await response.json();
++        // Generic, detail-free denial mirroring require_project_member_or_admin.
++        expect(body.detail, `${denied.label} detail`).toBe("Resource not found");
++        const serialized = JSON.stringify(body);
++        for (const needle of leakNeedles) {
++          expect(
++            serialized,
++            `${denied.label} must not leak "${needle}"`,
++          ).not.toContain(needle);
++        }
++      }
++
++      // Control: the owner is still a member of keptProject, so its bound thread
++      // remains fully accessible ΓÇö proving the gate is per-project, not global.
++      const keptResponse = await userContext.get(
++        `${apiBaseUrl}/api/threads/${keptThread.id}`,
++        { headers: authHeaders },
++      );
++      expect(keptResponse.ok()).toBeTruthy();
++      const keptBody = (await keptResponse.json()) as Thread;
++      expect(keptBody.id).toBe(keptThread.id);
++      expect(keptBody.project_id).toBe(keptProject.id);
++    } finally {
++      await userContext.dispose();
++    }
++  });
++});
+diff --git a/frontend/src/App.test.tsx b/frontend/src/App.test.tsx
+index e42df2a..0559bd6 100644
+--- a/frontend/src/App.test.tsx
++++ b/frontend/src/App.test.tsx
+@@ -3,7 +3,6 @@ import {
+   render,
+   screen,
+   waitFor,
+-  within,
+ } from "@testing-library/react";
+ import { beforeEach, describe, expect, it, vi } from "vitest";
+ import App from "@/App";
+@@ -12,6 +11,7 @@ import { ProjectProvider } from "@/contexts/ProjectContext";
+ 
+ const websocketMock = vi.hoisted(() => ({
+   projectIds: [] as Array<string | null>,
++  threadIds: [] as Array<string | null>,
+   sentMessages: [] as unknown[],
+   messageQueue: [] as unknown[],
+   messages: [] as unknown[],
+@@ -27,11 +27,12 @@ vi.mock("@/hooks/useWebSocket", () => ({
+     const projectId = params?.projectId ?? null;
+     const threadId = params?.threadId ?? null;
+     websocketMock.projectIds.push(projectId);
++    websocketMock.threadIds.push(threadId);
+     return {
+       isConnected:
+         websocketMock.isConnectedOverride !== null
+           ? websocketMock.isConnectedOverride
+-          : Boolean(projectId),
++          : Boolean(projectId || threadId),
+       error: null,
+       lastMessage: null,
+       messageQueue: websocketMock.messageQueue,
+@@ -42,13 +43,21 @@ vi.mock("@/hooks/useWebSocket", () => ({
+       },
+       sendMessage: (message: unknown) => {
+         // Mirror the real hook: messages are only sent when a project/thread
+-        // scope is active. Otherwise the send is a no-op.
++        // scope is active, and the active scope ids are attached to the payload.
+         if (!projectId && !threadId) return;
+-        websocketMock.sentMessages.push(
+-          typeof message === "object" && message !== null && projectId
+-            ? { ...message, projectId, project_id: projectId }
+-            : message,
+-        );
++        let payload = message as Record<string, unknown> | unknown;
++        if (typeof message === "object" && message !== null) {
++          payload = { ...(message as Record<string, unknown>) };
++          if (projectId) {
++            (payload as Record<string, unknown>).projectId = projectId;
++            (payload as Record<string, unknown>).project_id = projectId;
++          }
++          if (threadId) {
++            (payload as Record<string, unknown>).threadId = threadId;
++            (payload as Record<string, unknown>).thread_id = threadId;
++          }
++        }
++        websocketMock.sentMessages.push(payload);
+       },
+       reconnect: vi.fn(),
+     };
+@@ -75,6 +84,14 @@ vi.mock("@/hooks/usePipelineState", () => ({
+   }),
+ }));
+ 
++// Tracks the per-project starter-thread bootstrap (GET/POST /threads).
++const threadMock = vi.hoisted(() => ({
++  existing: [] as Array<Record<string, unknown>>,
++  created: [] as Array<Record<string, unknown>>,
++  postedProjectIds: [] as Array<string | null>,
++  postCount: 0,
++}));
++
+ function jsonResponse(body: unknown, status = 200) {
+   return Promise.resolve({
+     ok: status >= 200 && status < 300,
+@@ -106,22 +123,59 @@ const secondProject = {
+   name: "Finance Automation",
+ };
+ 
+-function mockFetchForUser(projects: unknown[]) {
+-  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+-    const url = String(input);
+-    if (url === "/auth/status") {
+-      return jsonResponse({
+-        authenticated: true,
+-        email: "member@example.com",
+-        name: "Member",
+-        role: "user",
+-      });
+-    }
+-    if (url === "/api/projects") {
+-      return jsonResponse(projects);
+-    }
+-    return jsonResponse({}, 404);
+-  });
++function mockFetchForUser(projects: Array<Record<string, unknown>>) {
++  vi.spyOn(globalThis, "fetch").mockImplementation(
++    (input: RequestInfo | URL, init?: RequestInit) => {
++      const url = String(input);
++      const method = (init?.method ?? "GET").toUpperCase();
++
++      if (url === "/auth/status") {
++        return jsonResponse({
++          authenticated: true,
++          id: "user-1",
++          email: "member@example.com",
++          name: "Member",
++          role: "user",
++        });
++      }
++      if (url === "/api/projects") {
++        return jsonResponse(projects);
++      }
++      if (url.startsWith("/api/projects/") && url.endsWith("/artifacts")) {
++        return jsonResponse([]);
++      }
++      if (url === "/api/threads") {
++        if (method === "POST") {
++          const body = init?.body ? JSON.parse(String(init.body)) : {};
++          threadMock.postCount += 1;
++          threadMock.postedProjectIds.push(body.project_id ?? null);
++          const now = new Date(
++            2026,
++            0,
++            1,
++            0,
++            0,
++            threadMock.postCount,
++          ).toISOString();
++          const thread = {
++            id: `thread-${body.project_id ?? "unbound"}-${threadMock.postCount}`,
++            user_id: body.user_id ?? "user-1",
++            project_id: body.project_id ?? null,
++            title: null,
++            is_archived: false,
++            created_at: now,
++            updated_at: now,
++            current_step: 1,
++            status: "start",
++          };
++          threadMock.created.push(thread);
++          return jsonResponse(thread);
++        }
++        return jsonResponse([...threadMock.existing, ...threadMock.created]);
++      }
++      return jsonResponse({}, 404);
++    },
++  );
+ }
+ 
+ function renderApp() {
+@@ -134,15 +188,25 @@ function renderApp() {
+   );
+ }
+ 
+-describe("App auth and Alice project resolution", () => {
++describe("App auth and workspace shell routing", () => {
+   beforeEach(() => {
+     window.localStorage?.clear();
+     vi.restoreAllMocks();
+     websocketMock.projectIds = [];
++    websocketMock.threadIds = [];
+     websocketMock.sentMessages = [];
+     websocketMock.messageQueue = [];
+     websocketMock.messages = [];
+     websocketMock.isLoaded = true;
++    websocketMock.isConnectedOverride = null;
++    pipelineStateMock.currentStep = 1;
++    pipelineStateMock.status = "idle";
++    pipelineStateMock.messages = [];
++    pipelineStateMock.isLoaded = true;
++    threadMock.existing = [];
++    threadMock.created = [];
++    threadMock.postedProjectIds = [];
++    threadMock.postCount = 0;
+   });
+ 
+   it("shows the login flow instead of the pipeline for unauthenticated users", async () => {
+@@ -159,7 +223,7 @@ describe("App auth and Alice project resolution", () => {
+     expect(screen.queryByText(/Browser Use Cloud/i)).not.toBeInTheDocument();
+   });
+ 
+-  it("routes standard users directly to Alice and shows the no-access message for zero projects", async () => {
++  it("shows the no-access message and creates no thread for zero accessible projects (AC4)", async () => {
+     mockFetchForUser([]);
+ 
+     renderApp();
+@@ -172,12 +236,11 @@ describe("App auth and Alice project resolution", () => {
+     expect(
+       screen.queryByText(/Which AI provider would you like to use/i),
+     ).not.toBeInTheDocument();
+-    expect(
+-      screen.queryByText(/choose where this run belongs/i),
+-    ).not.toBeInTheDocument();
++    // No starter thread is created when there are no accessible projects.
++    expect(threadMock.postCount).toBe(0);
+   });
+ 
+-  it("auto-selects the only project inside Alice before showing provider options", async () => {
++  it("ensures a starter thread for the single project and lands on Alice's provider step, no chooser (AC1/AC2)", async () => {
+     mockFetchForUser([project]);
+ 
+     renderApp();
+@@ -188,97 +251,112 @@ describe("App auth and Alice project resolution", () => {
+       ).toBeInTheDocument();
+     });
+     expect(screen.getByText(/Browser Use Cloud/i)).toBeInTheDocument();
++    // The chooser is gone entirely.
+     expect(
+-      screen.queryByText(/choose where this run belongs/i),
++      screen.queryByText(/Please select one project to proceed/i),
+     ).not.toBeInTheDocument();
+     expect(screen.queryByText(/admin dashboard/i)).not.toBeInTheDocument();
++    // Exactly one starter thread, bound to the only project.
++    await waitFor(() => expect(threadMock.postCount).toBe(1));
++    expect(threadMock.postedProjectIds).toEqual([project.id]);
+   });
+ 
+-  it("lets users choose from multiple projects in Alice and records the selected project as a right-aligned user message", async () => {
++  it("ensures one starter thread per project for multi-project users and never renders the chooser (AC2)", async () => {
+     mockFetchForUser([project, secondProject]);
+ 
+     renderApp();
+ 
++    // Lands directly on the provider step for the active thread's bound project.
++    await waitFor(() =>
++      expect(
++        screen.getByText(/Which AI provider would you like to use/i),
++      ).toBeInTheDocument(),
++    );
++    // The "select a project" chooser is never rendered.
+     expect(
+-      await screen.findByText("Please select one project to proceed"),
+-    ).toBeInTheDocument();
+-    expect(
+-      screen.queryByText(/Which AI provider would you like to use/i),
++      screen.queryByText(/Please select one project to proceed/i),
+     ).not.toBeInTheDocument();
+-
+-    fireEvent.click(screen.getByRole("button", { name: "Finance Automation" }));
+-
+-    expect(
+-      await screen.findByText(/Which AI provider would you like to use/i),
+-    ).toBeInTheDocument();
+-    const userMessage = (await screen.findAllByText("Finance Automation")).find(
+-      (element) => element.closest("div")?.className.includes("bg-[#3b82f6]"),
++    // One starter thread per accessible project (both lacked a thread).
++    await waitFor(() => expect(threadMock.postCount).toBe(2));
++    expect(new Set(threadMock.postedProjectIds)).toEqual(
++      new Set([project.id, secondProject.id]),
+     );
+-    expect(userMessage).toBeDefined();
+-    expect(
+-      within(
+-        userMessage?.closest("div")?.parentElement as HTMLElement,
+-      ).getByText("You"),
+-    ).toBeInTheDocument();
+   });
+ 
+-  it("does not treat a stored project id as resolved before Alice confirms the current session selection", async () => {
+-    window.localStorage.setItem("ai-qa-selected-project-id", project.id);
++  it("does not create duplicate starters for projects that already have a thread (AC2)", async () => {
++    threadMock.existing = [
++      {
++        id: "existing-thread-1",
++        user_id: "user-1",
++        project_id: project.id,
++        title: null,
++        is_archived: false,
++        created_at: "2026-01-02T00:00:00Z",
++        updated_at: "2026-01-02T00:00:00Z",
++        current_step: 1,
++        status: "start",
++      },
++    ];
+     mockFetchForUser([project, secondProject]);
+ 
+     renderApp();
+ 
+-    expect(
+-      await screen.findByText("Please select one project to proceed"),
+-    ).toBeInTheDocument();
+-    expect(
+-      screen.queryByText(/Which AI provider would you like to use/i),
+-    ).not.toBeInTheDocument();
+-    expect(websocketMock.projectIds).not.toContain(project.id);
++    await waitFor(() =>
++      expect(
++        screen.getByText(/Which AI provider would you like to use/i),
++      ).toBeInTheDocument(),
++    );
++    // Only the project without a thread gets a new starter.
++    await waitFor(() => expect(threadMock.postCount).toBe(1));
++    expect(threadMock.postedProjectIds).toEqual([secondProject.id]);
+   });
+ 
+-  it("uses the selected project id for the websocket connection and provider start payload", async () => {
+-    mockFetchForUser([project, secondProject]);
++  it("scopes the websocket by the active thread once a starter is bound (AC3)", async () => {
++    mockFetchForUser([project]);
+ 
+     renderApp();
+ 
+-    fireEvent.click(
+-      await screen.findByRole("button", { name: "Finance Automation" }),
++    await waitFor(() =>
++      expect(
++        screen.getByText(/Which AI provider would you like to use/i),
++      ).toBeInTheDocument(),
+     );
+-
+-    expect(
+-      await screen.findByText(/Which AI provider would you like to use/i),
+-    ).toBeInTheDocument();
++    // The websocket connects via the thread id (thread-scoped), not a project chooser.
+     await waitFor(() =>
+-      expect(websocketMock.projectIds).toContain("project-2"),
++      expect(
++        websocketMock.threadIds.some((id) => id && id.startsWith("thread-")),
++      ).toBe(true),
+     );
++  });
+ 
+-    fireEvent.click(screen.getByText(/Browser Use Cloud/i));
+-    fireEvent.change(
+-      screen.getByPlaceholderText("Enter your Browser Use API key..."),
+-      {
+-        target: { value: "test-key" },
+-      },
+-    );
+-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
++  it("creates an additional project-bound thread when New Conversation (+) is clicked (AC1/AC3)", async () => {
++    mockFetchForUser([project]);
+ 
+-    await waitFor(() => expect(websocketMock.sentMessages).toHaveLength(1));
+-    const payload = websocketMock.sentMessages[0] as {
+-      projectId: string;
+-      project_id: string;
+-      inputData: { provider: string };
+-    };
+-    expect(payload.projectId).toBe("project-2");
+-    expect(payload.project_id).toBe("project-2");
+-    expect(payload.inputData.provider).toBe("browser-use-cloud");
++    renderApp();
++
++    // Wait for the per-project starter bootstrap to settle (one thread).
++    await waitFor(() => expect(threadMock.postCount).toBe(1));
++    expect(threadMock.postedProjectIds).toEqual([project.id]);
++
++    // The per-project "+" action lives in the sidebar's Conversations folder.
++    const newConversationButton = await screen.findByTitle("New Conversation");
++    fireEvent.click(newConversationButton);
++
++    // A fresh thread is created, bound to the same project, with no chooser.
++    await waitFor(() => expect(threadMock.postCount).toBe(2));
++    expect(threadMock.postedProjectIds).toEqual([project.id, project.id]);
++    expect(
++      screen.queryByText(/Please select one project to proceed/i),
++    ).not.toBeInTheDocument();
+   });
+ 
+-  it("shows admin dashboard directly for admin users, bypassing project selection", async () => {
++  it("shows admin dashboard directly for admin users, bypassing the workspace shell (AC5)", async () => {
+     vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+       const url = String(input);
+       if (url === "/auth/status") {
+         return jsonResponse({
+           authenticated: true,
++          id: "admin-1",
+           email: "admin@example.com",
+           name: "Admin",
+           role: "admin",
+@@ -298,12 +376,11 @@ describe("App auth and Alice project resolution", () => {
+     await waitFor(() =>
+       expect(screen.getByText(/admin dashboard/i)).toBeInTheDocument(),
+     );
+-    expect(
+-      screen.queryByText(/choose where this run belongs/i),
+-    ).not.toBeInTheDocument();
+     expect(
+       screen.queryByText(/Please select one project to proceed/i),
+     ).not.toBeInTheDocument();
++    // Admins never enter the thread/project flow.
++    expect(threadMock.postCount).toBe(0);
+   });
+ });
+ 
+@@ -312,6 +389,7 @@ describe("Bob confirm parent URL popup", () => {
+     window.localStorage?.clear();
+     vi.restoreAllMocks();
+     websocketMock.projectIds = [];
++    websocketMock.threadIds = [];
+     websocketMock.sentMessages = [];
+     websocketMock.messageQueue = [];
+     websocketMock.isLoaded = true;
+@@ -320,6 +398,10 @@ describe("Bob confirm parent URL popup", () => {
+     pipelineStateMock.status = "idle";
+     pipelineStateMock.messages = [];
+     pipelineStateMock.isLoaded = true;
++    threadMock.existing = [];
++    threadMock.created = [];
++    threadMock.postedProjectIds = [];
++    threadMock.postCount = 0;
+   });
+ 
+   it("shows the confirm-parent popup when Bob sends the is_confirm_parent signal", async () => {
+@@ -328,7 +410,7 @@ describe("Bob confirm parent URL popup", () => {
+ 
+     const { rerender } = renderApp();
+ 
+-    // 1. Advance past Alice step (Step 1)
++    // 1. Advance past Alice step (Step 1) - lands directly on provider step.
+     expect(
+       await screen.findByText(/Which AI provider would you like to use/i),
+     ).toBeInTheDocument();
+@@ -342,7 +424,6 @@ describe("Bob confirm parent URL popup", () => {
+     fireEvent.click(screen.getByRole("button", { name: "Start" }));
+ 
+     // 2. Simulate being on the Bob step (step 2) and status review_request
+-    // We update the hoisted mock state and trigger a re-render or wait for it to be picked up
+     pipelineStateMock.currentStep = 2;
+     pipelineStateMock.status = "review_request";
+ 
+@@ -362,8 +443,6 @@ describe("Bob confirm parent URL popup", () => {
+       },
+     ];
+ 
+-    // Re-mount the app so the new mock values are read by usePipelineState.
+-    // Instead of unmount(), we use rerender() to preserve ProjectContext state!
+     rerender(
+       <AuthProvider>
+         <ProjectProvider>
+@@ -399,15 +478,16 @@ describe("Bob confirm parent URL popup", () => {
+     await waitFor(() => {
+       const lastMessage = websocketMock.sentMessages[
+         websocketMock.sentMessages.length - 1
+-      ] as any;
++      ] as Record<string, unknown>;
+       expect(lastMessage?.type).toBe("approve");
+     });
+     const sent = websocketMock.sentMessages[
+       websocketMock.sentMessages.length - 1
+-    ] as any;
++    ] as Record<string, unknown>;
+     expect(sent.step).toBe(2);
+-    expect(sent.projectId).toBe(project.id);
+-    expect(sent.data.confirmed_page_name).toBe(
++    // Thread-scoped: the active thread id is attached to the payload.
++    expect(String(sent.thread_id)).toMatch(/^thread-/);
++    expect((sent.data as Record<string, unknown>).confirmed_page_name).toBe(
+       "https://test.atlassian.net/wiki/spaces/TEST/pages/999/New",
+     );
+   });
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index f67096f..bd59f06 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useRef, Fragment } from "react";
+ import { useWebSocket } from "@/hooks/useWebSocket";
+ import { usePipelineState } from "@/hooks/usePipelineState";
+ import { useAuth } from "@/hooks/useAuth";
+-import { createThread } from "@/lib/threads";
++import { createThread, type Thread } from "@/lib/threads";
++import { apiFetch } from "@/lib/api";
+ import { ProviderSelector } from "@/components/ProviderSelector";
+ import { ModelAssignmentReview } from "@/components/ModelAssignmentReview";
+ import { ProcessingIndicator } from "@/components/ProcessingIndicator";
+@@ -133,18 +134,14 @@ function App() {
+     selectedProjectId,
+     isLoadingProjects,
+     projectError,
+-    isProjectReady,
+     selectProject,
+     clearSelectedProject,
+   } = useProject();
+ 
+-  const [autoSelectedProjectId, setAutoSelectedProjectId] = useState<
+-    string | null
+-  >(null);
+-  const [sessionSelectedProjectId, setSessionSelectedProjectId] = useState<
+-    string | null
+-  >(null);
+-  const [forcedNewProjectId, setForcedNewProjectId] = useState<string | null>(null);
++  // All membership-filtered threads for the user (across every accessible
++  // project). Drives both the "derive active project from active thread" logic
++  // and the per-project starter-thread bootstrap.
++  const [threads, setThreads] = useState<Thread[]>([]);
+ 
+   const [threadId, setThreadId] = useState<string | null>(() =>
+     localStorage.getItem("ai-qa-thread-id"),
+@@ -152,10 +149,16 @@ function App() {
+   const [threadCreationError, setThreadCreationError] = useState<string | null>(
+     null,
+   );
++  const [threadAccessNotice, setThreadAccessNotice] = useState<string | null>(
++    null,
++  );
+   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(
+     () => localStorage.getItem("ai-qa-sidebar-open") !== "false",
+   );
++  // Guards against duplicate starter-thread creation under React StrictMode
++  // double-invocation and re-renders.
+   const creatingThreadRef = useRef(false);
++  const ensuredProjectsRef = useRef<Set<string>>(new Set());
+ 
+   useEffect(() => {
+     const handleKeyDown = (e: KeyboardEvent) => {
+@@ -175,6 +178,8 @@ function App() {
+   useEffect(() => {
+     if (!isAuthenticated) {
+       setThreadId(null);
++      setThreads([]);
++      ensuredProjectsRef.current = new Set();
+       localStorage.removeItem("ai-qa-thread-id");
+       localStorage.removeItem("ai-qa-thread-user-id");
+       setThreadCreationError(null);
+@@ -186,6 +191,8 @@ function App() {
+       const storedThreadUser = localStorage.getItem("ai-qa-thread-user-id");
+       if (storedThreadUser && storedThreadUser !== user.id) {
+         setThreadId(null);
++        setThreads([]);
++        ensuredProjectsRef.current = new Set();
+         localStorage.removeItem("ai-qa-thread-id");
+         localStorage.removeItem("ai-qa-thread-user-id");
+         setThreadCreationError(null);
+@@ -193,54 +200,89 @@ function App() {
+     }
+   }, [isAuthenticated, user]);
+ 
++  // Ensure exactly one starter conversation thread per accessible project.
++  // Fetch the membership-filtered thread list once, then create a starter only
++  // for projects that have no thread yet. Zero projects => create nothing.
+   useEffect(() => {
+     const userId = user?.id;
+     if (
+-      isAuthenticated &&
+-      userId &&
+-      !threadId &&
+-      !creatingThreadRef.current &&
+-      !threadCreationError &&
+-      !isLoadingProjects &&
+-      projects.length > 0
++      !isAuthenticated ||
++      !userId ||
++      isLoadingProjects ||
++      projects.length === 0 ||
++      creatingThreadRef.current ||
++      threadCreationError
+     ) {
+-      creatingThreadRef.current = true;
+-      setThreadCreationError(null);
+-      // If the user belongs to exactly one project, bind the thread to it at
+-      // creation time. This ensures the auto-created thread is immediately
+-      // associated with the project so it shows up under the project's
+-      // "Conversations" folder in the sidebar (instead of staying unbound).
+-      const autoProjectId =
+-        projects.length === 1 ? (projects[0]?.id ?? null) : null;
+-      createThread(userId, autoProjectId)
+-        .then((thread) => {
+-          setThreadId(thread.id);
+-          localStorage.setItem("ai-qa-thread-id", thread.id);
+-          localStorage.setItem("ai-qa-thread-user-id", userId);
+-        })
+-        .catch((err) => {
+-          console.error("Failed to create thread:", err);
+-          setThreadCreationError(
+-            "Failed to initialize conversation thread. Please check your connection and try again.",
+-          );
+-        })
+-        .finally(() => {
+-          creatingThreadRef.current = false;
+-        });
++      return;
+     }
++
++    creatingThreadRef.current = true;
++    (async () => {
++      try {
++        const existing = await apiFetch<Thread[]>("/threads");
++        const projectsWithThread = new Set(
++          existing
++            .map((t) => t.project_id)
++            .filter((id): id is string => Boolean(id)),
++        );
++        const created: Thread[] = [];
++        for (const project of projects) {
++          if (
++            projectsWithThread.has(project.id) ||
++            ensuredProjectsRef.current.has(project.id)
++          ) {
++            continue;
++          }
++          // Mark before awaiting so StrictMode double-invocation and re-renders
++          // never POST a duplicate starter for the same project.
++          ensuredProjectsRef.current.add(project.id);
++          const thread = await createThread(userId, project.id);
++          created.push(thread);
++        }
++        const allThreads = [...existing, ...created];
++        setThreads(allThreads);
++
++        // Pick a sensible default active thread: keep the persisted thread if it
++        // is still accessible, else the most recently updated accessible thread.
++        setThreadId((current) => {
++          const stored = current ?? localStorage.getItem("ai-qa-thread-id");
++          if (stored && allThreads.some((t) => t.id === stored)) {
++            return stored;
++          }
++          const mostRecent = [...allThreads].sort(
++            (a, b) =>
++              new Date(b.updated_at || b.created_at).getTime() -
++              new Date(a.updated_at || a.created_at).getTime(),
++          )[0];
++          const next = mostRecent?.id ?? null;
++          if (next) {
++            localStorage.setItem("ai-qa-thread-id", next);
++            localStorage.setItem("ai-qa-thread-user-id", userId);
++          }
++          return next;
++        });
++      } catch (err) {
++        console.error("Failed to ensure project threads:", err);
++        setThreadCreationError(
++          "Failed to initialize conversation thread. Please check your connection and try again.",
++        );
++      } finally {
++        creatingThreadRef.current = false;
++      }
++    })();
+   }, [
+     isAuthenticated,
+     user,
+-    threadId,
+-    threadCreationError,
+     isLoadingProjects,
+     projects,
++    threadCreationError,
+   ]);
+ 
+-  const confirmedProjectId =
+-    isProjectReady && sessionSelectedProjectId === selectedProjectId
+-      ? selectedProjectId
+-      : null;
++  // The active project is derived from the active thread's immutable
++  // project_id (Story 7.3/7.5). There is no chooser and no rebind path.
++  const activeThread = threads.find((t) => t.id === threadId) ?? null;
++  const activeProjectId = activeThread?.project_id ?? null;
++
+   const {
+     isConnected,
+     error: wsError,
+@@ -248,9 +290,27 @@ function App() {
+     consumeMessages,
+     sendMessage,
+   } = useWebSocket({
+-    projectId: !isAuthenticated || threadId ? null : confirmedProjectId,
++    projectId: isAuthenticated && !threadId ? activeProjectId : null,
+     threadId: isAuthenticated ? threadId : null,
+   });
++  const handleThreadDenied = useCallback(
++    (deniedThreadId: string) => {
++      // The thread is bound to a project the user can no longer access (or it
++      // no longer exists). Drop the stale thread without logging out so the
++      // user can pick another conversation or start a new one.
++      setThreadId((current) => (current === deniedThreadId ? null : current));
++      const stored = localStorage.getItem("ai-qa-thread-id");
++      if (stored === deniedThreadId) {
++        localStorage.removeItem("ai-qa-thread-id");
++        localStorage.removeItem("ai-qa-thread-user-id");
++      }
++      setThreadAccessNotice(
++        "This conversation is no longer available. Your access to its project may have been removed. Pick another conversation or start a new one.",
++      );
++    },
++    [],
++  );
++
+   const {
+     status,
+     currentStep,
+@@ -258,7 +318,22 @@ function App() {
+     isLoaded,
+     updateFromMessage,
+     addUserMessage,
+-  } = usePipelineState({ projectId: selectedProjectId, threadId });
++  } = usePipelineState({
++    projectId: selectedProjectId,
++    threadId,
++    onThreadDenied: handleThreadDenied,
++  });
++
++  // Derive and lock the active project from the active thread. When the user
++  // opens a thread, the provider/sidebar context follows that thread's bound
++  // project ΓÇö no chooser involved.
++  useEffect(() => {
++    if (!threadId) return;
++    const bound = threads.find((t) => t.id === threadId);
++    if (bound?.project_id && bound.project_id !== selectedProjectId) {
++      selectProject(bound.project_id);
++    }
++  }, [threadId, threads, selectedProjectId, selectProject]);
+ 
+   const [aliceState, setAliceState] = useState<AliceState>({
+     providerOptions: DEFAULT_PROVIDER_OPTIONS,
+@@ -296,16 +371,33 @@ function App() {
+     }));
+   }, []);
+ 
+-  const handleNewConversationInProject = useCallback((projectId: string) => {
+-    setThreadId(null);
+-    localStorage.removeItem("ai-qa-thread-id");
+-    localStorage.removeItem("ai-qa-thread-user-id");
+-    resetAliceConfiguration();
+-    setSessionSelectedProjectId(null);
+-    setAutoSelectedProjectId(null);
+-    setThreadCreationError(null);
+-    setForcedNewProjectId(projectId);
+-  }, [resetAliceConfiguration]);
++  const handleNewConversationInProject = useCallback(
++    (projectId: string) => {
++      const userId = user?.id;
++      if (!userId) return;
++      resetAliceConfiguration();
++      setThreadCreationError(null);
++      setThreadAccessNotice(null);
++      // Create a fresh thread bound to the chosen project and make it active
++      // directly ΓÇö no chooser round-trip.
++      createThread(userId, projectId)
++        .then((thread) => {
++          setThreads((prev) =>
++            prev.some((t) => t.id === thread.id) ? prev : [...prev, thread],
++          );
++          setThreadId(thread.id);
++          localStorage.setItem("ai-qa-thread-id", thread.id);
++          localStorage.setItem("ai-qa-thread-user-id", userId);
++        })
++        .catch((err) => {
++          console.error("Failed to create new conversation:", err);
++          setThreadCreationError(
++            "Failed to create a new conversation. Please check your connection and try again.",
++          );
++        });
++    },
++    [user, resetAliceConfiguration],
++  );
+ 
+   const hasSentStartRef = useRef(false);
+ 
+@@ -439,54 +531,6 @@ function App() {
+     [],
+   );
+ 
+-  useEffect(() => {
+-    if (!isAliceStep || isLoadingProjects || projects.length !== 1) return;
+-    const [onlyProject] = projects;
+-    if (!onlyProject || autoSelectedProjectId === onlyProject.id) return;
+-
+-    if (selectedProjectId && selectedProjectId !== onlyProject.id) return;
+-
+-    if (!selectedProjectId) {
+-      selectProject(onlyProject.id);
+-    }
+-    setAutoSelectedProjectId(onlyProject.id);
+-    setSessionSelectedProjectId(onlyProject.id);
+-  }, [
+-    autoSelectedProjectId,
+-    isLoadingProjects,
+-    isAliceStep,
+-    projects,
+-    selectProject,
+-    selectedProjectId,
+-  ]);
+-
+-  const handleProjectSelect = useCallback(
+-    (projectId: string) => {
+-      const project = projects.find((candidate) => candidate.id === projectId);
+-      if (!project) return;
+-
+-      resetAliceConfiguration();
+-      selectProject(project.id);
+-      setSessionSelectedProjectId(project.id);
+-
+-      // Notify Alice to bind the project and continue with provider selection
+-      sendMessage({
+-        type: "start",
+-        step: 1,
+-        inputData: {
+-          project_id: project.id,
+-        },
+-      });
+-    },
+-    [projects, resetAliceConfiguration, selectProject, sendMessage],
+-  );
+-
+-  useEffect(() => {
+-    if (forcedNewProjectId && isConnected && isLoaded && isAliceStep && !sessionSelectedProjectId) {
+-      handleProjectSelect(forcedNewProjectId);
+-      setForcedNewProjectId(null);
+-    }
+-  }, [forcedNewProjectId, isConnected, isLoaded, isAliceStep, sessionSelectedProjectId, handleProjectSelect]);
+ 
+   useEffect(() => {
+     if (messageQueue.length > 0) {
+@@ -541,8 +585,6 @@ function App() {
+         "Your selected project is no longer available. Please choose another project.",
+       );
+       resetAliceConfiguration();
+-      setAutoSelectedProjectId(null);
+-      setSessionSelectedProjectId(null);
+     }
+   }, [clearSelectedProject, wsError, resetAliceConfiguration]);
+ 
+@@ -694,11 +736,12 @@ function App() {
+     [selectedProjectId, sendMessage],
+   );
+ 
+-  // Check if we should show Alice-specific UI
++  // The active thread carries an immutable bound project. Provider/Alice UI is
++  // shown once that project's context is loaded into ProjectContext.
+   const hasConfirmedProject = Boolean(
++    activeProjectId &&
+     selectedProject &&
+-    selectedProjectId &&
+-    sessionSelectedProjectId === selectedProjectId,
++    selectedProjectId === activeProjectId,
+   );
+   // Show ProviderSelector only after Alice has resolved project context.
+   const showProviderSelector =
+@@ -780,6 +823,7 @@ function App() {
+                 setThreadId(id);
+                 localStorage.setItem("ai-qa-thread-id", id);
+                 if (user?.id) localStorage.setItem("ai-qa-thread-user-id", user.id);
++                setThreadAccessNotice(null);
+               }}
+               onNewConversationInProject={handleNewConversationInProject}
+             />
+@@ -918,73 +962,50 @@ function App() {
+               </button>
+             </div>
+           )}
++          {threadAccessNotice && (
++            <div
++              role="status"
++              data-testid="thread-access-notice"
++              className="bg-[#fffbeb] text-[#b45309] px-4 py-3 rounded text-sm mb-6 flex justify-between items-center gap-3 shadow-sm border border-[#fcd34d]"
++            >
++              <span>{threadAccessNotice}</span>
++              <button
++                onClick={() => setThreadAccessNotice(null)}
++                className="px-3 py-1 bg-[#f59e0b] text-white rounded hover:bg-[#d97706] transition-colors text-xs font-semibold flex-shrink-0"
++              >
++                Dismiss
++              </button>
++            </div>
++          )}
+ 
+           {/* Chat Content - Scrollable container */}
+           <div className="flex-1 bg-[#f8fafc] overflow-y-auto max-h-[calc(100vh-120px)]">
+             <div className="p-5 flex flex-col gap-4 min-h-0">
+-              {/* Alice Project Resolution - keep visible as the first chat message. */}
+-              {(!hasConfirmedProject || projects.length > 1) && (
+-                <div className="w-[40%] min-w-[18rem] max-w-xl self-start">
+-                  <div className="text-[11px] font-semibold mb-1 text-[#3b82f6]">
+-                    Alice
+-                  </div>
+-                  <div className="p-4 text-sm leading-relaxed bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm">
+-                    {isLoadingProjects ? (
+-                      <p>Loading your accessible projects...</p>
+-                    ) : projectError ? (
+-                      <p>{projectError}</p>
+-                    ) : projects.length === 0 ? (
+-                      <p>
+-                        You do not have access to any project yet. Please
+-                        contact an administrator to assign you to a project.
+-                      </p>
+-                    ) : projects.length > 1 ? (
+-                      <div className="space-y-3">
+-                        <p>Please select one project to proceed</p>
+-                        <div className="flex flex-col gap-2">
+-                          {projects.map((project) => {
+-                            const isSelectedProject =
+-                              sessionSelectedProjectId === project.id;
+-
+-                            return (
+-                              <button
+-                                id={`alice-project-option-${project.id}`}
+-                                key={project.id}
+-                                type="button"
+-                                onClick={() => handleProjectSelect(project.id)}
+-                                className={`rounded-xl border px-4 py-2.5 text-left font-semibold transition-all focus:outline-none focus:ring-2 focus:ring-[#3b82f6] ${
+-                                  isSelectedProject
+-                                    ? "border-[#3b82f6] bg-[#dbeafe] text-[#1d4ed8]"
+-                                    : "border-[#bfdbfe] bg-[#eff6ff] text-[#1d4ed8] hover:-translate-y-0.5 hover:border-[#60a5fa] hover:bg-[#dbeafe]"
+-                                }`}
+-                              >
+-                                {project.name}
+-                              </button>
+-                            );
+-                          })}
+-                        </div>
+-                      </div>
+-                    ) : null}
+-                  </div>
+-                </div>
+-              )}
+-
+-
+-
+-              {isAliceStep &&
+-                selectedProject &&
+-                hasConfirmedProject &&
+-                projects.length > 1 && (
+-                  <div className="w-[40%] min-w-0 self-end">
+-                    <div className="text-[11px] font-semibold mb-1 text-[#64748b] text-right">
+-                      You
++              {/* Alice info message: loading / error / no-access. The project
++                  is bound implicitly from the active thread, so there is no
++                  project chooser. */}
++              {!hasConfirmedProject &&
++                (isLoadingProjects || projectError || projects.length === 0) && (
++                  <div className="w-[40%] min-w-[18rem] max-w-xl self-start">
++                    <div className="text-[11px] font-semibold mb-1 text-[#3b82f6]">
++                      Alice
+                     </div>
+-                    <div className="p-4 text-sm leading-relaxed bg-[#3b82f6] text-white rounded-2xl rounded-br-sm">
+-                      {selectedProject.name}
++                    <div className="p-4 text-sm leading-relaxed bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm">
++                      {isLoadingProjects ? (
++                        <p>Loading your accessible projects...</p>
++                      ) : projectError ? (
++                        <p>{projectError}</p>
++                      ) : (
++                        <p>
++                          You do not have access to any project yet. Please
++                          contact an administrator to assign you to a project.
++                        </p>
++                      )}
+                     </div>
+                   </div>
+                 )}
+ 
++
+               {/* Alice Provider Selector - shown after project resolution */}
+               {hasConfirmedProject && aliceState.providerOptions.length > 0 && (
+                 <ProviderSelector
+diff --git a/frontend/src/hooks/usePipelineState.test.tsx b/frontend/src/hooks/usePipelineState.test.tsx
+new file mode 100644
+index 0000000..d0c6dec
+--- /dev/null
++++ b/frontend/src/hooks/usePipelineState.test.tsx
+@@ -0,0 +1,97 @@
++import { renderHook, waitFor } from "@testing-library/react";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import { usePipelineState } from "@/hooks/usePipelineState";
++import { ApiError } from "@/lib/api";
++
++const apiFetchMock = vi.hoisted(() => vi.fn());
++
++vi.mock("@/lib/api", async () => {
++  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
++  return {
++    ...actual,
++    apiFetch: apiFetchMock,
++  };
++});
++
++describe("usePipelineState thread access denial (Story 7.6 AC3)", () => {
++  beforeEach(() => {
++    apiFetchMock.mockReset();
++    window.localStorage.clear();
++  });
++
++  it("invokes onThreadDenied when a thread fetch is forbidden (membership removed)", async () => {
++    apiFetchMock.mockRejectedValue(
++      new ApiError("forbidden", "forbidden", 403),
++    );
++    const onThreadDenied = vi.fn();
++
++    renderHook(() =>
++      usePipelineState({
++        projectId: "project-1",
++        threadId: "thread-1",
++        onThreadDenied,
++      }),
++    );
++
++    await waitFor(() => expect(onThreadDenied).toHaveBeenCalledWith("thread-1"));
++  });
++
++  it("invokes onThreadDenied when a thread fetch is not found (generic 404)", async () => {
++    apiFetchMock.mockRejectedValue(
++      new ApiError("not_found", "not found", 404),
++    );
++    const onThreadDenied = vi.fn();
++
++    renderHook(() =>
++      usePipelineState({
++        projectId: null,
++        threadId: "thread-1",
++        onThreadDenied,
++      }),
++    );
++
++    await waitFor(() => expect(onThreadDenied).toHaveBeenCalledWith("thread-1"));
++  });
++
++  it("does not treat a successful load as a denial", async () => {
++    apiFetchMock.mockResolvedValue({
++      current_step: 2,
++      status: "review_request",
++      messages: [],
++      agent_runs: [],
++    });
++    const onThreadDenied = vi.fn();
++
++    const { result } = renderHook(() =>
++      usePipelineState({
++        projectId: null,
++        threadId: "thread-1",
++        onThreadDenied,
++      }),
++    );
++
++    await waitFor(() => expect(result.current.isLoaded).toBe(true));
++    expect(onThreadDenied).not.toHaveBeenCalled();
++    expect(result.current.currentStep).toBe(2);
++  });
++
++  it("does not fire denial for a project-only (no thread) forbidden response", async () => {
++    // Without a threadId, a forbidden project conversation must NOT be treated
++    // as a thread denial (the thread-denial recovery flow is thread-scoped).
++    apiFetchMock.mockRejectedValue(
++      new ApiError("forbidden", "forbidden", 403),
++    );
++    const onThreadDenied = vi.fn();
++
++    const { result } = renderHook(() =>
++      usePipelineState({
++        projectId: "project-1",
++        threadId: null,
++        onThreadDenied,
++      }),
++    );
++
++    await waitFor(() => expect(result.current.isLoaded).toBe(true));
++    expect(onThreadDenied).not.toHaveBeenCalled();
++  });
++});
+diff --git a/frontend/src/hooks/usePipelineState.ts b/frontend/src/hooks/usePipelineState.ts
+index baed7df..1587b1b 100644
+--- a/frontend/src/hooks/usePipelineState.ts
++++ b/frontend/src/hooks/usePipelineState.ts
+@@ -1,4 +1,4 @@
+-import { useState, useCallback, useEffect } from "react";
++import { useState, useCallback, useEffect, useRef } from "react";
+ import { apiFetch, ApiError } from "@/lib/api";
+ import type {
+   AgentMessage,
+@@ -39,7 +39,7 @@ export interface PipelineStateActions {
+ async function loadConversationFromAPI(params: {
+   projectId: string | null;
+   threadId: string | null;
+-}): Promise<Partial<PipelineState> | null> {
++}): Promise<Partial<PipelineState> | null | "denied"> {
+   const { projectId, threadId } = params;
+   try {
+     if (threadId) {
+@@ -106,12 +106,21 @@ async function loadConversationFromAPI(params: {
+       };
+     }
+   } catch (error) {
+-    // Silently ignore auth errors (expected when not logged in yet)
+-    if (
+-      error instanceof ApiError &&
+-      (error.kind === "auth" || error.kind === "forbidden" || error.status === 404)
+-    ) {
+-      return null;
++    if (error instanceof ApiError) {
++      // Thread-scoped access loss (e.g. project membership was revoked, or the
++      // thread no longer exists) returns 403/404. Signal a recoverable denial
++      // so the caller can clear the stale thread id without a global logout.
++      // Auth (401) errors are intentionally left to the global auth handler.
++      if (threadId && (error.kind === "forbidden" || error.kind === "not_found")) {
++        return "denied";
++      }
++      if (
++        error.kind === "auth" ||
++        error.kind === "forbidden" ||
++        error.status === 404
++      ) {
++        return null;
++      }
+     }
+     console.error("Failed to load conversation from API:", error);
+     return null;
+@@ -179,10 +188,15 @@ const initialState: PipelineState = {
+ export function usePipelineState(params: {
+   projectId: string | null;
+   threadId: string | null;
++  onThreadDenied?: (threadId: string) => void;
+ }): PipelineStateSelectors & PipelineStateActions {
+-  const { projectId, threadId } = params;
++  const { projectId, threadId, onThreadDenied } = params;
+   const [state, setState] = useState<PipelineState>(initialState);
+   const [isLoaded, setIsLoaded] = useState(false);
++  // Keep the latest handler in a ref so the load effect doesn't re-run (and
++  // re-fetch) whenever the caller passes a new callback identity.
++  const onThreadDeniedRef = useRef(onThreadDenied);
++  onThreadDeniedRef.current = onThreadDenied;
+ 
+   // Load conversation from API on mount
+   useEffect(() => {
+@@ -195,7 +209,19 @@ export function usePipelineState(params: {
+         return;
+       }
+       const saved = await loadConversationFromAPI({ projectId, threadId });
+-      if (!cancelled && saved) {
++      if (cancelled) {
++        return;
++      }
++      if (saved === "denied") {
++        // Access to this thread was revoked. Surface it so App can drop the
++        // stale thread id and prompt recovery; don't hydrate any state.
++        if (threadId) {
++          onThreadDeniedRef.current?.(threadId);
++        }
++        setIsLoaded(true);
++        return;
++      }
++      if (saved) {
+         let filteredMessages = saved.messages || [];
+         const isAliceStart =
+           (saved.status === "error" || saved.status === "start") &&
+diff --git a/src/ai_qa/api/auth/local.py b/src/ai_qa/api/auth/local.py
+index 20b9a30..589044f 100644
+--- a/src/ai_qa/api/auth/local.py
++++ b/src/ai_qa/api/auth/local.py
+@@ -7,6 +7,7 @@ from uuid import UUID
+ from fastapi import APIRouter, Depends, HTTPException, Request, Response
+ from pydantic import BaseModel, ConfigDict, EmailStr, Field
+ from sqlalchemy.orm import Session
++from starlette.concurrency import run_in_threadpool
+ 
+ from ai_qa.api.auth.session import SessionManager
+ from ai_qa.auth.service import AuthFailure, DuplicateUserError, authenticate_user, register_user
+@@ -86,7 +87,9 @@ def get_auth_router(settings: AppSettings) -> APIRouter:
+     ) -> dict[str, Any]:
+         """Register a new standard user."""
+         try:
+-            user = register_user(db, request.email, request.name, request.password)
++            user = await run_in_threadpool(
++                register_user, db, request.email, request.name, request.password
++            )
+         except DuplicateUserError as exc:
+             raise HTTPException(status_code=400, detail=_DUPLICATE_REGISTRATION_DETAIL) from exc
+         return {
+@@ -102,7 +105,7 @@ def get_auth_router(settings: AppSettings) -> APIRouter:
+         db: Session = DbSessionDependency,
+     ) -> dict[str, Any]:
+         """Log in a user and set a JWT session cookie."""
+-        user = authenticate_user(db, request.email, request.password)
++        user = await run_in_threadpool(authenticate_user, db, request.email, request.password)
+         if isinstance(user, AuthFailure):
+             raise HTTPException(status_code=401, detail=user.reason)
+ 
+@@ -173,6 +176,7 @@ def get_auth_router(settings: AppSettings) -> APIRouter:
+         if user and not user.is_expired:
+             return {
+                 "authenticated": True,
++                "id": user.user_id,
+                 "email": user.email,
+                 "name": user.name,
+                 "role": user.role,
+diff --git a/src/ai_qa/api/threads.py b/src/ai_qa/api/threads.py
+index 4329f85..020e2c8 100644
+--- a/src/ai_qa/api/threads.py
++++ b/src/ai_qa/api/threads.py
+@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
+ from ai_qa.api.auth.local import get_db_session_dependency
+ from ai_qa.api.auth.session import UserSession
+ from ai_qa.api.schemas import ActionResponse, ConversationData, ConversationSaveRequest
++from ai_qa.auth.service import ADMIN_ROLE
+ from ai_qa.threads.models import Thread
+ from ai_qa.threads.schemas import (
+     AgentRunCreate,
+@@ -21,7 +22,7 @@ from ai_qa.threads.schemas import (
+     ThreadResponse,
+     ThreadUpdate,
+ )
+-from ai_qa.threads.service import ThreadService
++from ai_qa.threads.service import ThreadAccessDeniedError, ThreadService
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -29,6 +30,11 @@ router = APIRouter(prefix="/threads", tags=["threads"])
+ 
+ DbSessionDependency = Depends(get_db_session_dependency)
+ 
++# Generic, detail-free denial reused for project-membership loss so the
++# response never reveals whether a thread/project exists (mirrors
++# require_project_member_or_admin in api/projects.py).
++RESOURCE_NOT_FOUND_DETAIL = "Resource not found"
++
+ 
+ def get_current_user(request: Request) -> UserSession:
+     user = getattr(request.state, "user", None)
+@@ -37,6 +43,27 @@ def get_current_user(request: Request) -> UserSession:
+     return cast(UserSession, user)
+ 
+ 
++def _authorize_thread(thread_id: UUID, user_id: UUID, db: Session) -> Thread:
++    """Load a thread and enforce ownership + current project membership.
++
++    Mapping:
++    - Missing thread -> 404 "Thread not found".
++    - Owned by a different user -> 403 (existing ownership behavior).
++    - Owner lost membership on the bound project -> generic 404 so no
++      thread/project/artifact/agent-run detail leaks.
++    """
++    thread = db.get(Thread, thread_id)
++    if not thread:
++        raise HTTPException(status_code=404, detail="Thread not found")
++    try:
++        ThreadService(db).assert_thread_access(thread, user_id)
++    except ThreadAccessDeniedError as exc:
++        raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND_DETAIL) from exc
++    except ValueError as exc:
++        raise HTTPException(status_code=403, detail="Forbidden thread access") from exc
++    return thread
++
++
+ @router.post("", response_model=ThreadResponse, status_code=201)
+ def create_thread(
+     thread_create: ThreadCreate,
+@@ -68,10 +95,11 @@ def get_user_threads_api(
+     request: Request,
+     db: Session = DbSessionDependency,
+ ) -> list[ThreadResponse]:
+-    """Get all threads for the current user."""
++    """Get all threads for the current user, scoped to current project access."""
+     current_user = get_current_user(request)
+     service = ThreadService(db)
+-    threads = service.get_user_threads(UUID(str(current_user.user_id)))
++    is_admin = (current_user.role or "").lower() == ADMIN_ROLE
++    threads = service.get_user_threads(UUID(str(current_user.user_id)), is_admin=is_admin)
+     return [ThreadResponse.model_validate(t) for t in threads]
+ 
+ 
+@@ -83,15 +111,8 @@ def get_thread_details_api(
+ ) -> ThreadDetailsResponse:
+     """Get full details of a thread for the current user."""
+     current_user = get_current_user(request)
+-    service = ThreadService(db)
+-    try:
+-        thread = service.get_thread_details(thread_id, UUID(str(current_user.user_id)))
+-        return ThreadDetailsResponse.model_validate(thread)
+-    except ValueError as e:
+-        err_msg = str(e)
+-        if "another user" in err_msg:
+-            raise HTTPException(status_code=403, detail=err_msg) from e
+-        raise HTTPException(status_code=404, detail=err_msg) from e
++    thread = _authorize_thread(thread_id, UUID(str(current_user.user_id)), db)
++    return ThreadDetailsResponse.model_validate(thread)
+ 
+ 
+ @router.patch("/{thread_id}", response_model=ThreadResponse)
+@@ -152,11 +173,7 @@ def get_thread_conversation(
+ ) -> ConversationData:
+     """Get thread's saved conversation history from database."""
+     current_user = get_current_user(request)
+-    thread = db.get(Thread, thread_id)
+-    if not thread:
+-        raise HTTPException(status_code=404, detail="Thread not found")
+-    if thread.user_id != UUID(str(current_user.user_id)):
+-        raise HTTPException(status_code=403, detail="Forbidden thread access")
++    thread = _authorize_thread(thread_id, UUID(str(current_user.user_id)), db)
+ 
+     if not thread.conversation_data:
+         return ConversationData()
+@@ -177,11 +194,7 @@ def save_thread_conversation(
+ ) -> ActionResponse:
+     """Save thread's conversation history to database."""
+     current_user = get_current_user(request)
+-    thread = db.get(Thread, thread_id)
+-    if not thread:
+-        raise HTTPException(status_code=404, detail="Thread not found")
+-    if thread.user_id != UUID(str(current_user.user_id)):
+-        raise HTTPException(status_code=403, detail="Forbidden thread access")
++    thread = _authorize_thread(thread_id, UUID(str(current_user.user_id)), db)
+ 
+     try:
+         thread.conversation_data = request_data.conversation.model_dump(mode="json")
+@@ -205,11 +218,7 @@ def get_thread_messages_api(
+     db: Session = DbSessionDependency,
+ ) -> list[MessageResponse]:
+     current_user = get_current_user(request)
+-    thread = db.get(Thread, thread_id)
+-    if not thread:
+-        raise HTTPException(status_code=404, detail="Thread not found")
+-    if thread.user_id != UUID(str(current_user.user_id)):
+-        raise HTTPException(status_code=403, detail="Forbidden thread access")
++    _authorize_thread(thread_id, UUID(str(current_user.user_id)), db)
+ 
+     service = ThreadService(db)
+     messages = service.get_thread_messages(thread_id)
+@@ -224,11 +233,7 @@ def add_thread_message_api(
+     db: Session = DbSessionDependency,
+ ) -> MessageResponse:
+     current_user = get_current_user(request)
+-    thread = db.get(Thread, thread_id)
+-    if not thread:
+-        raise HTTPException(status_code=404, detail="Thread not found")
+-    if thread.user_id != UUID(str(current_user.user_id)):
+-        raise HTTPException(status_code=403, detail="Forbidden thread access")
++    _authorize_thread(thread_id, UUID(str(current_user.user_id)), db)
+ 
+     service = ThreadService(db)
+     msg = service.add_message(thread_id, message.role, message.content)
+@@ -243,11 +248,7 @@ def create_agent_run_api(
+     db: Session = DbSessionDependency,
+ ) -> AgentRunResponse:
+     current_user = get_current_user(request)
+-    thread = db.get(Thread, thread_id)
+-    if not thread:
+-        raise HTTPException(status_code=404, detail="Thread not found")
+-    if thread.user_id != UUID(str(current_user.user_id)):
+-        raise HTTPException(status_code=403, detail="Forbidden thread access")
++    _authorize_thread(thread_id, UUID(str(current_user.user_id)), db)
+ 
+     service = ThreadService(db)
+     created_run = service.create_agent_run(
+@@ -265,11 +266,7 @@ def update_agent_run_api(
+     db: Session = DbSessionDependency,
+ ) -> AgentRunResponse:
+     current_user = get_current_user(request)
+-    thread = db.get(Thread, thread_id)
+-    if not thread:
+-        raise HTTPException(status_code=404, detail="Thread not found")
+-    if thread.user_id != UUID(str(current_user.user_id)):
+-        raise HTTPException(status_code=403, detail="Forbidden thread access")
++    _authorize_thread(thread_id, UUID(str(current_user.user_id)), db)
+ 
+     service = ThreadService(db)
+     try:
+diff --git a/src/ai_qa/projects/service.py b/src/ai_qa/projects/service.py
+index 459228f..55b86d3 100644
+--- a/src/ai_qa/projects/service.py
++++ b/src/ai_qa/projects/service.py
+@@ -5,7 +5,8 @@ from uuid import UUID
+ from sqlalchemy import select
+ from sqlalchemy.orm import Session, selectinload
+ 
+-from ai_qa.db.models import Project, ProjectMembership
++from ai_qa.auth.service import ADMIN_ROLE
++from ai_qa.db.models import Project, ProjectMembership, User
+ 
+ 
+ def get_user_projects(db: Session, user_id: UUID) -> list[Project]:
+@@ -19,3 +20,28 @@ def get_user_projects(db: Session, user_id: UUID) -> list[Project]:
+     )
+     projects = db.execute(query).scalars().unique().all()
+     return list(projects)
++
++
++def is_project_member(db: Session, user_id: UUID, project_id: UUID) -> bool:
++    """Return True when an active membership row links the user to the project.
++
++    Membership removal is a hard delete of the row, so a simple presence check
++    is the source of truth for current access.
++    """
++    row = db.execute(
++        select(ProjectMembership.id)
++        .where(ProjectMembership.project_id == project_id)
++        .where(ProjectMembership.user_id == user_id)
++    ).first()
++    return row is not None
++
++
++def user_can_access_project(db: Session, user: User, project_id: UUID) -> bool:
++    """Return True when the user is a global admin or an active project member.
++
++    Mirrors the authorization semantics of ``require_project_member_or_admin``
++    (admin bypass + membership lookup) for use in non-HTTP/service contexts.
++    """
++    if user.role == ADMIN_ROLE:
++        return True
++    return is_project_member(db, user.id, project_id)
+diff --git a/src/ai_qa/threads/service.py b/src/ai_qa/threads/service.py
+index 6e087dd..381cd0a 100644
+--- a/src/ai_qa/threads/service.py
++++ b/src/ai_qa/threads/service.py
+@@ -10,6 +10,15 @@ from ai_qa.threads.models import AgentRun, Message, Thread
+ from ai_qa.threads.schemas import ThreadCreate, ThreadUpdate
+ 
+ 
++class ThreadAccessDeniedError(Exception):
++    """Raised when a user loses project-membership access to a bound thread.
++
++    Carries no resource details so the API layer can map it to a generic
++    ``404 Resource not found`` response, mirroring
++    ``require_project_member_or_admin`` and avoiding existence leaks.
++    """
++
++
+ class ThreadService:
+     def __init__(self, db: Session) -> None:
+         self.db = db
+@@ -217,29 +226,61 @@ class ThreadService:
+         self.db.refresh(run)
+         return run
+ 
+-    def get_user_threads(self, user_id: UUID) -> list[Thread]:
+-        """Get all non-archived threads for a user."""
++    def get_user_threads(self, user_id: UUID, *, is_admin: bool = False) -> list[Thread]:
++        """Get non-archived threads for a user, scoped to current project access.
++
++        For non-admins, threads bound to a project the user no longer belongs to
++        are excluded. Unbound threads (``project_id IS NULL``) and threads in
++        still-active memberships remain. Admins see all their own threads.
++        """
+         from sqlalchemy import select
+ 
+-        threads = (
+-            self.db.execute(
+-                select(Thread)
+-                .where(Thread.user_id == user_id)
+-                .where(Thread.is_archived.is_(False))
+-                .order_by(Thread.updated_at.desc())
++        from ai_qa.db.models import ProjectMembership
++
++        stmt = select(Thread).where(Thread.user_id == user_id).where(Thread.is_archived.is_(False))
++
++        if not is_admin:
++            member_project_ids = select(ProjectMembership.project_id).where(
++                ProjectMembership.user_id == user_id
+             )
+-            .scalars()
+-            .all()
+-        )
++            stmt = stmt.where(
++                Thread.project_id.is_(None) | Thread.project_id.in_(member_project_ids)
++            )
++
++        stmt = stmt.order_by(Thread.updated_at.desc())
++        threads = self.db.execute(stmt).scalars().all()
+         return list(threads)
+ 
++    def assert_thread_access(self, thread: Thread, user_id: UUID) -> None:
++        """Enforce ownership and current project membership for a thread.
++
++        Layered on top of ownership: a project-bound thread is only accessible
++        to its owner while that owner is a global admin or an active member of
++        the bound project.
++
++        Raises:
++            ValueError: if the thread is owned by a different user (existing
++                ownership semantics).
++            ThreadAccessDeniedError: if the owner has lost membership on the
++                thread's bound project (mapped to a generic 404 by the API).
++        """
++        if thread.user_id != user_id:
++            raise ValueError("Cannot access thread owned by another user")
++
++        if thread.project_id is not None:
++            from ai_qa.db.models import User
++            from ai_qa.projects.service import user_can_access_project
++
++            user = self.db.get(User, user_id)
++            if user is None or not user_can_access_project(self.db, user, thread.project_id):
++                raise ThreadAccessDeniedError()
++
+     def get_thread_details(self, thread_id: UUID, user_id: UUID) -> Thread:
+-        """Get full details of a thread for its owner."""
++        """Get full details of a thread for its owner with active project access."""
+         thread = self.db.get(Thread, thread_id)
+         if not thread:
+             raise ValueError(f"Thread {thread_id} not found")
+ 
+-        if thread.user_id != user_id:
+-            raise ValueError("Cannot access thread owned by another user")
++        self.assert_thread_access(thread, user_id)
+ 
+         return thread
+diff --git a/tests/api/test_auth_api.py b/tests/api/test_auth_api.py
+index edb02ee..35df2c2 100644
+--- a/tests/api/test_auth_api.py
++++ b/tests/api/test_auth_api.py
+@@ -133,3 +133,38 @@ def test_me_rejects_deactivated_user_after_token_issuance(auth_client: TestClien
+ 
+     assert me_response.status_code == 401
+     assert me_response.json()["detail"] == "Not authenticated"
++
++
++def test_auth_status_returns_profile_with_id_when_authenticated(auth_client: TestClient) -> None:
++    """Story 7.7 regression: /auth/status must return `id` so the page-reload
++    bootstrap (per-project starter threads) has `user.id` to work with."""
++    auth_client.post(
++        "/auth/register",
++        json={"email": "person@example.com", "name": "Person One", "password": "super-secret"},
++    )
++    login_response = auth_client.post(
++        "/auth/login",
++        json={"email": "person@example.com", "password": "super-secret"},
++    )
++    token = login_response.json()["access_token"]
++
++    status_response = auth_client.get(
++        "/auth/status",
++        headers={"Authorization": f"Bearer {token}"},
++    )
++
++    assert status_response.status_code == 200
++    data = status_response.json()
++    assert data["authenticated"] is True
++    assert data["id"]
++    assert data["email"] == "person@example.com"
++    assert data["name"] == "Person One"
++    assert data["role"] == "standard"
++    assert "password_hash" not in data
++
++
++def test_auth_status_reports_unauthenticated_without_session(auth_client: TestClient) -> None:
++    response = auth_client.get("/auth/status")
++
++    assert response.status_code == 200
++    assert response.json() == {"authenticated": False}
+diff --git a/tests/api/test_routes_extended.py b/tests/api/test_routes_extended.py
+index 29e7513..76783d6 100644
+--- a/tests/api/test_routes_extended.py
++++ b/tests/api/test_routes_extended.py
+@@ -202,3 +202,92 @@ def test_agent_start_exception(extended_client: TestClient, dummy_agent: DummyAg
+                     },
+                 )
+             mock_failed.assert_called_once()
++
++
++# ---------------------------------------------------------------------------
++# Story 7.6: Membership removal access enforcement (pipeline/WebSocket path)
++# ---------------------------------------------------------------------------
++
++
++@pytest.fixture
++def removed_member_client() -> Generator[tuple[TestClient, str]]:
++    """Client whose user owns a thread bound to a project they do NOT belong to."""
++    from ai_qa.db.models import Project
++
++    engine = create_engine(
++        "sqlite+pysqlite:///:memory:",
++        connect_args={"check_same_thread": False},
++        poolclass=StaticPool,
++    )
++    Base.metadata.create_all(engine)
++    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
++
++    def override_get_db_session() -> Generator[Session]:
++        session = session_factory()
++        try:
++            yield session
++        finally:
++            session.close()
++
++    app = create_app()
++    app.dependency_overrides[get_db_session_dependency] = override_get_db_session
++    client = TestClient(app)
++
++    settings = app.state.settings
++    session_manager = SessionManager(settings)
++
++    user_id = uuid.UUID("00000000-0000-0000-0000-0000000000aa")
++    project_id = uuid.UUID("00000000-0000-0000-0000-0000000000bb")
++    thread_id = uuid.UUID("00000000-0000-0000-0000-0000000000cc")
++
++    session = session_factory()
++    session.add(
++        User(
++            id=user_id,
++            email="removed@example.com",
++            display_name="Removed User",
++            password_hash="hash",
++            role="standard",
++            is_active=True,
++        )
++    )
++    session.add(Project(id=project_id, name="Bound Project", description="desc"))
++    # Thread bound to the project, but NO ProjectMembership row for the user.
++    session.add(Thread(id=thread_id, user_id=user_id, project_id=project_id))
++    session.commit()
++    session.close()
++
++    auth_session = session_manager.create_session(
++        {
++            "user_id": str(user_id),
++            "email": "removed@example.com",
++            "name": "Removed User",
++            "is_active": True,
++        }
++    )
++    token = session_manager.encode_session(auth_session)
++    client.cookies.set(settings.session_cookie_name, token)
++
++    yield client, str(thread_id)
++    app.dependency_overrides.clear()
++    engine.dispose()
++
++
++def test_pipeline_start_denied_for_removed_member(
++    removed_member_client: tuple[TestClient, str], dummy_agent: DummyAgent
++) -> None:
++    """Driving a project-bound thread without membership returns a generic 404.
++
++    Exercises the real _build_pipeline_context (no mock) so the pipeline/WebSocket
++    dispatch path is regression-covered: access is denied before the agent runs.
++    """
++    client, thread_id = removed_member_client
++
++    response = client.post(
++        "/api/start",
++        json={"step": 1, "thread_id": thread_id, "input_data": {"test": "data"}},
++    )
++
++    assert response.status_code == 404
++    assert response.json() == {"detail": "Resource not found"}
++    dummy_agent.handle_start.assert_not_called()  # type: ignore[attr-defined]
+diff --git a/tests/threads/test_service.py b/tests/threads/test_service.py
+index 9e1c84f..1603258 100644
+--- a/tests/threads/test_service.py
++++ b/tests/threads/test_service.py
+@@ -14,7 +14,7 @@ from ai_qa.db.base import Base
+ from ai_qa.db.models import Project, ProjectMembership, User
+ from ai_qa.threads.models import AgentRun, Message, Thread
+ from ai_qa.threads.schemas import ThreadCreate, ThreadUpdate
+-from ai_qa.threads.service import ThreadService
++from ai_qa.threads.service import ThreadAccessDeniedError, ThreadService
+ 
+ 
+ @pytest.fixture
+@@ -311,3 +311,138 @@ def test_get_user_threads_excludes_archived(db_session: Session, user: User) ->
+ 
+     threads = service.get_user_threads(user.id)
+     assert {t.id for t in threads} == {active.id}
++
++
++# ---------------------------------------------------------------------------
++# Story 7.6: Membership removal access enforcement
++# ---------------------------------------------------------------------------
++
++
++def _add_membership(db_session: Session, project_id: object, user_id: object) -> None:
++    db_session.add(ProjectMembership(project_id=project_id, user_id=user_id, role="member"))
++    db_session.commit()
++
++
++def test_get_user_threads_hides_removed_project_threads(
++    db_session: Session, user: User, project: Project
++) -> None:
++    """Threads bound to a project the user no longer belongs to are hidden."""
++    service = ThreadService(db_session)
++
++    # A second project the user is still a member of.
++    other_project = Project(name="Other Project", description="Other")
++    db_session.add(other_project)
++    db_session.commit()
++    _add_membership(db_session, other_project.id, user.id)
++
++    # No membership for `project` -> user has been removed from it.
++    removed = Thread(user_id=user.id, project_id=project.id, current_step=1, status="start")
++    unbound = Thread(user_id=user.id, project_id=None, current_step=1, status="start")
++    member_bound = Thread(
++        user_id=user.id, project_id=other_project.id, current_step=1, status="start"
++    )
++    db_session.add_all([removed, unbound, member_bound])
++    db_session.commit()
++
++    threads = service.get_user_threads(user.id)
++
++    assert {t.id for t in threads} == {unbound.id, member_bound.id}
++
++
++def test_get_user_threads_admin_sees_own_threads(db_session: Session, project: Project) -> None:
++    """An admin still sees their own threads even without project membership."""
++    admin = User(
++        email="admin@example.com", display_name="Admin", password_hash="hash", role="admin"
++    )
++    db_session.add(admin)
++    db_session.commit()
++
++    service = ThreadService(db_session)
++    bound = Thread(user_id=admin.id, project_id=project.id, current_step=1, status="start")
++    unbound = Thread(user_id=admin.id, project_id=None, current_step=1, status="start")
++    db_session.add_all([bound, unbound])
++    db_session.commit()
++
++    threads = service.get_user_threads(admin.id, is_admin=True)
++
++    assert {t.id for t in threads} == {bound.id, unbound.id}
++
++
++def test_assert_thread_access_denied_for_removed_member(
++    db_session: Session, user: User, project: Project
++) -> None:
++    """A bound thread is inaccessible once the owner loses project membership."""
++    service = ThreadService(db_session)
++    thread = Thread(user_id=user.id, project_id=project.id)
++    db_session.add(thread)
++    db_session.commit()
++
++    with pytest.raises(ThreadAccessDeniedError):
++        service.assert_thread_access(thread, user.id)
++
++
++def test_assert_thread_access_allows_active_member(
++    db_session: Session, user: User, project: Project
++) -> None:
++    """The owner keeps access while membership on the bound project is active."""
++    _add_membership(db_session, project.id, user.id)
++    service = ThreadService(db_session)
++    thread = Thread(user_id=user.id, project_id=project.id)
++    db_session.add(thread)
++    db_session.commit()
++
++    # Should not raise.
++    service.assert_thread_access(thread, user.id)
++
++
++def test_assert_thread_access_allows_admin_without_membership(
++    db_session: Session, project: Project
++) -> None:
++    """A global admin bypasses the project-membership requirement."""
++    admin = User(
++        email="admin2@example.com", display_name="Admin", password_hash="hash", role="admin"
++    )
++    db_session.add(admin)
++    db_session.commit()
++
++    service = ThreadService(db_session)
++    thread = Thread(user_id=admin.id, project_id=project.id)
++    db_session.add(thread)
++    db_session.commit()
++
++    # Should not raise despite no membership row.
++    service.assert_thread_access(thread, admin.id)
++
++
++def test_assert_thread_access_unbound_thread_allows_owner(db_session: Session, user: User) -> None:
++    """An unbound (personal) thread stays accessible to its owner."""
++    service = ThreadService(db_session)
++    thread = Thread(user_id=user.id, project_id=None)
++    db_session.add(thread)
++    db_session.commit()
++
++    service.assert_thread_access(thread, user.id)
++
++
++def test_assert_thread_access_rejects_different_owner(db_session: Session, user: User) -> None:
++    """A different owner still raises the ownership ValueError (not 404 path)."""
++    service = ThreadService(db_session)
++    thread = Thread(user_id=uuid4(), project_id=None)
++    db_session.add(thread)
++    db_session.commit()
++
++    with pytest.raises(ValueError, match="Cannot access thread owned by another user"):
++        service.assert_thread_access(thread, user.id)
++
++
++def test_get_thread_details_denied_after_membership_removal(
++    db_session: Session, user: User, project: Project
++) -> None:
++    """get_thread_details surfaces ThreadAccessDeniedError for a removed member."""
++    service = ThreadService(db_session)
++    thread = Thread(user_id=user.id, project_id=project.id)
++    db_session.add(thread)
++    db_session.commit()
++
++    with pytest.raises(ThreadAccessDeniedError):
++        service.get_thread_details(thread.id, user.id)
+diff --git a/tests/threads/test_threads_api.py b/tests/threads/test_threads_api.py
+index 939b835..9767a72 100644
+--- a/tests/threads/test_threads_api.py
++++ b/tests/threads/test_threads_api.py
+@@ -18,7 +18,7 @@ from ai_qa.auth.password import hash_password
+ from ai_qa.auth.service import STANDARD_ROLE
+ from ai_qa.db.base import Base
+ from ai_qa.db.models import Project, ProjectMembership, User
+-from ai_qa.threads.models import Thread
++from ai_qa.threads.models import AgentRun, Message, Thread
+ 
+ 
+ @pytest.fixture
+@@ -32,7 +32,14 @@ def thread_client() -> Generator[TestClient]:
+         engine,
+         tables=cast(
+             list[Table],
+-            [User.__table__, Project.__table__, Thread.__table__, ProjectMembership.__table__],
++            [
++                User.__table__,
++                Project.__table__,
++                Thread.__table__,
++                ProjectMembership.__table__,
++                Message.__table__,
++                AgentRun.__table__,
++            ],
+         ),
+     )
+     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+@@ -202,3 +209,164 @@ def test_bind_project_unauthorized(thread_client: TestClient) -> None:
+     )
+ 
+     assert response.status_code == 403
++
++
++# ---------------------------------------------------------------------------
++# Story 7.6: Membership removal access enforcement
++# ---------------------------------------------------------------------------
++
++RESOURCE_NOT_FOUND_DETAIL = "Resource not found"
++
++# Substrings that would indicate a thread/project/artifact/agent-run detail leak.
++_LEAK_MARKERS = (
++    "conversation_data",
++    "agent_runs",
++    "messages",
++    "project_id",
++    "user_id",
++    "current_step",
++    "title",
++    "confluence",
++)
++
++
++def _create_admin(client: TestClient, email: str) -> User:
++    session_gen = _session_from_override(client)
++    session = next(session_gen)
++    try:
++        user = User(
++            email=email,
++            display_name=email.split("@")[0],
++            password_hash=hash_password("super-secret"),
++            role="admin",
++            is_active=True,
++        )
++        session.add(user)
++        session.commit()
++        session.refresh(user)
++        session.expunge(user)
++        return user
++    finally:
++        session_gen.close()
++
++
++def _remove_membership(client: TestClient, project_id: str, user_id: str) -> None:
++    session_gen = _session_from_override(client)
++    session = next(session_gen)
++    try:
++        membership = (
++            session.query(ProjectMembership)
++            .filter(
++                ProjectMembership.project_id == UUID(project_id),
++                ProjectMembership.user_id == UUID(user_id),
++            )
++            .one()
++        )
++        session.delete(membership)
++        session.commit()
++    finally:
++        session_gen.close()
++
++
++def _create_bound_thread(client: TestClient, user: User, project: Project) -> str:
++    """Create a project-bound thread for a current member and return its id."""
++    _create_membership(client, str(project.id), str(user.id))
++    create_resp = client.post(
++        "/api/threads",
++        json={"user_id": str(user.id), "project_id": str(project.id)},
++        headers=_auth_headers(client, user),
++    )
++    assert create_resp.status_code == 201
++    return create_resp.json()["id"]
++
++
++def test_threads_list_hides_removed_project(thread_client: TestClient) -> None:
++    """A removed member no longer sees the project-bound thread in /threads."""
++    user = _create_user(thread_client, "member@example.com")
++    project = _create_project(thread_client, "Project X")
++    thread_id = _create_bound_thread(thread_client, user, project)
++
++    # Visible while still a member.
++    resp = thread_client.get("/api/threads", headers=_auth_headers(thread_client, user))
++    assert resp.status_code == 200
++    assert any(t["id"] == thread_id for t in resp.json())
++
++    # Remove membership -> thread is hidden.
++    _remove_membership(thread_client, str(project.id), str(user.id))
++    resp = thread_client.get("/api/threads", headers=_auth_headers(thread_client, user))
++    assert resp.status_code == 200
++    assert all(t["id"] != thread_id for t in resp.json())
++
++
++def test_removed_member_denied_on_all_thread_endpoints(thread_client: TestClient) -> None:
++    """Every project-scoped thread endpoint returns a detail-free 404 after removal."""
++    user = _create_user(thread_client, "member@example.com")
++    project = _create_project(thread_client, "Project X")
++    thread_id = _create_bound_thread(thread_client, user, project)
++    headers = _auth_headers(thread_client, user)
++
++    _remove_membership(thread_client, str(project.id), str(user.id))
++
++    requests = [
++        ("get", f"/api/threads/{thread_id}", None),
++        ("get", f"/api/threads/{thread_id}/conversation", None),
++        (
++            "post",
++            f"/api/threads/{thread_id}/conversation",
++            {"conversation": {"messages": [], "current_step": 1, "status": "start"}},
++        ),
++        ("get", f"/api/threads/{thread_id}/messages", None),
++        ("post", f"/api/threads/{thread_id}/messages", {"role": "user", "content": "hi"}),
++        ("post", f"/api/threads/{thread_id}/runs", {"status": "running"}),
++        (
++            "patch",
++            f"/api/threads/{thread_id}/runs/{uuid4()}",
++            {"status": "completed"},
++        ),
++    ]
++
++    for method, url, json_body in requests:
++        kwargs: dict[str, object] = {"headers": headers}
++        if json_body is not None:
++            kwargs["json"] = json_body
++        response = getattr(thread_client, method)(url, **kwargs)
++        assert response.status_code == 404, f"{method} {url} expected 404"
++        body = response.json()
++        assert body == {"detail": RESOURCE_NOT_FOUND_DETAIL}, f"{method} {url} leaked: {body}"
++        serialized = response.text.lower()
++        for marker in _LEAK_MARKERS:
++            assert marker not in serialized, f"{method} {url} leaked '{marker}'"
++
++
++def test_still_member_owner_keeps_access(thread_client: TestClient) -> None:
++    """The owner who is still a member can read the bound thread."""
++    user = _create_user(thread_client, "member@example.com")
++    project = _create_project(thread_client, "Project X")
++    thread_id = _create_bound_thread(thread_client, user, project)
++
++    response = thread_client.get(
++        f"/api/threads/{thread_id}", headers=_auth_headers(thread_client, user)
++    )
++    assert response.status_code == 200
++    assert response.json()["id"] == thread_id
++
++
++def test_admin_keeps_access_without_membership(thread_client: TestClient) -> None:
++    """A global admin can access their own project-bound thread without membership."""
++    admin = _create_admin(thread_client, "admin@example.com")
++    project = _create_project(thread_client, "Project X")
++
++    # Admin creates a project-bound thread (admin bypasses membership at creation).
++    create_resp = thread_client.post(
++        "/api/threads",
++        json={"user_id": str(admin.id), "project_id": str(project.id)},
++        headers=_auth_headers(thread_client, admin),
++    )
++    assert create_resp.status_code == 201
++    thread_id = create_resp.json()["id"]
++
++    response = thread_client.get(
++        f"/api/threads/{thread_id}", headers=_auth_headers(thread_client, admin)
++    )
++    assert response.status_code == 200
++    assert response.json()["id"] == thread_id
+diff --git a/frontend/e2e/story-7-7-workspace-shell.spec.ts b/frontend/e2e/story-7-7-workspace-shell.spec.ts
+new file mode 100644
+index 0000000..6cad358
+--- /dev/null
++++ b/frontend/e2e/story-7-7-workspace-shell.spec.ts
+@@ -0,0 +1,331 @@
++import process from "node:process";
++import type { APIRequestContext } from "@playwright/test";
++import { test, expect } from "../support/fixtures";
++
++const apiBaseUrl = process.env.API_URL ?? "http://localhost:8000";
++const adminEmail =
++  process.env.ADMIN_EMAIL ?? process.env.E2E_ADMIN_EMAIL ?? "admin@example.com";
++const adminPassword =
++  process.env.ADMIN_PASSWORD ?? process.env.E2E_ADMIN_PASSWORD;
++
++if (!adminPassword) {
++  throw new Error(
++    "Story 7.7 E2E needs ADMIN_PASSWORD or E2E_ADMIN_PASSWORD in the environment.",
++  );
++}
++
++type RegisteredUser = {
++  id: string;
++  email: string;
++  display_name: string;
++  role: string;
++};
++
++type LoginResult = {
++  access_token: string;
++  user: RegisteredUser;
++};
++
++type AdminProject = {
++  id: string;
++  name: string;
++  description: string | null;
++};
++
++async function registerStandardUser(
++  request: APIRequestContext,
++  user: { email: string; displayName: string; password: string },
++) {
++  const response = await request.post(`${apiBaseUrl}/auth/register`, {
++    data: {
++      email: user.email,
++      name: user.displayName,
++      password: user.password,
++    },
++  });
++  expect(response.ok()).toBeTruthy();
++  const payload = await response.json();
++  return payload.user as RegisteredUser;
++}
++
++async function ensureAdminToken(request: APIRequestContext): Promise<string> {
++  const loginResponse = await request.post(`${apiBaseUrl}/auth/login`, {
++    data: { email: adminEmail, password: adminPassword },
++  });
++  if (loginResponse.ok()) {
++    return ((await loginResponse.json()) as LoginResult).access_token;
++  }
++  throw new Error(
++    "Admin login failed. E2E tests require a valid admin account.",
++  );
++}
++
++async function createAdminProject(
++  request: APIRequestContext,
++  token: string,
++  name: string,
++): Promise<AdminProject> {
++  const response = await request.post(`${apiBaseUrl}/api/admin/projects`, {
++    headers: { Authorization: `Bearer ${token}` },
++    data: {
++      name,
++      description: `${name} description`,
++      confluence_base_url: `https://confluence.example.test/${encodeURIComponent(name)}`,
++    },
++  });
++  expect(response.ok()).toBeTruthy();
++  return response.json() as Promise<AdminProject>;
++}
++
++async function assignMembership(
++  request: APIRequestContext,
++  token: string,
++  projectId: string,
++  userId: string,
++) {
++  const response = await request.post(
++    `${apiBaseUrl}/api/admin/projects/${projectId}/memberships`,
++    {
++      headers: { Authorization: `Bearer ${token}` },
++      data: { user_id: userId, role: "member" },
++    },
++  );
++  expect(response.ok()).toBeTruthy();
++}
++
++test.describe("Story 7.7 standard user workspace shell routing", () => {
++  let createdUserIds: string[] = [];
++  let createdProjectIds: string[] = [];
++
++  test.beforeEach(async ({ page }) => {
++    await page.addInitScript(() => {
++      window.localStorage.removeItem("ai-qa-selected-project-id");
++      window.localStorage.removeItem("ai-qa-thread-id");
++      window.localStorage.removeItem("ai-qa-thread-user-id");
++      window.localStorage.removeItem("aiqa_access_token");
++    });
++  });
++
++  test.afterEach(async ({ request }) => {
++    if (createdUserIds.length === 0 && createdProjectIds.length === 0) return;
++    try {
++      const adminToken = await ensureAdminToken(request);
++      for (const projectId of createdProjectIds) {
++        await request.delete(`${apiBaseUrl}/api/admin/projects/${projectId}`, {
++          headers: { Authorization: `Bearer ${adminToken}` },
++        });
++      }
++      for (const userId of createdUserIds) {
++        await request.delete(`${apiBaseUrl}/api/admin/users/${userId}`, {
++          headers: { Authorization: `Bearer ${adminToken}` },
++        });
++      }
++    } catch (_e) {
++      // Ignore cleanup errors
++    } finally {
++      createdUserIds = [];
++      createdProjectIds = [];
++    }
++  });
++
++  test("[P0][AC1][AC2][AC3] single-project user lands directly in the workspace shell on a bound thread (no chooser)", async ({
++    page,
++    request,
++    userFactory,
++  }) => {
++    const adminToken = await ensureAdminToken(request);
++
++    const user = userFactory.create({
++      email: `story-7-7-one-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`,
++      displayName: "Story 7.7 One Project User",
++      password: "secretpassword",
++      role: "standard",
++    });
++    const registeredUser = await registerStandardUser(request, user);
++    createdUserIds.push(registeredUser.id);
++
++    const project = await createAdminProject(
++      request,
++      adminToken,
++      `S7.7 Solo ${Date.now()}`,
++    );
++    createdProjectIds.push(project.id);
++    await assignMembership(request, adminToken, project.id, registeredUser.id);
++
++    await page.goto("/");
++    await page.getByLabel("Email").fill(user.email);
++    await page.getByLabel("Password").fill(user.password);
++    await page.getByRole("button", { name: "Sign In" }).click();
++    await expect(page.getByText(user.displayName)).toBeVisible();
++
++    // Lands directly on Alice's provider step for the bound thread. No chooser.
++    await expect(
++      page.getByText(/Which AI provider would you like to use/i),
++    ).toBeVisible();
++    await expect(
++      page.getByText("Please select one project to proceed"),
++    ).toBeHidden();
++    // The bound project is shown in the sidebar (implicit project context).
++    await expect(page.getByText(project.name)).toBeVisible();
++
++    // The starter thread persists across reloads: the workspace shell, not the
++    // chooser, comes back. AC3 (project implicit from active thread).
++    await page.reload();
++    await expect(
++      page.getByText(/Which AI provider would you like to use/i),
++    ).toBeVisible();
++    await expect(
++      page.getByText("Please select one project to proceed"),
++    ).toBeHidden();
++  });
++
++  test("[P0][AC2][AC3] multi-project user gets one starter thread per project and never sees the chooser", async ({
++    page,
++    request,
++    userFactory,
++  }) => {
++    const adminToken = await ensureAdminToken(request);
++
++    const user = userFactory.create({
++      email: `story-7-7-multi-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`,
++      displayName: "Story 7.7 Multi Project User",
++      password: "secretpassword",
++      role: "standard",
++    });
++    const registeredUser = await registerStandardUser(request, user);
++    createdUserIds.push(registeredUser.id);
++
++    const projectOne = await createAdminProject(
++      request,
++      adminToken,
++      `S7.7 Proj One ${Date.now()}`,
++    );
++    createdProjectIds.push(projectOne.id);
++    await assignMembership(
++      request,
++      adminToken,
++      projectOne.id,
++      registeredUser.id,
++    );
++
++    const projectTwo = await createAdminProject(
++      request,
++      adminToken,
++      `S7.7 Proj Two ${Date.now()}`,
++    );
++    createdProjectIds.push(projectTwo.id);
++    await assignMembership(
++      request,
++      adminToken,
++      projectTwo.id,
++      registeredUser.id,
++    );
++
++    await page.goto("/");
++    await page.getByLabel("Email").fill(user.email);
++    await page.getByLabel("Password").fill(user.password);
++    await page.getByRole("button", { name: "Sign In" }).click();
++    await expect(page.getByText(user.displayName)).toBeVisible();
++
++    // No chooser, direct to provider step.
++    await expect(
++      page.getByText(/Which AI provider would you like to use/i),
++    ).toBeVisible();
++    await expect(
++      page.getByText("Please select one project to proceed"),
++    ).toBeHidden();
++
++    // Both accessible projects are present in the sidebar.
++    await expect(page.getByText(projectOne.name)).toBeVisible();
++    await expect(page.getByText(projectTwo.name)).toBeVisible();
++
++    // The backend has exactly one thread per accessible project for this user.
++    const userLogin = await request.post(`${apiBaseUrl}/auth/login`, {
++      data: { email: user.email, password: user.password },
++    });
++    expect(userLogin.ok()).toBeTruthy();
++    const token = ((await userLogin.json()) as LoginResult).access_token;
++    const threadsResponse = await request.get(`${apiBaseUrl}/api/threads`, {
++      headers: { Authorization: `Bearer ${token}` },
++    });
++    expect(threadsResponse.ok()).toBeTruthy();
++    const threads = (await threadsResponse.json()) as Array<{
++      project_id: string | null;
++    }>;
++    const boundProjectIds = threads
++      .map((t) => t.project_id)
++      .filter((id): id is string => Boolean(id));
++    expect(boundProjectIds).toContain(projectOne.id);
++    expect(boundProjectIds).toContain(projectTwo.id);
++    // Exactly one thread per project (no duplicates from the bootstrap).
++    expect(
++      boundProjectIds.filter((id) => id === projectOne.id),
++    ).toHaveLength(1);
++    expect(
++      boundProjectIds.filter((id) => id === projectTwo.id),
++    ).toHaveLength(1);
++  });
++
++  test("[P0][AC4] zero-project user sees the no-access message and no thread is created", async ({
++    page,
++    request,
++    userFactory,
++  }) => {
++    const user = userFactory.create({
++      email: `story-7-7-zero-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`,
++      displayName: "Story 7.7 Zero Project User",
++      password: "secretpassword",
++      role: "standard",
++    });
++    const registeredUser = await registerStandardUser(request, user);
++    createdUserIds.push(registeredUser.id);
++
++    await page.goto("/");
++    await page.getByLabel("Email").fill(user.email);
++    await page.getByLabel("Password").fill(user.password);
++    await page.getByRole("button", { name: "Sign In" }).click();
++    await expect(page.getByText(user.displayName)).toBeVisible();
++
++    await expect(
++      page.getByText(
++        "You do not have access to any project yet. Please contact an administrator to assign you to a project.",
++      ),
++    ).toBeVisible();
++    await expect(
++      page.getByText(/Which AI provider would you like to use/i),
++    ).toBeHidden();
++
++    // No starter thread is created for a user with no accessible projects.
++    const userLogin = await request.post(`${apiBaseUrl}/auth/login`, {
++      data: { email: user.email, password: user.password },
++    });
++    expect(userLogin.ok()).toBeTruthy();
++    const token = ((await userLogin.json()) as LoginResult).access_token;
++    const threadsResponse = await request.get(`${apiBaseUrl}/api/threads`, {
++      headers: { Authorization: `Bearer ${token}` },
++    });
++    expect(threadsResponse.ok()).toBeTruthy();
++    expect(await threadsResponse.json()).toEqual([]);
++  });
++
++  test("[P0][AC5] admin user is routed to the admin dashboard, bypassing the workspace shell", async ({
++    page,
++    request,
++  }) => {
++    const adminToken = await ensureAdminToken(request);
++    expect(adminToken).toBeTruthy();
++
++    await page.goto("/");
++    await page.getByLabel("Email").fill(adminEmail);
++    await page.getByLabel("Password").fill(adminPassword as string);
++    await page.getByRole("button", { name: "Sign In" }).click();
++
++    await expect(page.getByText(/admin dashboard/i)).toBeVisible();
++    await expect(
++      page.getByText(/Which AI provider would you like to use/i),
++    ).toBeHidden();
++    await expect(
++      page.getByText("Please select one project to proceed"),
++    ).toBeHidden();
++  });
++});

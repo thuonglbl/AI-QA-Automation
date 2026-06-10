@@ -35,8 +35,6 @@ from ai_qa.api.schemas import (
     ActionResponse,
     ApproveRequest,
     ContinueRequest,
-    ConversationData,
-    ConversationSaveRequest,
     NavigateRequest,
     RejectRequest,
     SkipRequest,
@@ -46,9 +44,9 @@ from ai_qa.artifacts.service import ArtifactService
 from ai_qa.artifacts.storage import ArtifactStorage
 from ai_qa.config import AppSettings
 from ai_qa.db.health import check_database_health
-from ai_qa.db.models import Project, User
+from ai_qa.db.models import User
 from ai_qa.pipelines.context import PipelineContext
-from ai_qa.pipelines.run_service import PipelineRunService
+from ai_qa.threads.service import ThreadService
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +114,12 @@ def _get_agent_for_project(step: int, context: PipelineContext) -> BaseAgent | N
             context.project_id,
         )
     agent = _project_user_agents[key]
-    if context.pipeline_run_id is None and agent.project_context is not None:
-        context.pipeline_run_id = agent.project_context.pipeline_run_id
+    if (
+        context.agent_run_id is None
+        and agent.project_context is not None
+        and agent.project_context.thread_id == context.thread_id
+    ):
+        context.agent_run_id = agent.project_context.agent_run_id
     agent.set_project_context(context)
     return agent
 
@@ -130,12 +132,13 @@ def _mark_context_run_failed(
     action: str,
     error: Exception | str,
 ) -> None:
-    """Mark a project-scoped pipeline run failed when an agent action errors."""
-    if context is None or context.pipeline_run_id is None:
+    """Mark an agent run failed when an agent action errors."""
+    if context is None or context.agent_run_id is None:
         return
-    PipelineRunService(db).mark_failed(
-        context.pipeline_run_id,
-        {
+    ThreadService(db).update_agent_run(
+        context.agent_run_id,
+        status="failed",
+        execution_metadata={
             "failed_step": step,
             "failed_action": action,
             "error": str(error),
@@ -152,12 +155,13 @@ def _mark_context_run_finished_for_agent(
     action: str,
 ) -> None:
     """Finalize a project-scoped run when the agent reaches a terminal state."""
-    if context is None or context.pipeline_run_id is None:
+    if context is None or context.agent_run_id is None:
         return
     if agent.state == AgentState.ERROR:
-        PipelineRunService(db).mark_failed(
-            context.pipeline_run_id,
-            {
+        ThreadService(db).update_agent_run(
+            context.agent_run_id,
+            status="failed",
+            execution_metadata={
                 "failed_step": step,
                 "failed_action": action,
                 "agent": agent.name,
@@ -166,9 +170,10 @@ def _mark_context_run_finished_for_agent(
         return
     if agent.state not in (AgentState.DONE, AgentState.COMPLETED):
         return
-    PipelineRunService(db).mark_completed(
-        context.pipeline_run_id,
-        {
+    ThreadService(db).update_agent_run(
+        context.agent_run_id,
+        status="completed",
+        execution_metadata={
             "completed_step": step,
             "completed_action": action,
             "agent": agent.name,
@@ -188,9 +193,14 @@ def _request_project_id(request: BaseModel) -> UUID | None:
     return getattr(request, "project_id", None)
 
 
+def _request_thread_id(request: BaseModel) -> UUID | None:
+    return getattr(request, "thread_id", None)
+
+
 async def _build_pipeline_context(
     *,
-    project_id: UUID | None,
+    project_id: UUID | None = None,
+    thread_id: UUID | None = None,
     http_request: Request,
     db: Session,
     storage: ArtifactStorage,
@@ -199,13 +209,14 @@ async def _build_pipeline_context(
     """Validate request auth/project access and build project-scoped context."""
     session_user = getattr(http_request.state, "user", None)
     if session_user is None:
-        if project_id is None:
+        if project_id is None and thread_id is None:
             return None
         raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
-    if project_id is None:
+
+    if project_id is None and thread_id is None:
         if getattr(session_user, "user_id", None) is None:
             return None
-        raise HTTPException(status_code=422, detail="project_id is required")
+        raise HTTPException(status_code=422, detail="project_id or thread_id is required")
 
     try:
         user_id = UUID(str(session_user.user_id))
@@ -216,24 +227,58 @@ async def _build_pipeline_context(
     if current_user is None or not current_user.is_active:
         raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
 
+    if thread_id:
+        from ai_qa.threads.models import Thread
+
+        thread = db.get(Thread, thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        if thread.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Forbidden thread access")
+        if thread.project_id:
+            project_id = thread.project_id
+
+    if project_id is None:
+        agent_run_id = None
+        if create_run:
+            if thread_id is None:
+                raise HTTPException(status_code=400, detail="thread_id is required to create a run")
+            agent_run = ThreadService(db).create_agent_run(
+                thread_id=thread_id,
+                status="running",
+            )
+            agent_run_id = agent_run.id
+
+        return PipelineContext(
+            user_id=current_user.id,
+            user_email=current_user.email,
+            project_id=None,
+            thread_id=thread_id,
+            artifact_service=ArtifactService(db, storage),
+            agent_run_id=agent_run_id,
+        )
+
     project = await require_project_member_or_admin(project_id, current_user, db)
     if project.id != project_id:
         raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND_DETAIL)
 
-    pipeline_run_id = None
+    agent_run_id = None
     if create_run:
-        pipeline_run = PipelineRunService(db).start_run(
-            project_id=project.id,
-            started_by_user_id=current_user.id,
+        if thread_id is None:
+            raise HTTPException(status_code=400, detail="thread_id is required to create a run")
+        agent_run = ThreadService(db).create_agent_run(
+            thread_id=thread_id,
+            status="running",
         )
-        pipeline_run_id = pipeline_run.id
+        agent_run_id = agent_run.id
 
     return PipelineContext(
         project_id=project.id,
         user_id=current_user.id,
         user_email=current_user.email,
+        thread_id=thread_id,
         artifact_service=ArtifactService(db, storage),
-        pipeline_run_id=pipeline_run_id,
+        agent_run_id=agent_run_id,
     )
 
 
@@ -303,6 +348,7 @@ async def start_step(
     user_email = user.email if user else None
     context = await _build_pipeline_context(
         project_id=request.project_id,
+        thread_id=request.thread_id,
         http_request=http_request,
         db=db,
         storage=storage,
@@ -355,6 +401,7 @@ async def approve_step(
     user_email = user.email if user else None
     context = await _build_pipeline_context(
         project_id=_request_project_id(request),
+        thread_id=_request_thread_id(request),
         http_request=http_request,
         db=db,
         storage=storage,
@@ -402,6 +449,7 @@ async def reject_step(
     user_email = user.email if user else None
     context = await _build_pipeline_context(
         project_id=_request_project_id(request),
+        thread_id=_request_thread_id(request),
         http_request=http_request,
         db=db,
         storage=storage,
@@ -445,6 +493,7 @@ async def continue_pipeline(
     # Validate project context when authenticated project mode is used.
     await _build_pipeline_context(
         project_id=_request_project_id(request),
+        thread_id=_request_thread_id(request),
         http_request=http_request,
         db=db,
         storage=storage,
@@ -481,6 +530,7 @@ async def skip_item(
     user_email = user.email if user else None
     context = await _build_pipeline_context(
         project_id=_request_project_id(request),
+        thread_id=_request_thread_id(request),
         http_request=http_request,
         db=db,
         storage=storage,
@@ -526,6 +576,7 @@ async def navigate_review(
     user_email = user.email if user else None
     context = await _build_pipeline_context(
         project_id=_request_project_id(request),
+        thread_id=_request_thread_id(request),
         http_request=http_request,
         db=db,
         storage=storage,
@@ -561,53 +612,3 @@ async def health_check(http_request: Request) -> dict[str, object]:
     database = check_database_health(settings)
     status = "healthy" if database.status in {"healthy", "not_configured"} else "degraded"
     return {"status": status, "version": "0.1.0", "database": database.as_dict()}
-
-
-@router.get("/projects/{project_id}/conversation", response_model=ConversationData)
-async def get_conversation(
-    project_id: UUID,
-    project: Project = Depends(require_project_member_or_admin),  # noqa: B008
-) -> ConversationData:
-    """Get project's saved conversation history from database.
-
-    Loads conversation from Project.conversation_data.
-    Returns empty conversation if null.
-    """
-
-    if not project.conversation_data:
-        return ConversationData()
-
-    try:
-        return ConversationData.model_validate(project.conversation_data)
-    except Exception as e:
-        logger.error("Failed to load conversation for project %s: %s", project_id, e)
-        return ConversationData()
-
-
-@router.post("/projects/{project_id}/conversation", response_model=ActionResponse)
-async def save_conversation(
-    project_id: UUID,
-    request: ConversationSaveRequest,
-    project: Project = Depends(require_project_member_or_admin),  # noqa: B008
-    db: Session = DbSessionDependency,
-) -> ActionResponse:
-    """Save project's conversation history to database.
-
-    Saves to Project.conversation_data, updates status and current_step.
-    """
-
-    try:
-        project.conversation_data = request.conversation.model_dump(mode="json")
-        project.current_step = request.conversation.current_step
-        project.status = request.conversation.status
-        db.commit()
-        return ActionResponse(
-            success=True,
-            message="Conversation saved",
-            current_step=request.conversation.current_step,
-            status=request.conversation.status,
-        )
-    except Exception as e:
-        db.rollback()
-        logger.error("Failed to save conversation for project %s: %s", project_id, e)
-        raise HTTPException(status_code=500, detail=f"Failed to save conversation: {e}") from e

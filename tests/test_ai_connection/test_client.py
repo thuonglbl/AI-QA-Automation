@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from ai_qa.ai_connection.client import LLMClient
 from ai_qa.ai_connection.config import LLMConfig
-from ai_qa.exceptions import LLMTimeoutError
+from ai_qa.exceptions import LLMRateLimitError, LLMTimeoutError
 
 
 @pytest.fixture
@@ -92,3 +92,67 @@ def test_llm_client_provider_switching_via_config(mock_invoke):
     # pydantic/langchain v0.2+ ChatOpenAI base_url behavior varies slightly,
     # but the client is initialized with it.
     assert client2._chat_model.model_name == "gpt-4o"
+
+
+@pytest.mark.parametrize(
+    "err_text",
+    [
+        "Error code: 429 - insufficient_quota",
+        "RESOURCE_EXHAUSTED: quota exceeded",
+        "Your credit balance is too low to access the Anthropic API",
+        "rate limit reached",
+    ],
+)
+@patch("ai_qa.ai_connection.client.ChatOpenAI.invoke")
+def test_rate_limit_quota_errors_raise_without_retry(mock_invoke, llm_config, err_text):
+    """Rate-limit / quota / billing errors fail fast (no retry) as LLMRateLimitError."""
+    client = LLMClient(config=llm_config)
+    mock_invoke.side_effect = Exception(err_text)
+
+    messages: list[BaseMessage] = [HumanMessage(content="Hi")]
+    with pytest.raises(LLMRateLimitError):
+        client.invoke(messages)
+
+    # Fail fast: a quota/billing error must NOT be retried.
+    assert mock_invoke.call_count == 1
+
+
+def test_claude_routes_to_chat_anthropic():
+    from langchain_anthropic import ChatAnthropic
+
+    client = LLMClient(
+        config=LLMConfig(
+            provider="claude",
+            model_name="claude-sonnet-4-5",
+            base_url="https://api.anthropic.com",
+            api_key="sk-ant-test-key-123",
+        )
+    )
+    assert isinstance(client._chat_model, ChatAnthropic)
+
+
+def test_gemini_routes_to_openai_compat_endpoint():
+    from langchain_openai import ChatOpenAI
+
+    client = LLMClient(
+        config=LLMConfig(
+            provider="gemini",
+            model_name="gemini-2.0-flash",
+            base_url="https://generativelanguage.googleapis.com",
+            api_key="gemini-test-key-123",
+        )
+    )
+    assert isinstance(client._chat_model, ChatOpenAI)
+    assert str(client._chat_model.openai_api_base).endswith("/v1beta/openai")
+
+
+def test_openai_base_url_gets_v1_suffix():
+    client = LLMClient(
+        config=LLMConfig(
+            provider="openai",
+            model_name="gpt-4o-mini",
+            base_url="https://api.openai.com",
+            api_key="sk-openai-test-key-123",
+        )
+    )
+    assert str(client._chat_model.openai_api_base).rstrip("/").endswith("/v1")

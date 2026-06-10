@@ -23,28 +23,32 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 ### Requirements Overview
 
 **Functional Requirements:**
-29 functional requirements across 7 categories:
+67 functional requirements across 12 categories:
 
 - **Confluence Integration (FR1-4):** MCP-based connectivity to on-prem Confluence, SSO authentication, content parsing including embedded macros (M1)
 - **Test Script Generation (FR5-9):** NL interpretation → Playwright Python scripts with stable selectors and mapped assertions. One file per test case
 - **Pipeline Execution (FR10-13):** Single entry point (Confluence URL → Playwright files), end-to-end without manual intervention, browser-use controls local Chrome via SSO
-- **Configuration (FR14-15):** .env-based config for API keys, MCP URL, target page, LLM parameters
-- **LLM Management (FR16-18, M1):** Multi-provider switching (Claude/DeepSeek/Qwen), comparison testing, prompt template tuning
-- **Human-in-the-Loop Review (FR19-22, M1):** Side-by-side source/script comparison, approve/reject/edit workflow, low-confidence flagging
+- **Secure Configuration (FR14-15b):** System-level base URLs in environment settings; per-user AI provider and MCP keys stored only in encrypted PostgreSQL fields; Alice validates provider connectivity, dynamically discovers available models, and persists only verified model assignments with non-secret rationale
+- **Administration (FR16):** Admin CRUD for users/projects and project memberships; admins route only to the admin dashboard
+- **Backlog / Removed Scope (FR17-18):** Provider comparison tests are backlog; centralized prompt-template tuning is removed from MVP
+- **Human-in-the-Loop Review (FR19-22):** Side-by-side source/script comparison, approve/reject/edit workflow, low-confidence flagging
 - **Jira Integration (FR23-24, M1):** On-prem Jira Data Center access via MCP for test-related requirements
-- **Quality & Observability (FR25-29, M1):** Audit logging, success rate reporting, input quality detection, metrics dashboard
+- **Quality, Observability, and Reporting (FR25-29):** Audit logging, success rate reporting, input quality detection, metrics dashboard, LLM cost tracking
+- **Collaborative Project Threads and Agent Runs (FR30-41):** Per-user private conversation threads, immutable thread-to-project binding, append-only messages, thread-scoped agent runs, and access denial when project membership is removed
+- **Output and Shared Artifact Storage (FR42-46):** Project-level shared SeaweedFS artifact tree with required logical folders, metadata ownership/version fields, and cross-user project-member artifact access
+- **Collaborative Workspace UX and Realtime Sync (FR47-67):** Workspace shell, conversation history, selected-project artifact sidebar, secret status/rotation UX, and WebSocket artifact change events with non-disruptive refresh behavior
 
 **Non-Functional Requirements:**
 
 - **Performance:** <5 min per test case generation, <30s per browser action, standard Playwright timeouts
-- **Security (critical):** All data on-premises, no external transmission. .env-only secrets, never committed/logged. Browser agent read-only — no form submissions or data modifications. Audit logging from M1. On-prem LLMs eliminate external API transfer entirely
-- **Integration Resilience:** Graceful MCP failure handling, LLM retry logic (max 3), browser crash recovery, valid standalone Playwright output, .env validation at startup
+- **Security (critical):** All data on-premises, no external transmission. User secrets must never appear in `.env`, plaintext JSON columns, logs, WebSocket payload history, conversation history, artifacts, or generated files. Per-user AI provider and MCP keys are encrypted with `USER_SECRETS_ENCRYPTION_KEY`; passwords are one-way hashes; browser agent remains read-only
+- **Integration Resilience:** Graceful MCP failure handling, LLM retry logic (max 3), browser crash recovery, valid standalone Playwright output, startup validation for system-level environment configuration and encryption key presence
 
 **Scale & Complexity:**
 
-- Primary domain: Backend pipeline / Developer tool (CLI-first)
-- Complexity level: Medium — AI/LLM integration with on-prem enterprise constraints, but linear pipeline architecture
-- Estimated architectural components: 5-7 core components (MCP client, LLM abstraction, browser-use orchestrator, script generator, output manager, config manager, CLI interface)
+- Primary domain: Collaborative AI-powered developer tool with FastAPI backend, React workspace, PostgreSQL state, SeaweedFS artifact storage, and WebSocket realtime updates
+- Complexity level: Medium-high — AI/LLM integration, on-prem enterprise constraints, secure per-user secrets, project-scoped collaboration, thread persistence, and realtime artifact synchronization
+- Estimated architectural components: 10-12 core components (auth/RBAC, project membership, thread/message store, agent runs, MCP client, LLM abstraction, browser-use orchestrator, artifact service, SeaweedFS storage, secret encryption, WebSocket hub, admin UI)
 
 ### Technical Constraints & Dependencies
 
@@ -59,10 +63,13 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 ### Cross-Cutting Concerns Identified
 
 - **Data sovereignty:** Affects every component — no data leaves company infrastructure at any phase
-- **LLM abstraction:** Must support provider switching without pipeline changes — Claude → DeepSeek/Qwen
-- **Error handling & resilience:** MCP failures, LLM timeouts/rate limits, browser crashes — graceful degradation throughout
-- **Audit & observability:** Who read what, who generated what, when — required from M1 across all pipeline stages
-- **Configuration management:** .env for PoC, needs to scale to multi-environment support for M1+
+- **Secret containment:** Per-user MCP and AI provider keys must remain encrypted at rest, masked in UI, absent from logs/messages/artifacts, and resolved only at execution time
+- **Thread/project scoping:** Conversation threads are private to the creating user, bind immutably to one project, and derive agent-run scope from `thread_id`; project artifacts are shared across assigned project members
+- **LLM abstraction:** Must support provider switching without pipeline changes, with Alice using runtime provider validation and model discovery rather than static mappings
+- **Error handling & resilience:** MCP failures, LLM timeouts/rate limits, browser crashes, secret expiry, provider model discovery failures, and artifact update conflicts — graceful degradation throughout
+- **Audit & observability:** Who read what, who generated what, who changed artifacts, when, for which project/thread/agent run — required across execution and collaboration surfaces
+- **Configuration management:** Environment configuration is for system-level non-secret settings and encryption keys only; user secrets and provider model selections live in PostgreSQL through secure domain services
+- **Realtime collaboration:** Artifact changes must be emitted through WebSocket to all assigned users without disrupting active chat/input/scroll state
 - **Script quality assurance:** Hallucination mitigation is architectural — human-in-the-loop review, confidence scoring, input quality detection
 
 ## Starter Template Evaluation
@@ -222,15 +229,21 @@ Frontend: npm (managed separately from uv)
 **Important Decisions (Shape Architecture):**
 
 - Error Handling: tenacity retry + custom exception hierarchy
-- Configuration: Pydantic Settings (.env + config.yaml)
-- Output Strategy: Hybrid files + JSON metadata
-- Security: Data boundary enforcement + audit trail
+- Configuration: Pydantic Settings for system-level non-secret settings and encryption key validation
+- Secret Storage: per-user encrypted PostgreSQL secret fields with rotation UX and no secret echoing in API/WebSocket responses
+- Collaboration State: PostgreSQL-backed projects, memberships, private conversation threads, append-only messages, and thread-scoped agent runs
+- Output Strategy: PostgreSQL artifact metadata + project-level shared SeaweedFS objects with required logical folders
+- Realtime Sync: WebSocket artifact-change events scoped by project membership
+- Security: Data boundary enforcement + audit trail + RBAC authorization checks on all project/thread/artifact/secret operations
 
-**Deferred Decisions (Post-PoC):**
+**Deferred Decisions (Post-MVP):**
 
 - CI/CD pipeline (Bitbucket on-prem, milestone sau)
-- Multi-environment config (M1+)
-- Database storage (nếu cần query audit data at scale)
+- Multi-environment config beyond current deployment settings
+- Provider comparison tests
+- Direct external SeaweedFS event subscriptions
+- Artifact version rollback
+- Centralized admin prompt-template tuning
 
 ### Frontend & API Layer
 
@@ -241,11 +254,14 @@ Frontend: npm (managed separately from uv)
 - **Communication:** WebSocket for live agent messages (Processing updates, Review presentations), REST for actions (Start, Approve, Reject, Continue)
 - **Rationale:** Manual QA testers cannot use CLI. Conversational UI is the most natural pattern for non-technical users (Teams-like). FastAPI is Python-native, async, and integrates seamlessly with existing pipeline code
 - **Frontend routes:**
-  - `/` — Main pipeline UI (5-step agent wizard, Alice → Jack). Standard users route here directly after login.
-  - `/admin` — Admin Dashboard for authenticated admin users.
+  - `/` — Collaborative workspace shell for standard users. Includes collapsible sidebar, New Conversation, Conversation History, and Project / Artifacts section for the active thread's bound project.
+  - `/admin` — Admin Dashboard for authenticated admin users. Admin users route only here and do not enter the standard project/thread workspace flow.
   - `/dashboard` — Metrics dashboard for leadership (Epic 10)
   - Use React Router v6 for client-side routing
-  - Standard-user Project Workspace is removed from the happy path; project selection is handled inside Alice's configuration chat flow.
+- **Workspace behavior:** Before Alice binds a project, Project / Artifacts is empty. After binding, the sidebar shows only the selected project for the active thread and project selection is locked for that thread. Conversation History shows only the current user's threads.
+- **Artifact UX:** Project members can browse/open/edit/delete shared artifacts for assigned projects regardless of creator. Empty required folders are shown even when SeaweedFS has no objects for a PostgreSQL project.
+- **Secret UX:** UI shows provider/MCP secret status and replacement actions, but never displays stored secret values.
+- **Realtime UX:** WebSocket artifact-change events trigger targeted artifact-tree refresh when the visible project changed. Refresh must not reset chat, current input, current step, or scroll position. If the opened artifact changes or is deleted, show a non-disruptive reload/close notice.
 - **Accessibility:** WCAG 2.1 AA required (per UX-DR15). Establish focus ring styles (`ring-2 ring-blue-500 ring-offset-2`), aria attributes, and 44px minimum click targets from Story 2.2 (React scaffold). All subsequent UI stories must maintain these standards. Consult UX-DR15 for full requirements.
 
 ### Agent Orchestration Layer
@@ -255,11 +271,13 @@ Frontend: npm (managed separately from uv)
 - **Pattern:** Each agent follows the same lifecycle: Start → Processing → Review Request → (Approve/Reject+feedback) → Done
 - **Human-in-the-loop:** Mandatory review gate at every step — no output advances without explicit user approval
 - **Reject flow:** User provides feedback → agent self-corrects → re-presents for review
-- **Alice (Step 1):** Resolves standard-user project context first, then guides AI provider selection (Browser Use Cloud / Claude / Gemini / ChatGPT / On-Premises). Provider choice determines which LLM models all subsequent agents use. Saves complete configuration to `configuration/` folder
+- **Alice (Step 1):** At the beginning of a new thread, asks the user to select one accessible project, binds that project immutably to the thread, then guides AI provider/MCP secret status and provider configuration. Provider choice determines which dynamically discovered and verified LLM models downstream agents use.
 - **Alice project resolution:** For standard users, Alice loads accessible projects through the project list API before provider options are shown. Zero projects shows a no-access message and blocks provider selection. One project is auto-selected with a confirmation message. Multiple projects render a selectable list; choosing one adds a right-aligned user message with the selected project name. Admin routing remains dashboard-first and unchanged.
-- **Configuration output:** Alice writes `provider.json` (selected provider, credentials, endpoint) and `agents.json` (per-agent config: model, prompt template, tools/capabilities). All subsequent agents read their config from `configuration/agents.json` at startup
-- **Provider → Model mapping:** Claude: Bob→Opus, others→Sonnet. On-Prem: Bob→DeepSeek, others→Qwen. See UX spec for full mapping table
-- **File pipeline:** `configuration/` → `requirements/` → `testcases/` → `testscripts/` → `report/`
+- **Thread binding:** Once Alice binds `project_id` to `conversation_threads.project_id`, that project cannot be changed within the thread. If user membership is later removed, the thread is hidden from Conversation History and API access is denied.
+- **Configuration output:** Alice persists non-secret provider selection, verified model assignments, non-secret runtime settings, and selection rationale to PostgreSQL user configuration fields. User secrets are stored separately in encrypted per-user secret fields. No API/WebSocket response may return secret values.
+- **Provider/model assignment:** Alice validates provider connection, discovers available models where supported, scores discovered models against Bob/Mary/Sarah/Jack needs, and persists only selected model IDs verified from discovery. Static model names are ranking hints only.
+- **Agent execution scope:** Every agent run is stored as an `agent_runs` record scoped only by `thread_id`; user and project scope are derived from the referenced thread. Agent runs update only `conversation_threads.current_step` and `conversation_threads.status`.
+- **Artifact pipeline:** Required logical SeaweedFS folders are project-scoped: `projects/{project_id}/requirements/`, `projects/{project_id}/test_cases/`, and `projects/{project_id}/test_scripts/`. Artifact metadata links optional originating `thread_id` and `agent_run_id`.
 - **Location:** `src/ai_qa/agents/`
 
 ### LLM Abstraction Layer
@@ -298,58 +316,100 @@ Frontend: npm (managed separately from uv)
 
 ### Configuration & Environment
 
-- **Decision:** Pydantic Settings (BaseSettings)
-- **Sources:** `.env` file + `config.yaml` + env var overrides
-- **Validation:** At startup — fail fast if config missing/invalid
-- **Rationale:** browser-use/LangChain ecosystem already uses Pydantic — unified approach
+- **Decision:** Pydantic Settings (BaseSettings) for system-level configuration only
+- **Environment sources:** `.env` file + `config.yaml` + env var overrides for non-secret deployment settings and infrastructure secrets required by the application process, including provider base URLs, MCP server URL, database URL, SeaweedFS settings, and `USER_SECRETS_ENCRYPTION_KEY`
+- **Not environment-owned:** Per-user AI provider API keys, MCP API key, selected provider, selected model assignments, and user runtime choices must not be stored in `.env`
+- **Database-owned configuration:** PostgreSQL stores selected provider, selected verified model IDs, non-secret runtime settings, secret status metadata, and non-secret model-selection rationale
+- **Validation:** At startup — fail fast if system-level config or encryption key is missing/invalid. At execution — fail fast with actionable user messages if required user secrets are absent, expired, or provider/model validation fails
+- **Rationale:** browser-use/LangChain ecosystem already uses Pydantic, while secure multi-user operation requires separating deployment configuration from per-user secrets and runtime choices
 
 ### Output & Storage
 
-- **Decision:** Database + S3-compatible Object Storage (MinIO)
-- **Database:** PostgreSQL stores all project configurations (`User` settings), conversation states (`Project` state), and artifact metadata (`ArtifactVersion`).
-- **File Storage:** MinIO (or any S3-compatible service) stores the actual file bytes (Markdown, JSON, Python scripts, images) via `S3ArtifactStorage`. The database only stores the S3 URI (`storage_path`).
-- **Audit trail:** `audit_log.jsonl` append-only (JSONL format), can also be pushed to MinIO or logged directly.
-- **Rationale:** Separating file storage from the application server ensures high availability, scalability, and allows the web server to remain stateless.
+- **Decision:** PostgreSQL state + S3-compatible Object Storage (SeaweedFS)
+- **Database:** PostgreSQL stores users, password hashes, projects, memberships, conversation threads, append-only messages, agent runs, non-secret user provider configuration, encrypted user secrets, artifact metadata, artifact version metadata, and audit metadata.
+- **File Storage:** SeaweedFS (or any S3-compatible service) stores actual file bytes (Markdown, JSON, Python scripts, images) via `S3ArtifactStorage`. PostgreSQL stores the S3 URI (`storage_path`) and access/ownership metadata.
+- **Artifact sharing:** Artifacts are project-level shared resources. Any assigned project member can list, read, edit, and delete artifacts from other users in that project, subject to role/assignment checks.
+- **Required folders:** UI and API must surface required logical folders even if no SeaweedFS objects exist yet.
+- **Audit trail:** Audit events can be persisted in PostgreSQL and/or append-only JSONL in SeaweedFS; all events must include actor, project/thread/agent-run context where available, target resource, timestamp, and action.
+- **Rationale:** Separating durable collaboration state, artifact bytes, and non-secret/secret configuration supports stateless web servers, project-level collaboration, access control, and artifact sync.
 
-**Output Structure (MinIO bucket `ai-qa-artifacts`):**
+**Output Structure (SeaweedFS bucket `ai-qa-artifacts`):**
 
 ```text
 ai-qa-artifacts/
   projects/
     {project_id}/
-      test_login_flow.py      # Playwright script
-      metadata.json           # Source URL, timestamp, model, confidence
+      requirements/
+        extracted_requirements.md
+      test_cases/
+        generated_test_cases.json
+      test_scripts/
+        test_login_flow.py
 ```
+
+**Artifact Metadata (PostgreSQL):**
+
+- artifact identifier
+- `project_id`
+- `kind`
+- `storage_path`
+- owner/creator/updater user IDs
+- optional version history
+- optional originating `thread_id`
+- optional originating `agent_run_id`
+- timestamps and non-secret execution metadata
 
 ### Security Architecture
 
-- **Secrets:** Pydantic Settings + `.env` (gitignored), validation at startup
-- **Data sovereignty:** All processing local, LLM via on-prem proxy only
+- **System secrets:** Application infrastructure secrets such as `USER_SECRETS_ENCRYPTION_KEY` are loaded from environment configuration and must not be stored in PostgreSQL.
+- **User secrets:** AI provider API keys and MCP API key are per-user encrypted PostgreSQL fields. Stored values are never returned through API/WebSocket, never logged, and never written to messages/artifacts/generated files.
+- **Secret rotation:** UI and API support replacement/update of user secrets without revealing existing values. Rotated secrets apply to future runs while existing thread/message history remains unchanged.
+- **Password storage:** Passwords are stored as one-way password hashes, not plaintext or reversible encryption.
+- **Data sovereignty:** All processing local; on-prem providers eliminate external API transfer when selected.
 - **Browser scope:** Read-only — no form submissions, no data modifications
 - **Transport:** HTTPS + certificate validation (httpx verify=True)
-- **Audit:** JSONL append-only log across all pipeline stages
-- **Leakage prevention:** Ruff rules + strict `.gitignore`
+- **Authorization:** Every project, thread, message, agent run, artifact, and secret operation enforces user identity, role, and project membership. Thread access requires thread creator ownership plus current membership in the bound project.
+- **Audit:** Append-only audit trail across pipeline, admin, secret rotation, artifact changes, and membership changes
+- **Leakage prevention:** Ruff rules + strict `.gitignore` + secret redaction middleware/log filters + response schema tests that assert no secret values are serialized
+
+### Realtime Synchronization Architecture
+
+- **Decision:** Backend emits application-managed artifact change events through the existing WebSocket channel after artifact create, update, delete, or metadata-change operations.
+- **Event payload:** `project_id`, artifact identifier, change type, timestamp, and non-secret summary metadata.
+- **Delivery scope:** All connected clients for users assigned to the changed project receive the event, even when that project is not attached to their active thread.
+- **Frontend behavior:** If the changed project is currently visible, refetch the Project / Artifacts tree without resetting chat, current input, current step, or scroll position. If an opened artifact changes or is deleted, show a non-disruptive notice with reload/close options.
+- **Out of MVP:** Direct external SeaweedFS notifications and artifact version rollback.
 
 ### Decision Impact Analysis
 
 **Implementation Sequence:**
 
-1. Configuration (Pydantic Settings) — foundation for all components
+1. Configuration (Pydantic Settings) — system-level settings, database URL, SeaweedFS settings, encryption key validation
 2. Exception hierarchy — needed before building any component
-3. LLM abstraction (LangChain + LiteLLM) — core capability
-4. MCP client (Confluence reader) — data source
-5. Pipeline stages (sequential) — orchestration
-6. Output manager (files + metadata) — results
-7. CLI interface (Click) — user entry point
-8. Audit logging — cross-cutting, weave in last
+3. Database models and migrations — users, projects, memberships, conversation threads, messages, agent runs, user secrets, artifact metadata
+4. Secret encryption service — per-user provider/MCP key encryption, masking, replacement, and execution-time resolution
+5. Auth/RBAC/project membership services — authorization foundation for admin, workspace, thread, artifact, and secret operations
+6. LLM abstraction and provider adapters — LangChain/LiteLLM-compatible calls plus provider validation and model discovery contracts
+7. MCP client (Confluence reader) — data source using execution-time current-user MCP secret
+8. Artifact service — PostgreSQL metadata + SeaweedFS object storage + required logical folders + application-managed change events
+9. Conversation/thread/message services — private user threads, immutable project binding, append-only messages, restored state
+10. Agent run orchestration — thread-scoped runs, current-step/status updates, artifact origin metadata
+11. Pipeline stages (sequential) — orchestration and generation
+12. WebSocket hub — chat updates and project-scoped artifact change delivery
+13. Frontend workspace/admin/artifact/secret UX — collaborative shell, admin dashboard, secret rotation, artifact browsing/editing
+14. Audit logging — cross-cutting across pipeline, admin, secret, artifact, and membership events
 
 **Cross-Component Dependencies:**
 
-- Pydantic Settings → all components read config
+- Pydantic Settings → infrastructure services read system config only
 - Exception hierarchy → all components throw/catch
-- LLM abstraction → Pipeline stages (TestCaseExtractor, ScriptGenerator)
+- Auth/RBAC → API, WebSocket connection registration, projects, threads, artifacts, secrets, admin
+- Secret service → provider adapters, MCP client, Alice configuration, downstream agents
+- LLM provider adapters → Alice model discovery and pipeline LLM calls
 - MCP client → Pipeline stages (ConfluenceReader)
-- Output manager → Pipeline stages (OutputWriter) + Audit logging
+- Thread/message service → agents, API, Conversation History
+- Agent run service → agents, WebSocket updates, artifact origin metadata
+- Artifact service → Pipeline stages (OutputWriter), frontend Project / Artifacts tree, WebSocket artifact events, audit logging
 
 ## Implementation Patterns & Consistency Rules
 
@@ -380,13 +440,21 @@ ai-qa-artifacts/
 - Shared types/models in `src/ai_qa/models.py` (Pydantic models)
 - All custom exceptions in `src/ai_qa/exceptions.py` (single hierarchy)
 - Project-wide constants in `src/ai_qa/constants.py`
+- Database persistence models live under `src/ai_qa/db/` with Alembic migrations in `alembic/versions/`
+- Domain services live in focused packages: `auth/`, `projects/`, `threads/`, `secrets/`, `artifacts/`, and `realtime/`
+- Provider-specific validation/model discovery lives behind adapter interfaces in `ai_connection/providers/`
+- UI workspace concerns are separated into frontend feature areas: conversation history, project artifacts, admin dashboard, secret status/rotation, and shared WebSocket state
 
 ### Data Format Patterns
 
 - **Internal data exchange:** Pydantic models between stages (never raw dicts)
 - **JSON output keys:** snake_case
 - **Datetime format:** ISO 8601 strings (`2026-04-06T10:30:00Z`)
-- **JSONL audit log:** Each line is a JSON object with `timestamp`, `event`, `details` fields
+- **Database IDs:** Use UUIDs for users, projects, threads, messages, agent runs, and artifacts unless an existing model already establishes a stricter convention
+- **Thread messages:** Append-only records with `thread_id`, `sender`, `content`, non-secret metadata, and timestamp. Messages must never store raw secret values
+- **Agent runs:** Records contain `thread_id`, status, timestamps, summary, and non-secret execution metadata only. User/project scope is derived from the thread
+- **Artifact events:** WebSocket payloads include `project_id`, artifact identifier, change type, timestamp, and non-secret summary metadata
+- **JSONL audit log:** Each line is a JSON object with `timestamp`, `actor_id`, `event`, `resource_type`, `resource_id`, `project_id`, optional `thread_id`, optional `agent_run_id`, and non-secret `details` fields
 
 ### Pipeline Stage Interface Pattern
 
@@ -442,6 +510,14 @@ from ai_qa.exceptions import LLMError
 - Type hint all function signatures
 - Ruff + mypy must pass before considering work done
 
+**All AI Agents MUST ALSO:**
+
+- Resolve user secrets only through the secret service at execution time
+- Treat provider model names as valid only after provider discovery/verification
+- Scope agent runs by `thread_id` and derive user/project scope from the thread
+- Write artifacts through the artifact service so metadata, SeaweedFS object storage, authorization, audit, and realtime events stay consistent
+- Preserve append-only message history; never mutate historical messages to reflect rotated secrets or changed artifacts
+
 **Anti-Patterns (FORBIDDEN):**
 
 - `dict` instead of Pydantic model between stages
@@ -449,6 +525,12 @@ from ai_qa.exceptions import LLMError
 - Bare `except:` or `except Exception:`
 - Hardcoded config values in code
 - `import *` from any module
+- Storing user API keys or MCP keys in `.env`, plaintext JSON columns, messages, WebSocket payloads, logs, artifacts, or generated files
+- Returning stored secret values to the frontend
+- Assigning a model not returned or verified by provider model discovery
+- Reassigning an existing `agent_run` to another thread
+- Changing `conversation_threads.project_id` after initial Alice binding
+- Reading/writing SeaweedFS directly from agents or UI code without the artifact service
 
 ## Project Structure & Boundaries
 
@@ -471,64 +553,50 @@ ai-qa-automation/
 │   └── ai_qa/
 │       ├── __init__.py             # Package version
 │       ├── __main__.py             # python -m ai_qa entry point
-│       ├── cli.py                  # Click CLI commands (admin/developer)
-│       ├── config.py               # Pydantic Settings (AppSettings)
+│       ├── cli.py                  # Click commands (admin/developer)
+│       ├── config.py               # System-level Pydantic Settings only
 │       ├── constants.py            # Project-wide constants
 │       ├── exceptions.py           # Custom exception hierarchy
-│       ├── models.py               # Shared Pydantic models (StageResult, AgentMessage, etc.)
+│       ├── models.py               # Shared Pydantic models
+│       │
+│       ├── db/                     # SQLAlchemy models, sessions, repositories
+│       ├── auth/                   # Authentication, password hashing, current user
+│       ├── projects/               # Projects, memberships, admin authorization
+│       ├── threads/                # Conversation threads, messages, agent runs
+│       ├── secrets/                # Encrypted per-user secrets and rotation metadata
+│       ├── artifacts/              # PostgreSQL metadata + SeaweedFS object service + events
+│       ├── realtime/               # WebSocket connection registry and project broadcasts
 │       │
 │       ├── api/                    # FastAPI web server
 │       │   ├── __init__.py
 │       │   ├── server.py           # FastAPI app, CORS, static files
-│       │   ├── routes.py           # REST endpoints (start, approve, reject, continue)
-│       │   ├── websocket.py        # WebSocket for real-time chat messages
-│       │   └── schemas.py          # API request/response Pydantic models
+│       │   ├── schemas.py          # API request/response schemas with secret redaction
+│       │   ├── websocket.py        # Agent updates + artifact change events
+│       │   └── routes/             # auth, admin, projects, threads, secrets, artifacts, agents
 │       │
 │       ├── agents/                 # Named AI agent orchestrators
 │       │   ├── __init__.py
-│       │   ├── base.py             # BaseAgent — shared lifecycle (Start→Process→Review→Done)
-│       │   ├── alice.py            # Step 1: Configuration & AI provider selection
-│       │   ├── bob.py              # Step 2: Extract Requirements from Confluence
-│       │   ├── mary.py             # Step 3: Create Test Cases from requirements
-│       │   ├── sarah.py            # Step 4: Create Test Scripts from test cases
-│       │   └── jack.py             # Step 5: Run Test Scripts across browsers
+│       │   ├── base.py             # BaseAgent lifecycle + thread/agent_run integration
+│       │   ├── alice.py            # Project binding, provider validation, model discovery
+│       │   ├── bob.py              # Extract Requirements from Confluence
+│       │   ├── mary.py             # Create Test Cases from requirements
+│       │   ├── sarah.py            # Create Test Scripts from test cases
+│       │   └── jack.py             # Run Test Scripts across browsers
 │       │
 │       ├── ai_connection/          # LLM abstraction layer
 │       │   ├── __init__.py
 │       │   ├── client.py           # LangChain ChatModel wrapper
-│       │   ├── config.py           # LLM-specific config
-│       │   └── exceptions.py       # LLM-specific exceptions
+│       │   ├── config.py           # Non-secret LLM runtime config models
+│       │   ├── exceptions.py       # LLM-specific exceptions
+│       │   └── providers/          # Provider validation/model discovery adapters
 │       │
-│       ├── mcp/                    # MCP integration
-│       │   ├── __init__.py
-│       │   ├── client.py           # MCP SDK client
-│       │   ├── confluence.py       # Confluence-specific MCP tools
-│       │   └── jira.py             # Jira MCP tools (M1)
-│       │
+│       ├── mcp/                    # MCP integration using current-user MCP secret
 │       ├── browser/                # browser-use + Playwright
-│       │   ├── __init__.py
-│       │   ├── agent.py            # browser-use agent configuration
-│       │   └── session.py          # Browser session / SSO management
-│       │
 │       ├── prompts/                # LLM prompt templates
-│       │   ├── __init__.py
-│       │   ├── test_extraction.py  # Prompts for test case extraction
-│       │   └── script_generation.py # Prompts for Playwright script generation
-│       │
 │       ├── pipelines/              # Pipeline stages (used internally by agents)
-│       │   ├── __init__.py
-│       │   ├── confluence_reader.py    # Read from Confluence via MCP
-│       │   ├── content_parser.py       # Parse & structure content to MD/Mermaid/images
-│       │   ├── test_case_extractor.py  # Extract test cases via LLM
-│       │   ├── script_generator.py     # Generate Playwright scripts via LLM + vision
-│       │   ├── script_runner.py        # Execute scripts across browsers
-│       │   └── output_writer.py        # Write files + metadata to folders
-│       │
-│       └── audit/                  # Audit & observability
-│           ├── __init__.py
-│           └── logger.py           # JSONL audit trail writer
+│       └── audit/                  # Non-secret audit trail
 │
-├── frontend/                       # React conversational UI
+├── frontend/                       # React collaborative workspace
 │   ├── package.json
 │   ├── vite.config.ts
 │   ├── tsconfig.json
@@ -536,24 +604,22 @@ ai-qa-automation/
 │   ├── components.json             # Shadcn/ui config
 │   ├── public/
 │   ├── src/
-│   │   ├── App.tsx                 # Main app — chat layout with AgentTopBar
+│   │   ├── App.tsx                 # Router + workspace/admin shells
 │   │   ├── main.tsx                # React entry point
 │   │   ├── index.css               # Tailwind directives
-│   │   ├── lib/
-│   │   │   └── utils.ts            # Shadcn/ui cn() utility
-│   │   ├── components/
-│   │   │   ├── ui/                 # Shadcn/ui primitives (Button, Card, Badge, etc.)
-│   │   │   ├── AgentTopBar.tsx     # Agent avatar + name + step + status
-│   │   │   ├── ChatMessage.tsx     # Agent/user message bubbles
-│   │   │   ├── ChatInputArea.tsx   # Context-dependent input (Start/Review/Done)
-│   │   │   ├── ReviewContent.tsx   # Rich content renderer (MD, code, report)
-│   │   │   ├── StepDots.tsx        # Mini 4-dot progress indicator
-│   │   │   └── ProcessingIndicator.tsx  # Animated typing dots
+│   │   ├── components/ui/          # Shadcn/ui primitives
+│   │   ├── features/
+│   │   │   ├── workspace/          # Sidebar, project lock, zero-project state
+│   │   │   ├── conversations/      # New Conversation, private history, active thread
+│   │   │   ├── artifacts/          # Project / Artifacts tree, editor, preview notices
+│   │   │   ├── secrets/            # Secret status + replacement UI, no value display
+│   │   │   ├── admin/              # User/project/membership CRUD
+│   │   │   └── agents/             # Agent messages, review content, input area
 │   │   ├── hooks/
-│   │   │   ├── useWebSocket.ts     # WebSocket connection to backend
-│   │   │   └── usePipelineState.ts # Pipeline state management
-│   │   └── types/
-│   │       └── pipeline.ts         # TypeScript types matching backend schemas
+│   │   │   ├── useWebSocket.ts     # Shared WebSocket connection
+│   │   │   ├── usePipelineState.ts # Agent workflow state
+│   │   │   └── useArtifactSync.ts  # Non-disruptive artifact change handling
+│   │   └── types/                  # TypeScript API schemas
 │   └── dist/                       # Built static files (gitignored, served by FastAPI)
 │
 ├── tests/
@@ -591,18 +657,11 @@ ai-qa-automation/
 │       ├── test_script_runner.py
 │       └── test_output_writer.py
 │
-├── workspace/                      # Per-run pipeline output (gitignored)
-│   ├── configuration/              # Step 1 output: AI provider + agent configs
-│   │   ├── provider.json           # Selected provider, endpoint, credential ref
-│   │   └── agents.json             # Per-agent: model, prompt template, tools
-│   ├── requirements/               # Step 2 output: MD, Mermaid, images
-│   ├── testcases/                  # Step 3 output: structured test cases
-│   ├── testscripts/                # Step 4 output: Playwright .py files
-│   ├── report/                     # Step 5 output: execution reports
-│   └── audit/
-│       └── audit_log.jsonl
-│
+├── alembic/                        # Database migrations
+├── docker-compose.yml              # Local PostgreSQL/SeaweedFS support
 └── _bmad-output/                   # Planning artifacts (not runtime)
+
+Runtime artifact bytes are stored in SeaweedFS under `projects/{project_id}/...`; runtime state and metadata are stored in PostgreSQL.
 ```
 
 ### Architectural Boundaries
@@ -611,20 +670,27 @@ ai-qa-automation/
 
 | Module | Responsibility | Depends On | Does NOT depend on |
 | --- | --- | --- | --- |
-| `config` | App settings, validation | pydantic-settings | anything else |
+| `config` | System-level app settings, validation, encryption key presence | pydantic-settings | user secret values, domain services |
 | `exceptions` | Exception hierarchy | nothing | anything else |
-| `models` | Shared data models | pydantic | anything else |
-| `ai_connection` | LLM calls | config, exceptions, langchain | mcp, browser, pipelines, agents |
-| `mcp` | MCP server communication | config, exceptions, mcp-sdk | ai_connection, browser, agents |
+| `models` | Shared Pydantic models | pydantic | persistence internals |
+| `db` | SQLAlchemy models, sessions, repositories | config, sqlalchemy | frontend, agent logic |
+| `auth` | authentication, password hashing, current user context | db, exceptions | pipeline internals |
+| `projects` | projects, memberships, admin CRUD authorization | db, auth | ai_connection, mcp, browser |
+| `threads` | private conversation threads, append-only messages, agent run state | db, auth, projects | artifact bytes, provider SDKs |
+| `secrets` | per-user encrypted provider/MCP secrets and rotation metadata | db, auth, config crypto key | API response schemas exposing values |
+| `ai_connection` | provider adapters, validation, model discovery, LLM calls | config, secrets, langchain | mcp, browser, agents |
+| `mcp` | MCP server communication using current-user MCP secret | config, secrets, exceptions, mcp-sdk | ai_connection, browser, agents |
 | `browser` | Browser automation | config, exceptions, browser-use | mcp, ai_connection directly, agents |
-| `pipelines` | Reusable pipeline stages | config, models, ai_connection, mcp, browser | agents, api |
-| `agents` | Named agent orchestrators (Bob/Mary/Sarah/Jack) | config, models, pipelines, audit | api |
-| `audit` | Logging trail | config, models | pipeline internals, agents |
-| `api` | FastAPI REST + WebSocket | config, agents, models | pipeline internals |
-| `cli` | Admin/developer CLI | config, agents | api, frontend |
-| `frontend/` | React conversational UI | api (via HTTP/WebSocket) | all Python modules |
+| `artifacts` | metadata, SeaweedFS object I/O, required folders, artifact events | db, projects, realtime, audit | direct UI/agent SeaweedFS bypass |
+| `pipelines` | Reusable pipeline stages | config, models, ai_connection, mcp, browser, artifacts | api, frontend |
+| `agents` | Named agent orchestrators and thread-scoped agent runs | threads, secrets, models, pipelines, audit | api internals |
+| `audit` | Append-only non-secret audit trail | db/config/models | raw secret values |
+| `realtime` | WebSocket connection registry and project-scoped event delivery | auth, projects | business logic mutation |
+| `api` | FastAPI REST + WebSocket | auth, projects, threads, secrets, artifacts, agents, models | direct storage bypass |
+| `cli` | Admin/developer CLI | config, agents/services | frontend |
+| `frontend/` | React collaborative workspace | api (via HTTP/WebSocket) | all Python modules |
 
-**Dependency Rule:** Modules depend downward only. `api/cli` → `agents` → `pipelines` → `ai_connection/mcp/browser` → `config/exceptions/models`. Frontend communicates with backend only via API. No circular dependencies.
+**Dependency Rule:** Frontend communicates with backend only via API/WebSocket. API coordinates domain services; agents coordinate thread-scoped workflows; pipelines call integration/storage services. No component may bypass auth/project membership checks, secret service, or artifact service.
 
 ### Requirements to Structure Mapping
 
@@ -647,17 +713,25 @@ ai-qa-automation/
 - `src/ai_qa/cli.py` — CLI entry point (admin/developer)
 - `src/ai_qa/browser/agent.py` — browser-use agent
 
-**FR14-15 (Configuration):**
+**FR14-15b (Secure Configuration and Dynamic Model Discovery):**
 
-- `src/ai_qa/config.py` — Pydantic Settings
-- `.env` / `config.yaml` — Runtime config files
+- `src/ai_qa/config.py` — system-level Pydantic Settings and encryption key validation
+- `src/ai_qa/secrets/` — per-user encrypted AI provider and MCP key storage, rotation, masking, execution-time resolution
+- `src/ai_qa/ai_connection/providers/` — provider validation and model discovery adapters
+- `src/ai_qa/agents/alice.py` — provider/model review, discovered-model scoring, actionable recovery messages
 
-**FR16-18 (LLM Management, M1):**
+**FR16 (Administration):**
 
-- `src/ai_qa/ai_connection/client.py` — Multi-provider switching
-- `src/ai_qa/ai_connection/config.py` — LLM-specific settings
+- `src/ai_qa/projects/` — user/project/membership domain services
+- `src/ai_qa/api/routes/admin.py` — admin-only CRUD endpoints
+- `frontend/src/features/admin/` — admin dashboard
 
-**FR19-22 (Human-in-the-Loop):**
+**FR17-18 (Backlog/Removed Scope):**
+
+- Provider comparison test hooks can be added later under `ai_connection/evaluation/`
+- Centralized prompt-template tuning is intentionally not an MVP architecture surface
+
+**FR19-22 (Human-in-the-Loop):
 
 - `src/ai_qa/agents/base.py` — BaseAgent review gate lifecycle (Start→Process→Review→Approve/Reject→Done)
 - `src/ai_qa/api/websocket.py` — Real-time review presentation via WebSocket
@@ -668,69 +742,98 @@ ai-qa-automation/
 
 - `src/ai_qa/mcp/jira.py` — Placeholder for M1
 
-**FR25-29 (Quality & Observability, M1):**
+**FR25-29 (Quality, Observability, and Reporting):**
 
-- `src/ai_qa/audit/logger.py` — Audit trail
-- Future: `src/ai_qa/metrics/` module (M1)
+- `src/ai_qa/audit/logger.py` — non-secret audit trail
+- Future: `src/ai_qa/metrics/` module for success rates, effort reduction, and LLM cost tracking
+
+**FR30-41 (Collaborative Project Threads and Agent Runs):**
+
+- `src/ai_qa/threads/` — conversation thread, message, and agent-run services
+- `src/ai_qa/api/routes/threads.py` — New Conversation, Conversation History, restore thread state
+- `frontend/src/features/conversations/` — conversation history and active-thread state
+
+**FR42-46 (Shared Artifact Storage):**
+
+- `src/ai_qa/artifacts/service.py` — metadata + SeaweedFS operations + required folder projection
+- `src/ai_qa/artifacts/storage.py` — S3/SeaweedFS adapter
+- `src/ai_qa/api/routes/artifacts.py` — project-member artifact list/read/edit/delete endpoints
+- `frontend/src/features/artifacts/` — Project / Artifacts tree and editor/preview
+
+**FR47-53 (Collaborative Workspace UX):**
+
+- `frontend/src/features/workspace/` — shell, sidebar, project lock display, empty pre-selection state, zero-project message
+- `frontend/src/features/conversations/` — New Conversation and private Conversation History
+
+**FR54-60 (Secure User Secret Storage and Rotation):**
+
+- `src/ai_qa/secrets/` — encrypted secret persistence, status metadata, replacement flows
+- `src/ai_qa/api/routes/secrets.py` — secret status and replacement endpoints that never return values
+- `frontend/src/features/secrets/` — secret status and replacement UI
+
+**FR61-67 (Project Artifact Realtime Sync):**
+
+- `src/ai_qa/realtime/` — WebSocket connection registry and project-scoped artifact event broadcast
+- `src/ai_qa/artifacts/events.py` — application-managed artifact change events
+- `frontend/src/hooks/useArtifactSync.ts` — non-disruptive artifact tree refresh and opened-artifact notices
 
 ### Data Flow
 
 ```text
-[React Frontend (localhost:5173)]
+[React Collaborative Workspace]
        │
-       ├── REST API (actions: start, approve, reject, continue)
-       ├── WebSocket (real-time: agent messages, processing updates, review content)
+       ├── REST: auth, admin, projects, threads, secrets, artifacts, agent actions
+       ├── WebSocket: agent messages, processing updates, review content, artifact events
        │
        ▼
   api/server.py (FastAPI)
        │
+       ├── auth/projects services ──→ [PostgreSQL: users, password_hashes, projects, memberships]
+       ├── threads service ────────→ [PostgreSQL: conversation_threads, append-only messages, agent_runs]
+       ├── secrets service ────────→ [PostgreSQL encrypted user secrets]
+       │                               ▲
+       │                               └── encryption key from AppSettings.USER_SECRETS_ENCRYPTION_KEY
+       ├── artifacts service ──────→ [PostgreSQL artifact metadata] + [SeaweedFS ai-qa-artifacts]
+       │                               └── emits artifact change event ─→ realtime hub ─→ authorized project clients
+       │
        ▼
-  agents/ (Named Agent Orchestrators)
+  agents/ (thread-scoped named orchestrators)
        │
-       ├── alice.py (Step 1: Configuration)
-       │     ├──→ Present AI provider options (BU Cloud/Claude/Gemini/ChatGPT/On-Prem)
-       │     ├──→ Collect credentials (API key or server URL)
-       │     ├──→ Test connection to selected provider
-       │     ├──→ WebSocket: present provider + model assignment for review ──→ [Frontend]
-       │     │                 ← approve/reject ←
-       │     └──→ Save config files ──→ [PostgreSQL `User` Table]
-       │           ├── ai_provider_config   (provider, endpoint, credential ref)
-       │           └── ai_agents_config     (per-agent: model, prompt, tools)
+       ├── alice.py
+       │     ├── list accessible projects for current user
+       │     ├── bind selected project to new thread immutably
+       │     ├── read secret status / request replacement if missing or expired
+       │     ├── resolve current-user provider secret through secrets service
+       │     ├── validate provider connection and discover models through provider adapter
+       │     ├── persist non-secret selected provider/model assignments and rationale
+       │     └── append messages + update thread current_step/status
        │
-       ├── bob.py (Step 2: Extract Requirements)
-       │     ├──→ reads [PostgreSQL `User` Table] → loads model + prompt + tools
-       │     ├──→ pipelines/confluence_reader.py ──→ mcp/confluence.py ──→ [MCP Server]
-       │     ├──→ pipelines/content_parser.py (MD, Mermaid, images)
-       │     ├──→ artifacts/service.py ──→ [MinIO `ai-qa-artifacts` bucket]
-       │     └──→ WebSocket: present pages for review ──→ [Frontend]
-       │                      ← approve/reject+feedback ←
+       ├── bob.py
+       │     ├── derive user/project from thread_id
+       │     ├── resolve current-user MCP secret and selected model
+       │     ├── confluence_reader.py ──→ mcp/confluence.py ──→ [MCP Server]
+       │     ├── content_parser.py
+       │     └── artifacts/service.py ──→ projects/{project_id}/requirements/
        │
-       ├── mary.py (Step 3: Create Test Cases)
-       │     ├──→ reads [PostgreSQL `User` Table] → loads model + prompt + tools
-       │     ├──→ reads requirements from [MinIO / PostgreSQL Metadata]
-       │     ├──→ pipelines/test_case_extractor.py ──→ ai_connection/client.py ──→ [LiteLLM]
-       │     ├──→ artifacts/service.py ──→ [MinIO `ai-qa-artifacts` bucket]
-       │     └──→ WebSocket: present test cases for review ──→ [Frontend]
-       │                      ← approve/reject+feedback ←
+       ├── mary.py
+       │     ├── derive user/project from thread_id
+       │     ├── read requirements via artifact service
+       │     ├── test_case_extractor.py ──→ ai_connection provider adapter
+       │     └── artifacts/service.py ──→ projects/{project_id}/test_cases/
        │
-       ├── sarah.py (Step 4: Create Test Scripts)
-       │     ├──→ reads [PostgreSQL `User` Table] → loads model + prompt + tools
-       │     ├──→ reads testcases from [MinIO / PostgreSQL Metadata]
-       │     ├──→ pipelines/script_generator.py ──→ ai_connection/client.py ──→ [LiteLLM]
-       │     │                                     browser/agent.py ──→ [Chrome via SSO]
-       │     ├──→ artifacts/service.py ──→ [MinIO `ai-qa-artifacts` bucket]
-       │     └──→ WebSocket: present TC+script pairs for review ──→ [Frontend]
-       │                      ← approve/reject+feedback ←
+       ├── sarah.py
+       │     ├── derive user/project from thread_id
+       │     ├── read test cases via artifact service
+       │     ├── script_generator.py ──→ ai_connection provider adapter + browser/agent.py
+       │     └── artifacts/service.py ──→ projects/{project_id}/test_scripts/
        │
-       └── jack.py (Step 5: Run Test Scripts)
-             ├──→ reads [PostgreSQL `User` Table] → loads model + prompt + tools
-             ├──→ reads testscripts from [MinIO / PostgreSQL Metadata]
-             ├──→ pipelines/script_runner.py ──→ [Chrome/Firefox/Edge]
-             ├──→ artifacts/service.py ──→ [MinIO `ai-qa-artifacts` bucket]
-             └──→ WebSocket: present execution report ──→ [Frontend]
-                              ← approve/reject+feedback ←
+       └── jack.py
+             ├── derive user/project from thread_id
+             ├── read scripts via artifact service
+             ├── script_runner.py ──→ [Chrome/Firefox/Edge]
+             └── append execution report + artifact metadata
 
-  audit/logger.py ──→ [PostgreSQL / MinIO] (cross-cutting, all agents)
+  audit/logger.py ──→ [PostgreSQL / SeaweedFS] (non-secret cross-cutting audit)
 ```
 
 ### Development Workflow
@@ -826,27 +929,34 @@ cd frontend && npm run lint        # ESLint + TypeScript check
 | --- | --- | --- |
 | FR1-4 Confluence Integration | `mcp/confluence.py` + `pipelines/confluence_reader.py` | ✅ Covered |
 | FR5-9 Test Script Generation | `pipelines/test_case_extractor.py` + `script_generator.py` | ✅ Covered |
-| FR10-13 Pipeline Execution | `agents/` + `api/server.py` + `cli.py` + `browser/agent.py` | ✅ Covered |
-| FR14-15 Configuration | `config.py` + `.env` + `config.yaml` | ✅ Covered |
-| FR16-18 LLM Management (M1) | `ai_connection/client.py` — multi-provider ready | ✅ Covered |
-| FR17 Prompt Tuning | `prompts/` directory — dedicated prompt templates | ✅ Covered |
-| FR19-22 Human-in-the-Loop | `agents/base.py` review lifecycle + `api/websocket.py` + `frontend/` chat UI | ✅ Covered |
-| FR23-24 Jira Integration (M1) | `mcp/jira.py` placeholder | ⏳ M1 |
-| FR25-29 Quality & Observability (M1) | `audit/logger.py` — basic audit in PoC | ✅ Partial |
+| FR10-13 Pipeline Execution | `agents/` + `threads/agent_runs` + `api/server.py` + `browser/agent.py` | ✅ Covered |
+| FR14-15b Secure Configuration | `config.py` + `secrets/` + provider adapters + Alice discovery/review | ✅ Covered |
+| FR16 Administration | `projects/`, `auth/`, admin API routes, admin frontend feature | ✅ Covered |
+| FR17-18 Backlog/Removed | Provider comparisons deferred; admin prompt tuning excluded | ✅ Reflected |
+| FR19-22 Human-in-the-Loop | `agents/base.py` review lifecycle + `api/websocket.py` + workspace agent UI | ✅ Covered |
+| FR23-24 Jira Integration | `mcp/jira.py` placeholder | ⏳ M1 |
+| FR25-29 Quality/Observability/Reporting | `audit/logger.py`, future `metrics/` | ✅ Partial |
+| FR30-41 Threads/Agent Runs | `threads/` services, append-only messages, thread-scoped agent runs | ✅ Covered |
+| FR42-46 Shared Artifacts | `artifacts/` service, PostgreSQL metadata, SeaweedFS project folders | ✅ Covered |
+| FR47-53 Workspace UX | `frontend/src/features/workspace/` and conversations/artifacts features | ✅ Covered |
+| FR54-60 Secret Storage/Rotation | `secrets/` service and secret status/replacement API/UI | ✅ Covered |
+| FR61-67 Artifact Realtime Sync | `realtime/`, artifact events, `useArtifactSync` | ✅ Covered |
 
 **Non-Functional Requirements Coverage:**
 
 | NFR | Architectural Support | Status |
 | --- | --- | --- |
-| <5 min per test case | Sequential async pipeline | ✅ |
+| <5 min per test case | Sequential async pipeline with persisted run state | ✅ |
 | <30s per browser action | Playwright timeout config | ✅ |
-| On-premises data only | LiteLLM proxy, no external calls enforced | ✅ |
-| .env-only secrets | Pydantic Settings, gitignored, validated at startup | ✅ |
+| On-premises data only | Environment-controlled endpoints, on-prem provider option, no secret/log leakage | ✅ |
+| User secrets never exposed | Encrypted PostgreSQL fields, secret service, response redaction, no message/artifact/log serialization | ✅ |
+| Encryption key handling | `USER_SECRETS_ENCRYPTION_KEY` from environment, startup validation, not stored in PostgreSQL | ✅ |
 | Browser read-only | browser-use config enforcement | ✅ |
 | LLM retry max 3 | tenacity `stop_after_attempt(3)` | ✅ |
-| MCP failure handling | tenacity retry + custom exceptions | ✅ |
+| MCP failure handling | tenacity retry + custom exceptions + actionable user recovery | ✅ |
 | Browser crash recovery | browser-use built-in + Playwright timeouts | ✅ |
-| Startup validation | Pydantic Settings fail-fast | ✅ |
+| Startup validation | Pydantic Settings fail-fast for infrastructure settings and encryption key | ✅ |
+| Project/thread authorization | RBAC and membership checks on all APIs/WebSocket events | ✅ |
 
 ### Implementation Readiness Validation ✅
 
@@ -875,12 +985,16 @@ cd frontend && npm run lint        # ESLint + TypeScript check
 
 | Gap | Resolution | Impact |
 | --- | --- | --- |
-| No prompt template location | Added `src/ai_qa/prompts/` directory | FR17 prompt tuning supported |
+| No prompt template location | Added `src/ai_qa/prompts/` directory | Prompt reuse remains possible without MVP admin tuning |
 | No confidence scoring in StageResult | Added `confidence: float \| None` field | FR21 low-confidence flagging ready |
-| Hardcoded output directory | `workspace/` directory with per-step subfolders | Transparent file pipeline |
+| Hardcoded output directory | Replaced with project-level SeaweedFS folders and PostgreSQL artifact metadata | FR42-46 shared artifacts supported |
 | No web UI for non-technical users | Added React frontend + FastAPI API layer | FR19-22 human-in-the-loop enabled |
-| No agent orchestration layer | Added `agents/` module with BaseAgent lifecycle | 4-step named agent pipeline |
-| CLI-only interface excluded manual testers | FastAPI + WebSocket + React conversational UI | Zero-code barrier removed |
+| No agent orchestration layer | Added `agents/` module with BaseAgent lifecycle | Named agent pipeline enabled |
+| CLI-only interface excluded manual testers | FastAPI + WebSocket + React collaborative workspace | Zero-code barrier removed |
+| Secret storage ambiguous | Added encrypted per-user secret service and rotation UX | FR54-60 and security NFRs covered |
+| Conversation state ambiguous | Added private threads, append-only messages, and thread-scoped agent runs | FR30-41 covered |
+| Artifact collaboration missing | Added project-level artifact metadata, required folders, and role-checked cross-user access | FR42-46 covered |
+| Artifact realtime sync missing | Added application-managed artifact change events over WebSocket | FR61-67 covered |
 
 ### Architecture Completeness Checklist
 
@@ -927,14 +1041,15 @@ cd frontend && npm run lint        # ESLint + TypeScript check
 - M1 features have placeholders ready in structure (review/, jira.py, metrics/)
 - Standard Python tooling (pytest, ruff, mypy) — well-supported ecosystem
 
-**Areas for Future Enhancement (M1+):**
+**Areas for Future Enhancement (Post-MVP):**
 
-- Event-driven pipeline if parallel processing needed
-- Database storage for audit data at scale
+- Event-driven or parallelized pipeline if throughput becomes a bottleneck
 - CI/CD pipeline (Bitbucket on-premises)
-- Multi-user support with authentication (M2 server deployment)
-- Metrics dashboard (`src/ai_qa/metrics/` + frontend dashboard page)
-- Multi-environment configuration support
+- Provider comparison test harness
+- Direct external SeaweedFS notifications if application-managed events are insufficient
+- Artifact version rollback
+- Metrics dashboard depth (`src/ai_qa/metrics/` + frontend dashboard page)
+- Multi-environment configuration management beyond current deployment settings
 - Dark mode frontend theme
 
 ### Implementation Handoff
@@ -949,15 +1064,16 @@ cd frontend && npm run lint        # ESLint + TypeScript check
 
 **First Implementation Priority:**
 
-1. Project restructure: flat layout → `src/ai_qa/` with `pyproject.toml` updates
-2. `config.py` with Pydantic Settings (AppSettings)
-3. `exceptions.py` with custom exception hierarchy
-4. `models.py` with StageResult, AgentMessage, and shared models
-5. `agents/base.py` with BaseAgent lifecycle (Start→Process→Review→Done)
-6. `api/server.py` + `api/websocket.py` with FastAPI + WebSocket foundation
-7. `frontend/` scaffold with Vite + React + Shadcn/ui + core chat components
-8. First agent (Alice) end-to-end: API → Agent → WebSocket → Frontend (config + provider selection)
-9. Second agent (Bob) end-to-end: API → Agent → Pipeline → WebSocket → Frontend (extract requirements)
+1. `config.py` with Pydantic Settings for system-level settings and `USER_SECRETS_ENCRYPTION_KEY` validation
+2. `exceptions.py` with custom exception hierarchy
+3. Database models/migrations for users, projects, memberships, conversation threads, messages, agent runs, user secrets, and artifact metadata
+4. Secret encryption service with status, replacement, redaction, and execution-time resolution
+5. Auth/RBAC/project membership enforcement across API and WebSocket connection registration
+6. Artifact service with PostgreSQL metadata, SeaweedFS storage, required folder projection, and artifact change events
+7. Thread/message/agent-run services with immutable project binding and append-only message persistence
+8. Provider adapter interfaces for validation and dynamic model discovery
+9. Alice end-to-end: project binding → secret status → provider validation/model discovery → review → persisted non-secret configuration
+10. Bob end-to-end: thread-scoped run → current-user MCP secret → Confluence extraction → project artifact write → realtime artifact event
 
 ## Corrective Addendum: Alice Provider Configuration and Dynamic Model Discovery
 

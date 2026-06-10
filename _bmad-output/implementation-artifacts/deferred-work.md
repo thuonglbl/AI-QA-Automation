@@ -1,5 +1,10 @@
 # Deferred Work
 
+## Deferred from: code review of 9-7-saved-provider-configuration-and-rotation-behavior (2026-06-10)
+
+- `save_provider_config` has no defense-in-depth guard against accidental secret leakage [`src/ai_qa/userconfig/service.py:28`] — mirrors `secrets/service.py` pattern (caller discipline); no confirmed leak. Add assert guards when tightening AC1 cross-cutting enforcement.
+- Deleted project in validity check treated as "all providers allowed" [`src/ai_qa/agents/alice.py:650`] — low real-world risk; FK constraints on commit would catch downstream failures. Handle with a proper "project not found → skip saved config" guard in a future auth/cleanup story.
+
 ## Deferred from: code review of 12-10-user-project-selection-in-alice-configuration-flow (2026-05-15)
 
 - Conversation persistence API is not scoped to selected project [frontend/src/hooks/usePipelineState.ts:34] — pre-existing persistence architecture issue; current story already preserves existing conversation API and scopes WebSocket/start/approve/reject/navigate payloads.
@@ -73,3 +78,54 @@
 ## Deferred from: code review of 12-12-fix-frontend-401-unauthorized-api-calls (2026-05-29)
 
 - Security Vulnerability (XSS) — Using localStorage instead of HttpOnly cookies for session tokens is a security risk. Pre-existing architectural choice.
+
+## Deferred from: code review of 7-2-project-membership-access-for-standard-users.md (2026-05-31)
+
+- Incorrect API Routes File Path [src/ai_qa/api/projects.py] - Spec mentioned api/routes/projects.py but existing code uses api/projects.py.
+- Scale Boundary: Unbounded Result Sets [src/ai_qa/projects/service.py] - Fetching all records may degrade performance at scale.
+
+## Deferred from: code review of 7-6-membership-removal-access-enforcement (2026-06-06)
+
+- Thread-list admin scoping uses the stale session/JWT role [src/ai_qa/api/threads.py] — `get_user_threads` reads `is_admin` from the JWT/session while `assert_thread_access` reads the live DB `User.role`. A mid-session admin demotion keeps `role=admin` in the token until expiry, so the list endpoint still shows all the user's own threads. Outside 7.6's membership-removal scope; only relevant on role demotion.
+
+## Deferred from: code review of 7-7-standard-user-workspace-shell-routing (2026-06-06)
+
+- Undocumented `run_in_threadpool` wrapping of register/login [src/ai_qa/api/auth/local.py] — correct improvement (bcrypt is CPU-bound) but not listed in the story File List; flagged for traceability only, no correctness concern.
+- Partial failure of the multi-project starter bootstrap is not self-healing for the session [frontend/src/App.tsx] — if `createThread` throws mid-loop, already-created threads aren't committed to state, `threadCreationError` blocks the effect, and ensured projects stay marked, so recovery requires a page reload. Safe (error banner shown) but degraded; low frequency.
+- E2E Playwright suite not executed against a live stack [frontend/e2e/story-7-7-workspace-shell.spec.ts] — Task 7 left unchecked by dev; run a live e2e pass (running backend+frontend + admin bootstrap) before marking the epic done.
+
+## Deferred from: code review of 9-1-encrypted-per-user-secret-storage-foundation (2026-06-07)
+
+- Corrupt/wrong-key ciphertext is returned as plaintext by `UserSecretEncryptedString.process_result_value` and, being truthy, is used as the API key in `get_llm_config` (env fallback skipped). Pre-existing `EncryptedString` pattern; reconsider with key-rotation handling in Story 9.7. [src/ai_qa/db/types.py, src/ai_qa/agents/base.py]
+- Provider lookup uses silent `PROVIDER_SECRET_TYPE_MAP.get()` (None on unknown/mis-cased provider) instead of the raising/normalizing `resolve_secret_type`, which is exported but unused. [src/ai_qa/agents/alice.py:351, src/ai_qa/agents/base.py:154, src/ai_qa/secrets/__init__.py:45]
+- `set_user_secret` SELECT-then-INSERT cross-session race can raise `IntegrityError` on commit; unique constraint protects integrity. [src/ai_qa/secrets/service.py]
+- `api_key` is stored unstripped while the connection test validates the stripped value (whitespace mismatch). Pre-existing. [src/ai_qa/agents/alice.py:349 vs :596]
+- Module-level Fernet cache (`_user_secrets_fernet_instance`) prevents key rotation / can carry a stale key across reloads. Rotation is Story 9.7. [src/ai_qa/db/types.py]
+- alice `get_on_prem_defaults` / `process` pass `user_id` without the `None` guard base.py has; latent, write path try/except-wrapped. [src/ai_qa/agents/alice.py:270,352]
+- `mock_broadcast` yield-fixtures lack `Generator` typing (project rule #3); non-gating (mypy src-only). [tests/test_agents/test_alice.py, tests/test_agents/test_base.py]
+
+## Deferred from: code review of story 9-3-provider-adapter-interface-and-connection-validation (2026-06-07)
+
+- Sequential 4×10s endpoint probing → ~40s worst-case validation latency [src/ai_qa/ai_connection/providers/openai_compatible.py:_probe]. Pre-existing sequential-probe pattern; perf, not correctness. Consider parallel probing or a shorter per-endpoint timeout.
+- 8-char key floor blocks genuinely keyless on-prem/no-auth deployments [src/ai_qa/ai_connection/providers/openai_compatible.py:validate_connection]. Pre-existing Alice behavior + spec-mandated format floor; revisit if no-auth on-prem support is required.
+
+## Deferred from: code review of stories 9-4 & 9-5 (2026-06-09)
+
+- Inconsistent agent key casing — `_assign_fallback_models` uses capitalized keys; `_assign_models_via_llm` uses lowercase. Fragile cross-consumer contract. [src/ai_qa/agents/alice.py] — deferred, pre-existing
+- Duplicate comment in E2E spec — copy-paste artifact, no functional impact. [frontend/e2e/story-9-4-dynamic-model-discovery.spec.ts] — deferred, cosmetic
+- Promise.race dangling locator watches — Playwright test may leak unresolved `waitFor` promises. [frontend/e2e/story-9-4-dynamic-model-discovery.spec.ts] — deferred, pre-existing
+- `role→sender` rename without migration — schema evolution belongs in dedicated migration story. [src/ai_qa/threads/models.py] — deferred, pre-existing
+- `conversation_data` removal without migration — existing threads lose conversation history. [src/ai_qa/threads/models.py] — deferred, pre-existing
+- `enabled_providers` JSON column no DB constraint — data integrity nice-to-have. [src/ai_qa/db/models.py] — deferred, pre-existing
+
+## Deferred from: code review of story 9-6 (2026-06-10)
+
+- process() MCP failure doesn't disconnect client — Pre-existing: if `connect()` fails, `finally` block is in wrong try scope. [src/ai_qa/agents/bob.py:169-193] — deferred, pre-existing
+- Redundant db/project re-read in _extract_descendants — Project fetched again inside extraction loop. Minor perf, pre-existing pattern. [src/ai_qa/agents/bob.py:349-355] — deferred, pre-existing
+
+## Deferred from: code review of 10-1-project-artifact-storage-foundation (2026-06-10)
+
+- `thread_id` column + `_validate_thread` are foundation-only — no production caller passes `thread_id` (the create API has no such field; the pipeline adapter omits it), and `_validate_thread` only checks project match, not `agent_run.thread_id == thread_id` when both are supplied. [src/ai_qa/artifacts/service.py:227] — deferred, intended foundation for Story 10.2; wire a real caller + add the run↔thread consistency check there.
+- `created_by_user_id`/`updated_by_user_id` are stamped from `owner_user_id` with no project-membership validation at the service layer (unlike `_validate_thread`/`_validate_agent_run`). [src/ai_qa/artifacts/service.py:64] — deferred, defense-in-depth; the only current writer (create API) already passes an authorized member via `ProjectAccessDependency`.
+- `create_version` unconditionally sets `updated_by_user_id = created_by_user_id`, so a caller passing `None` wipes a previously-known updater. [src/ai_qa/artifacts/service.py:136] — deferred, not reachable with None from the current API path.
+- Migration is not SQLite-batch-safe: `op.create_foreign_key`/`op.drop_constraint` are unsupported on SQLite without `render_as_batch=True` in `env.py`. [alembic/versions/604f28c24393_add_artifact_ownership_and_thread_.py] — deferred, production target is PostgreSQL and tests build schema via `metadata.create_all`, not Alembic.

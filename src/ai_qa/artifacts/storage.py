@@ -9,6 +9,35 @@ from typing import Protocol
 from uuid import UUID
 
 
+def build_artifact_key(
+    *,
+    project_id: UUID,
+    artifact_id: UUID,
+    version: int,
+    kind: str,
+    safe_name: str,
+) -> str:
+    """Return the canonical object-storage key for an artifact write.
+
+    Collision-safe nested keys: every artifact and version gets its own path
+    under a logical folder, so two distinct artifacts never share a key and each
+    version's bytes are retained.  The logical folders
+    (``requirements``/``test_cases``/``test_scripts``) remain browsable by prefix
+    for empty-folder projection (Story 10.2).
+    """
+    if kind == "raw_html":
+        folder = "requirements/mcp/confluence"
+    elif kind == "requirements":
+        folder = "requirements"
+    elif kind == "testcase":
+        folder = "test_cases"
+    elif kind in ("testscript", "playwright_script"):
+        folder = "test_scripts"
+    else:
+        folder = "artifacts"
+    return f"projects/{project_id}/{folder}/{artifact_id}/v{version}/{safe_name}"
+
+
 class ArtifactStorage(Protocol):
     """Replaceable storage interface for artifact bytes."""
 
@@ -29,6 +58,9 @@ class ArtifactStorage(Protocol):
 
     def delete(self, storage_path: str) -> None:
         """Best-effort delete for cleanup after downstream failures."""
+
+    def delete_prefix(self, prefix: str) -> None:
+        """Delete all objects under the given key prefix (project cleanup)."""
 
 
 class LocalArtifactStorage:
@@ -77,14 +109,33 @@ class LocalArtifactStorage:
         except OSError:
             return
 
+    def delete_prefix(self, prefix: str) -> None:
+        """Delete all files under the given prefix (project cleanup)."""
+        import logging
+        import shutil
+
+        logger = logging.getLogger(__name__)
+        try:
+            target = self._resolve_storage_path(prefix)
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+                logger.info("Local storage cleanup for prefix '%s': removed directory", prefix)
+            elif target.is_file():
+                target.unlink(missing_ok=True)
+                logger.info("Local storage cleanup for prefix '%s': removed file", prefix)
+        except (ValueError, OSError) as exc:
+            logger.warning("Local storage cleanup failed for prefix '%s': %s", prefix, exc)
+
     def _build_storage_path(
         self, project_id: UUID, artifact_id: UUID, version: int, kind: str, safe_name: str
     ) -> str:
-        if kind == "requirements":
-            return f"projects/{project_id}/requirements/{safe_name}"
-        if kind == "raw_html":
-            return f"projects/{project_id}/requirements/mcp/confluence/{safe_name}"
-        return f"projects/{project_id}/artifacts/{artifact_id}/v{version}/{safe_name}"
+        return build_artifact_key(
+            project_id=project_id,
+            artifact_id=artifact_id,
+            version=version,
+            kind=kind,
+            safe_name=safe_name,
+        )
 
     def _resolve_storage_path(self, storage_path: str) -> Path:
         raw_path = Path(storage_path)
@@ -98,7 +149,7 @@ class LocalArtifactStorage:
 
 
 class S3ArtifactStorage:
-    """S3/MinIO artifact storage backend."""
+    """S3/SeaweedFS artifact storage backend."""
 
     def __init__(
         self,
@@ -132,13 +183,13 @@ class S3ArtifactStorage:
     ) -> str:
         """Upload content to S3 bucket and return object key."""
         safe_name = sanitize_artifact_name(name)
-        if kind == "requirements":
-            object_key = f"projects/{project_id}/requirements/{safe_name}"
-        elif kind == "raw_html":
-            object_key = f"projects/{project_id}/requirements/mcp/confluence/{safe_name}"
-        else:
-            object_key = f"projects/{project_id}/artifacts/{artifact_id}/v{version}/{safe_name}"
-
+        object_key = build_artifact_key(
+            project_id=project_id,
+            artifact_id=artifact_id,
+            version=version,
+            kind=kind,
+            safe_name=safe_name,
+        )
         body = content.encode("utf-8") if isinstance(content, str) else content
         self.s3.put_object(Bucket=self.bucket_name, Key=object_key, Body=body)
 
@@ -157,6 +208,34 @@ class S3ArtifactStorage:
             self.s3.delete_object(Bucket=self.bucket_name, Key=storage_path)
         except Exception:
             pass
+
+    def delete_prefix(self, prefix: str) -> None:
+        """Delete all S3 objects under the given key prefix (project cleanup)."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+        try:
+            paginator = self.s3.get_paginator("list_objects_v2")
+            total_deleted = 0
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+                objects = page.get("Contents", [])
+                if objects:
+                    self.s3.delete_objects(
+                        Bucket=self.bucket_name,
+                        Delete={"Objects": [{"Key": obj["Key"]} for obj in objects]},
+                    )
+                    total_deleted += len(objects)
+            # Also try to delete the prefix itself as a directory object
+            try:
+                self.s3.delete_object(Bucket=self.bucket_name, Key=prefix)
+                self.s3.delete_object(Bucket=self.bucket_name, Key=prefix.rstrip("/"))
+            except Exception:
+                pass
+            logger.info(
+                "Storage cleanup for prefix '%s': deleted %d objects", prefix, total_deleted
+            )
+        except Exception as exc:
+            logger.warning("Storage cleanup failed for prefix '%s': %s", prefix, exc)
 
 
 def sanitize_artifact_name(name: str) -> str:

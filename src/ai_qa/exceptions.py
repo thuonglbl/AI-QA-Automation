@@ -63,6 +63,15 @@ class LLMAuthenticationError(LLMError):
     """Raised when an LLM call fails due to authentication issues."""
 
 
+class LLMRateLimitError(LLMError):
+    """Raised when an LLM provider rejects a call due to rate limit / quota / billing.
+
+    Examples: HTTP 429 (rate limit / insufficient quota), free-plan quota
+    exhausted, "credit balance too low" billing errors. These do not recover on
+    a short retry and the provider's own message should be surfaced to the user.
+    """
+
+
 class LLMProviderError(LLMError):
     """Raised when an LLM provider returns an error (e.g. 5xx)."""
 
@@ -149,3 +158,15 @@ class PipelineError(AIQAError):
 
     Examples: stage dependency missing, invalid stage result, pipeline aborted.
     """
+
+
+class PipelineSilentAbortError(PipelineError):
+    """Raised to abort pipeline processing without logging or error state.
+
+    Signals that the error has already been surfaced via a thinking trace or
+    connection-test status message, and no additional error handling should
+    occur. Catch this specifically — never match on string content.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Pipeline silently aborted")

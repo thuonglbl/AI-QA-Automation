@@ -3,6 +3,7 @@
 from sqlalchemy import UniqueConstraint
 
 import ai_qa.db.models  # noqa: F401  # populate metadata
+import ai_qa.threads.models  # noqa: F401  # populate metadata
 from ai_qa.db.base import Base
 
 
@@ -11,7 +12,8 @@ def test_core_tables_are_registered() -> None:
         "users",
         "projects",
         "project_memberships",
-        "pipeline_runs",
+        "threads",
+        "agent_runs",
         "artifacts",
         "artifact_versions",
         "audit_events",
@@ -43,7 +45,8 @@ def test_lookup_indexes_exist() -> None:
     expected_indexes = {
         "ix_users_email",
         "ix_project_memberships_user_project",
-        "ix_pipeline_runs_project_status",
+        "ix_threads_project_user",
+        "ix_agent_runs_thread_status",
         "ix_artifacts_project_kind",
         "ix_audit_events_project_event_created",
     }
@@ -52,3 +55,32 @@ def test_lookup_indexes_exist() -> None:
     }
 
     assert expected_indexes.issubset(actual_indexes)
+
+
+def test_pipeline_runs_are_retired_from_active_schema() -> None:
+    assert "pipeline_runs" not in Base.metadata.tables
+
+    artifacts = Base.metadata.tables["artifacts"]
+    audit_events = Base.metadata.tables["audit_events"]
+
+    assert "agent_run_id" in artifacts.columns
+    assert "agent_run_id" in audit_events.columns
+    assert "pipeline_run_id" not in artifacts.columns
+    assert "pipeline_run_id" not in audit_events.columns
+
+
+def test_agent_runs_are_artifact_and_audit_foreign_key_target() -> None:
+    artifacts = Base.metadata.tables["artifacts"]
+    audit_events = Base.metadata.tables["audit_events"]
+
+    artifact_targets = {
+        foreign_key.column.table.name
+        for foreign_key in artifacts.columns["agent_run_id"].foreign_keys
+    }
+    audit_targets = {
+        foreign_key.column.table.name
+        for foreign_key in audit_events.columns["agent_run_id"].foreign_keys
+    }
+
+    assert artifact_targets == {"agent_runs"}
+    assert audit_targets == {"agent_runs"}

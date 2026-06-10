@@ -28,7 +28,22 @@ from ai_qa.pipelines.context import PipelineContext
 def mock_db() -> MagicMock:
     db = MagicMock()
     user = User(id="user-123", email="test@example.com")
-    db.get.return_value = user
+
+    def mock_db_get(model, ident, **kwargs):
+        from ai_qa.db.models import User
+        from ai_qa.threads.models import Thread
+
+        if model is User:
+            return user
+        if model is Thread:
+            thread = Thread(id=ident, provider_name="claude", provider_base_url="")
+            return thread
+        return MagicMock()
+
+    db.get.side_effect = mock_db_get
+    # A fresh user has no stored UserSecret rows; the secret accessor uses
+    # db.scalar(select(...)), so default it to None to mirror real behavior.
+    db.scalar.return_value = None
     return db
 
 

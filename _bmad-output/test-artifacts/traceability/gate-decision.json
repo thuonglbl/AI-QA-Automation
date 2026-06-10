@@ -1,0 +1,24 @@
+{
+  "schema_version": "0.1.0",
+  "evaluated_at": "2026-06-10",
+  "repo": "ai-qa-automation",
+  "target": {
+    "type": "suite",
+    "id": "full-suite",
+    "label": "Full Suite Coverage Trace"
+  },
+  "collection_status": "COLLECTED",
+  "gate_basis": "priority_thresholds",
+  "gate_status": "FAIL",
+  "rationale": "P0 coverage is 100% (MET), but P1 coverage is 43% (minimum: 80%) and overall coverage is 64% (minimum: 80%). 4 partially-covered P1 journeys lack E2E coverage.",
+  "p0_status": "MET",
+  "p1_status": "NOT_MET",
+  "overall_status": "NOT_MET",
+  "critical_open": 0,
+  "links": {
+    "trace_report_path": "_bmad-output/test-artifacts/traceability/traceability-matrix.md",
+    "trace_report_url": "",
+    "artifact_url": "",
+    "journey_evidence_url": ""
+  }
+}

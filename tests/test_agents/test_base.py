@@ -8,7 +8,7 @@ All WebSocket interactions are mocked so no real network connections are made.
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -362,3 +362,55 @@ class TestPipelineErrorHandling:
         agent.state = AgentState.REVIEW_REQUEST
         await agent.handle_reject("feedback")
         assert agent.state == AgentState.ERROR
+
+
+# ---------------------------------------------------------------------------
+# get_llm_config secret-lookup tests (Story 9.1 consumer migration)
+# ---------------------------------------------------------------------------
+
+
+class TestGetLLMConfigSecretLookup:
+    """Verify get_llm_config sources the API key from the per-user secret store
+    (with env fallback) after the Story 9.1 migration off inline *_key columns."""
+
+    @staticmethod
+    def _agent_with_context(provider_name: str) -> ConcreteAgent:
+        agent = make_agent()
+        agent._provider_config = {"provider_name": provider_name, "base_url": ""}
+        context = MagicMock()
+        context.user_id = 1
+        context.artifact_service.db = MagicMock()
+        agent.project_context = context
+        return agent
+
+    def test_uses_stored_secret_as_api_key(self) -> None:
+        agent = self._agent_with_context("claude")
+        with patch("ai_qa.secrets.service.get_user_secret", return_value="stored-claude-key") as m:
+            config = agent.get_llm_config()
+        assert config.api_key == "stored-claude-key"
+        # Looked up with the canonical secret_type for the provider.
+        m.assert_called_once_with(agent.project_context.artifact_service.db, 1, "claude")
+
+    def test_falls_back_to_env_when_no_stored_secret(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "env-claude-key")
+        agent = self._agent_with_context("claude")
+        with patch("ai_qa.secrets.service.get_user_secret", return_value=None):
+            config = agent.get_llm_config()
+        assert config.api_key == "env-claude-key"
+
+    def test_openai_provider_resolves_openai_secret_type(self) -> None:
+        agent = self._agent_with_context("openai")
+        with patch("ai_qa.secrets.service.get_user_secret", return_value="stored-openai-key") as m:
+            config = agent.get_llm_config()
+        assert config.api_key == "stored-openai-key"
+        m.assert_called_once_with(agent.project_context.artifact_service.db, 1, "openai")
+
+    def test_no_context_uses_env_fallback_without_db_lookup(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "env-claude-key")
+        agent = make_agent()
+        agent._provider_config = {"provider_name": "claude", "base_url": ""}
+        agent.project_context = None
+        with patch("ai_qa.secrets.service.get_user_secret") as m:
+            config = agent.get_llm_config()
+        m.assert_not_called()
+        assert config.api_key == "env-claude-key"

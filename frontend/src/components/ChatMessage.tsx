@@ -1,9 +1,9 @@
-import { User, Bot } from 'lucide-react';
-import type { AgentMessage, ErrorInfo } from '@/types/pipeline';
-import { cn } from '@/lib/utils';
-import { ReviewContent } from './ReviewContent';
-import { ProcessingIndicator } from './ProcessingIndicator';
-import { ErrorFeedback } from './ErrorFeedback';
+import { User, Bot } from "lucide-react";
+import type { AgentMessage, ErrorInfo } from "@/types/pipeline";
+import { cn } from "@/lib/utils";
+import { ReviewContent } from "./ReviewContent";
+import { ProcessingIndicator } from "./ProcessingIndicator";
+import { ErrorFeedback } from "./ErrorFeedback";
 
 export interface ChatMessageProps {
   message: AgentMessage;
@@ -21,11 +21,12 @@ export function ChatMessage({
   errorInfo,
   processingMessage,
 }: ChatMessageProps) {
-  const isAgent = message.sender === 'agent';
-  const isSystem = message.sender === 'system';
-  const isProcessing = message.messageType === 'processing' || processingMessage !== undefined;
-  const isError = message.messageType === 'error' || errorInfo !== undefined;
-  
+  const isAgent = message.sender === "agent";
+  const isSystem = message.sender === "system";
+  const isProcessing =
+    message.messageType === "processing" || processingMessage !== undefined;
+  const isError = message.messageType === "error" || errorInfo !== undefined;
+
   // Determine styling based on sender type and message type
   const getBubbleStyle = () => {
     if (isError) {
@@ -39,7 +40,7 @@ export function ChatMessage({
     }
     return "bg-blue-500 text-white rounded-br-none";
   };
-  
+
   const getAvatarStyle = () => {
     if (isSystem) {
       return "border-slate-300 bg-slate-200 text-slate-600";
@@ -49,56 +50,73 @@ export function ChatMessage({
     }
     return "border-blue-400 bg-blue-600 text-blue-50";
   };
-  
+
   const getNameStyle = () => {
     if (isSystem) return "text-slate-600";
     if (isAgent) return "text-slate-700";
     return "text-blue-100";
   };
-  
+
   const getTimestampStyle = () => {
     if (isSystem) return "text-slate-400";
     if (isAgent) return "text-slate-400";
     return "text-blue-200";
   };
-  
+
   // Safe date parsing with validation
   const formatTimestamp = (timestamp: string): string => {
-    if (!timestamp) return '';
+    if (!timestamp) return "";
     const d = new Date(timestamp);
-    return !isNaN(d.getTime()) 
-      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : '';
+    return !isNaN(d.getTime())
+      ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "";
   };
 
   return (
-    <div 
-      className={cn("flex w-full mb-4", isAgent || isSystem ? "justify-start" : "justify-end")}
+    <div
+      className={cn(
+        "flex w-full mb-4",
+        isAgent || isSystem ? "justify-start" : "justify-end",
+      )}
       role="listitem"
     >
-      <div className={cn(
-        "flex max-w-[80%] p-4 rounded-lg items-start gap-4 shadow-sm",
-        getBubbleStyle()
-      )}>
+      <div
+        className={cn(
+          "flex max-w-[80%] p-4 rounded-lg items-start gap-4 shadow-sm",
+          getBubbleStyle(),
+        )}
+      >
         {/* Avatar */}
-        <div className={cn(
-          "flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-full border",
-          getAvatarStyle()
-        )}>
-          {isAgent ? <Bot className="h-5 w-5" /> : isSystem ? <Bot className="h-5 w-5" /> : <User className="h-5 w-5" />}
+        <div
+          className={cn(
+            "flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-full border",
+            getAvatarStyle(),
+          )}
+        >
+          {isAgent ? (
+            <Bot className="h-5 w-5" />
+          ) : isSystem ? (
+            <Bot className="h-5 w-5" />
+          ) : (
+            <User className="h-5 w-5" />
+          )}
         </div>
-        
+
         {/* Content */}
         <div className="flex flex-col gap-1 w-full min-w-0">
           <div className="flex items-center gap-2">
             <span className={cn("text-xs font-semibold", getNameStyle())}>
-              {isAgent ? message.agentName || 'Agent' : isSystem ? 'System' : 'User'}
+              {isAgent
+                ? message.agentName || "Agent"
+                : isSystem
+                  ? "System"
+                  : "User"}
             </span>
             <span className={cn("text-[10px]", getTimestampStyle())}>
               {formatTimestamp(message.timestamp)}
             </span>
           </div>
-          
+
           <div className="text-sm pt-1">
             {isProcessing ? (
               <ProcessingIndicator
@@ -107,17 +125,16 @@ export function ChatMessage({
               />
             ) : isError ? (
               errorInfo && onRetry ? (
-                <ErrorFeedback
-                  error={errorInfo}
-                  onRetry={onRetry}
-                />
+                <ErrorFeedback error={errorInfo} onRetry={onRetry} />
               ) : (
                 <ReviewContent content={message.content} />
               )
             ) : isAgent || isSystem ? (
               <ReviewContent content={message.content} />
             ) : (
-              <p className="whitespace-pre-wrap break-words break-all">{message.content}</p>
+              <p className="whitespace-pre-wrap break-words break-all">
+                {message.content}
+              </p>
             )}
           </div>
         </div>

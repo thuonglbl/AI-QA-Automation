@@ -27,9 +27,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
 
     # Paths that don't require authentication
+    # NOTE: /auth/register is intentionally NOT public. Public self-service
+    # registration is locked down (Story 8.7); user accounts are created only
+    # by admins via POST /api/admin/users.
     PUBLIC_PATHS = {
         "/auth/login",
-        "/auth/register",
         "/auth/callback",
         "/auth/logout",
         "/auth/me",
@@ -42,6 +44,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/",
         "/assets",
         "/vite.svg",
+        "/api/admin/tests/e2e/report/view",
     }
 
     def __init__(self, app: ASGIApp, settings: AppSettings):

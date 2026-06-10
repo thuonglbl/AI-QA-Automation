@@ -1,9 +1,9 @@
-import '@testing-library/jest-dom/vitest';
-import { vi } from 'vitest';
-import type { ReactNode } from 'react';
+import "@testing-library/jest-dom/vitest";
+import { vi } from "vitest";
+import type { ReactNode } from "react";
 
 // Mock TooltipProvider for tests
-vi.mock('@/components/ui/tooltip', () => ({
+vi.mock("@/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => children,
   TooltipContent: ({ children }: { children: ReactNode }) => children,
   TooltipProvider: ({ children }: { children: ReactNode }) => children,
@@ -32,11 +32,11 @@ const localStorageMock = (function () {
     key(index: number) {
       const keys = Object.keys(store);
       return keys[index] || null;
-    }
+    },
   };
 })();
 
-Object.defineProperty(window, 'localStorage', {
+Object.defineProperty(window, "localStorage", {
   value: localStorageMock,
   writable: true,
 });

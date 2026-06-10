@@ -5,7 +5,8 @@ interface ModelAssignmentReviewProps {
   provider: string;
   endpoint: string;
   assignments: ModelAssignment[] | null;
-  availableModels?: string[];
+  availableModels?: Array<{ id: string; name: string }>;
+  unavailableModels?: Array<{ id: string; name: string }>;
   onApprove: (updatedAssignments: Record<string, string>) => void;
   disabled?: boolean;
 }
@@ -22,39 +23,58 @@ export function ModelAssignmentReview({
   provider,
   assignments,
   availableModels = [],
+  unavailableModels = [],
   onApprove,
   disabled = false,
 }: ModelAssignmentReviewProps) {
-  const [selectedModels, setSelectedModels] = useState<Record<string, string>>({});
+  const [selectedModels, setSelectedModels] = useState<Record<string, string>>(
+    {},
+  );
 
   const handleModelChange = (agent: string, model: string) => {
-    setSelectedModels(prev => ({ ...prev, [agent]: model }));
+    setSelectedModels((prev) => ({ ...prev, [agent]: model }));
   };
 
   const handleOk = () => {
     const updatedAssignments: Record<string, string> = {};
-    assignments?.forEach(a => {
+    assignments?.forEach((a) => {
       const lowercaseAgent = a.agent.toLowerCase();
       updatedAssignments[lowercaseAgent] = selectedModels[a.agent] || a.model;
     });
     onApprove(updatedAssignments);
   };
+
   return (
-    <div className="max-w-[600px] self-start">
+    <div className="max-w-[90vw] md:max-w-max self-start">
       {/* Alice Message */}
       <div className="text-[11px] font-semibold text-[#3b82f6] mb-1">Alice</div>
       <div className="p-4 bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-sm text-[#0f172a] leading-relaxed">
         ✅ Connected successfully to <strong>{provider}</strong>!
-        <br /><br />
-        I assigned appropriate models to each agent, if you find out a better model you can change by selecting dropdown list below
+        <br />
+        <br />I assigned appropriate models to each agent, if you find out a
+        better model you can change by selecting dropdown list below
+
+        {/* Discovered Model Summary */}
+        {availableModels.length > 0 && (
+          <div className="mt-2 mb-1 text-xs text-[#64748b]">
+            Discovered {availableModels.length} available model
+            {availableModels.length !== 1 ? "s" : ""} from <strong>{provider}</strong>
+          </div>
+        )}
 
         {/* Model Table */}
         <table className="w-full border-collapse my-2 text-xs">
           <thead>
             <tr>
-              <th className="text-left py-1.5 px-2 bg-[#f8fafc] border-b border-[#e2e8f0] font-semibold text-[#64748b]">Agent</th>
-              <th className="text-left py-1.5 px-2 bg-[#f8fafc] border-b border-[#e2e8f0] font-semibold text-[#64748b]">Role</th>
-              <th className="text-left py-1.5 px-2 bg-[#f8fafc] border-b border-[#e2e8f0] font-semibold text-[#64748b]">Model</th>
+              <th className="text-left py-1.5 px-2 bg-[#f8fafc] border-b border-[#e2e8f0] font-semibold text-[#64748b]">
+                Agent
+              </th>
+              <th className="text-left py-1.5 px-2 bg-[#f8fafc] border-b border-[#e2e8f0] font-semibold text-[#64748b]">
+                Role
+              </th>
+              <th className="text-left py-1.5 px-2 bg-[#f8fafc] border-b border-[#e2e8f0] font-semibold text-[#64748b]">
+                Model
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -62,7 +82,9 @@ export function ModelAssignmentReview({
               <tr key={assignment.agent}>
                 <td className="py-1.5 px-2 border-b border-[#f1f5f9]">
                   <div className="flex items-center gap-1.5">
-                    <span className={`w-2 h-2 rounded-full inline-block ${AGENT_COLORS[assignment.agent] || 'bg-black'}`}></span>
+                    <span
+                      className={`w-2 h-2 rounded-full inline-block ${AGENT_COLORS[assignment.agent] || "bg-black"}`}
+                    ></span>
                     <span>{assignment.agent}</span>
                   </div>
                 </td>
@@ -73,16 +95,28 @@ export function ModelAssignmentReview({
                   <select
                     aria-label={`Model for ${assignment.agent}`}
                     value={selectedModels[assignment.agent] || assignment.model}
-                    onChange={(e) => handleModelChange(assignment.agent, e.target.value)}
+                    onChange={(e) =>
+                      handleModelChange(assignment.agent, e.target.value)
+                    }
                     disabled={disabled}
                     className="w-full p-1 border border-[#e2e8f0] rounded text-xs bg-white text-[#0f172a] focus:outline-none focus:ring-1 focus:ring-[#3b82f6]"
                   >
                     {availableModels.length > 0 ? (
-                      availableModels.map(m => (
-                        <option key={m} value={m}>{m}</option>
+                      availableModels.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))
+                    ) : unavailableModels.length > 0 ? (
+                      unavailableModels.map((m) => (
+                        <option key={m.id} value={m.id} disabled>
+                          {m.name} (Unavailable)
+                        </option>
                       ))
                     ) : (
-                      <option value={assignment.model}>{assignment.model}</option>
+                      <option value={assignment.model}>
+                        {assignment.model}
+                      </option>
                     )}
                   </select>
                 </td>
@@ -93,7 +127,7 @@ export function ModelAssignmentReview({
       </div>
 
       {/* Action Buttons */}
-      <div className="flex justify-center mt-3">
+      <div className="flex justify-center gap-3 mt-3">
         <button
           onClick={handleOk}
           disabled={disabled}

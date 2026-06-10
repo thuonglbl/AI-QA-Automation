@@ -1,137 +1,128 @@
 """Unit tests for SessionManager."""
 
-import json
+import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy.orm import Session
 
 from ai_qa.browser.session import SessionManager
+from ai_qa.db.models import User
 from ai_qa.exceptions import SessionError
 
 
 @pytest.fixture
-def temp_config_dir(tmp_path: Path) -> Path:
-    """Create temporary configuration directory."""
-    config_dir = tmp_path / "configuration"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    return config_dir
+def mock_db() -> MagicMock:
+    """Mock database session."""
+    return MagicMock(spec=Session)
 
 
-class TestSessionManagerInitialization:
-    """Tests for SessionManager initialization."""
-
-    def test_init_custom_config_dir(self, temp_config_dir: Path):
-        """Test SessionManager initialization with custom config directory."""
-        manager = SessionManager(config_dir=temp_config_dir)
-        assert manager.config_dir == temp_config_dir
-
-    def test_init_creates_config_dir(self, tmp_path: Path):
-        """Test that initialization creates config directory if it doesn't exist."""
-        config_dir = tmp_path / "new_config"
-        SessionManager(config_dir=config_dir)
-        assert config_dir.exists()
-        assert config_dir.is_dir()
-
-    def test_init_default_config_dir(self):
-        """Test SessionManager initialization with default config directory."""
-        # This test uses the actual default path resolution
-        manager = SessionManager()
-        # The default should be project_root/.ai_qa/configuration
-        # We just verify it creates the structure correctly
-        assert manager.config_dir.name == "configuration"
-        assert manager.config_dir.parent.name == ".ai_qa"
+@pytest.fixture
+def mock_user() -> User:
+    """Mock user object."""
+    user = User(
+        id=uuid.uuid4(),
+        email="test@example.com",
+        display_name="Test User",
+        password_hash="hash",
+    )
+    user.chrome_path = "/path/to/chrome"
+    return user
 
 
 class TestChromePathLoading:
-    """Tests for Chrome path loading from configuration."""
+    """Tests for Chrome path loading from database."""
 
-    def test_load_chrome_path_no_config_file(self, temp_config_dir: Path):
-        """Test loading Chrome path when config file doesn't exist."""
-        manager = SessionManager(config_dir=temp_config_dir)
-        assert manager.chrome_path is None
-
-    def test_load_chrome_path_valid_config(self, temp_config_dir: Path):
-        """Test loading Chrome path from valid config file."""
-        config_path = temp_config_dir / "browser_config.json"
-        config_path.write_text(json.dumps({"chrome_path": "/path/to/chrome"}))
-        manager = SessionManager(config_dir=temp_config_dir)
+    def test_load_chrome_path_valid(self, mock_db: MagicMock, mock_user: User):
+        """Test loading Chrome path from valid user."""
+        mock_db.get.return_value = mock_user
+        manager = SessionManager(db=mock_db, user_id=mock_user.id)
         assert manager.chrome_path == "/path/to/chrome"
 
-    def test_load_chrome_path_invalid_json(self, temp_config_dir: Path):
-        """Test loading Chrome path from invalid JSON file."""
-        config_path = temp_config_dir / "browser_config.json"
-        config_path.write_text("invalid json")
-        with pytest.raises(SessionError, match="Failed to load browser configuration"):
-            SessionManager(config_dir=temp_config_dir)
-
-    def test_load_chrome_path_no_chrome_path_key(self, temp_config_dir: Path):
-        """Test loading Chrome path when config file has no chrome_path key."""
-        config_path = temp_config_dir / "browser_config.json"
-        config_path.write_text(json.dumps({"other_key": "value"}))
-        manager = SessionManager(config_dir=temp_config_dir)
+    def test_load_chrome_path_no_user(self, mock_db: MagicMock):
+        """Test loading Chrome path when user does not exist."""
+        mock_db.get.return_value = None
+        manager = SessionManager(db=mock_db, user_id=uuid.uuid4())
         assert manager.chrome_path is None
+
+    def test_load_chrome_path_no_chrome_path(self, mock_db: MagicMock, mock_user: User):
+        """Test loading Chrome path when user has no chrome_path."""
+        mock_user.chrome_path = None
+        mock_db.get.return_value = mock_user
+        manager = SessionManager(db=mock_db, user_id=mock_user.id)
+        assert manager.chrome_path is None
+
+    def test_load_chrome_path_db_error(self, mock_db: MagicMock):
+        """Test loading Chrome path with DB error."""
+        mock_db.get.side_effect = Exception("DB Error")
+        with pytest.raises(
+            SessionError, match="Failed to load browser configuration from database"
+        ):
+            SessionManager(db=mock_db, user_id=uuid.uuid4())
 
 
 class TestChromePathSaving:
-    """Tests for Chrome path saving to configuration."""
+    """Tests for Chrome path saving to database."""
 
-    def test_save_chrome_path(self, temp_config_dir: Path):
-        """Test saving Chrome path to configuration."""
-        manager = SessionManager(config_dir=temp_config_dir)
+    def test_save_chrome_path(self, mock_db: MagicMock, mock_user: User):
+        """Test saving Chrome path to database."""
+        mock_db.get.return_value = mock_user
+        manager = SessionManager(db=mock_db, user_id=mock_user.id)
+
         manager.save_chrome_path("/new/path/to/chrome")
+
         assert manager.chrome_path == "/new/path/to/chrome"
+        assert mock_user.chrome_path == "/new/path/to/chrome"
+        mock_db.commit.assert_called_once()
 
-        # Verify file was saved
-        config_path = temp_config_dir / "browser_config.json"
-        assert config_path.exists()
-        with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
-        assert config["chrome_path"] == "/new/path/to/chrome"
+    def test_save_chrome_path_no_user(self, mock_db: MagicMock):
+        """Test saving Chrome path when user not found."""
+        mock_db.get.return_value = None
+        manager = SessionManager(db=mock_db, user_id=uuid.uuid4())
 
-    def test_save_chrome_path_overwrites_existing(self, temp_config_dir: Path):
-        """Test that saving Chrome path overwrites existing value."""
-        config_path = temp_config_dir / "browser_config.json"
-        config_path.write_text(json.dumps({"chrome_path": "/old/path"}))
+        with pytest.raises(SessionError, match="User .* not found"):
+            manager.save_chrome_path("/new/path/to/chrome")
 
-        manager = SessionManager(config_dir=temp_config_dir)
-        manager.save_chrome_path("/new/path/to/chrome")
+    def test_save_chrome_path_db_error(self, mock_db: MagicMock, mock_user: User):
+        """Test saving Chrome path when DB commit fails."""
+        mock_db.get.return_value = mock_user
+        manager = SessionManager(db=mock_db, user_id=mock_user.id)
 
-        with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
-        assert config["chrome_path"] == "/new/path/to/chrome"
+        mock_db.commit.side_effect = Exception("Commit failed")
+        with pytest.raises(SessionError, match="Failed to save browser configuration to database"):
+            manager.save_chrome_path("/new/path/to/chrome")
 
-    def test_save_chrome_path_io_error(self, temp_config_dir: Path):
-        """Test saving Chrome path when directory is read-only."""
-        manager = SessionManager(config_dir=temp_config_dir)
-        with patch("builtins.open", side_effect=OSError("Permission denied")):
-            with pytest.raises(SessionError, match="Failed to save browser configuration"):
-                manager.save_chrome_path("/path/to/chrome")
+        mock_db.rollback.assert_called_once()
 
 
 class TestGetChromePath:
     """Tests for getting Chrome path."""
 
-    def test_get_chrome_path_from_saved_config(self, temp_config_dir: Path):
-        """Test getting Chrome path from saved configuration."""
-        config_path = temp_config_dir / "browser_config.json"
-        config_path.write_text(json.dumps({"chrome_path": "/saved/path"}))
+    def test_get_chrome_path_from_db(self, mock_db: MagicMock, mock_user: User):
+        """Test getting Chrome path from database."""
+        mock_db.get.return_value = mock_user
+        manager = SessionManager(db=mock_db, user_id=mock_user.id)
+        assert manager.get_chrome_path() == "/path/to/chrome"
 
-        manager = SessionManager(config_dir=temp_config_dir)
-        assert manager.get_chrome_path() == "/saved/path"
+    def test_get_chrome_path_from_app_settings(self, mock_db: MagicMock, mock_user: User):
+        """Test getting Chrome path from AppSettings when not in DB."""
+        mock_user.chrome_path = None
+        mock_db.get.return_value = mock_user
 
-    def test_get_chrome_path_from_app_settings(self, temp_config_dir: Path):
-        """Test getting Chrome path from AppSettings when not saved."""
         with patch("ai_qa.browser.session.AppSettings") as mock_settings:
             mock_settings.return_value.chrome_path = "/settings/path"
-            manager = SessionManager(config_dir=temp_config_dir)
+            manager = SessionManager(db=mock_db, user_id=mock_user.id)
             assert manager.get_chrome_path() == "/settings/path"
 
-    def test_get_chrome_path_not_configured(self, temp_config_dir: Path):
+    def test_get_chrome_path_not_configured(self, mock_db: MagicMock, mock_user: User):
         """Test getting Chrome path when not configured anywhere."""
+        mock_user.chrome_path = None
+        mock_db.get.return_value = mock_user
+
         with patch("ai_qa.browser.session.AppSettings") as mock_settings:
             mock_settings.return_value.chrome_path = ""
-            manager = SessionManager(config_dir=temp_config_dir)
+            manager = SessionManager(db=mock_db, user_id=mock_user.id)
             with pytest.raises(SessionError, match="Chrome path is not configured"):
                 manager.get_chrome_path()
 
@@ -139,29 +130,37 @@ class TestGetChromePath:
 class TestSSOSessionDetection:
     """Tests for SSO session detection."""
 
-    def test_detect_active_sso_session_default(self, temp_config_dir: Path):
+    def test_detect_active_sso_session_default(self, mock_db: MagicMock, mock_user: User):
         """Test SSO session detection (default implementation returns False)."""
-        manager = SessionManager(config_dir=temp_config_dir)
-        # Current implementation returns False
+        mock_db.get.return_value = mock_user
+        manager = SessionManager(db=mock_db, user_id=mock_user.id)
         assert manager.detect_active_sso_session() is False
 
 
 class TestChromePathValidation:
     """Tests for Chrome path validation."""
 
-    def test_validate_chrome_path_valid_file(self, temp_config_dir: Path):
+    def test_validate_chrome_path_valid_file(
+        self, mock_db: MagicMock, mock_user: User, tmp_path: Path
+    ):
         """Test validating a valid Chrome path (existing file)."""
-        chrome_exe = temp_config_dir / "chrome.exe"
+        chrome_exe = tmp_path / "chrome.exe"
         chrome_exe.touch()
-        manager = SessionManager(config_dir=temp_config_dir)
+
+        mock_db.get.return_value = mock_user
+        manager = SessionManager(db=mock_db, user_id=mock_user.id)
         assert manager.validate_chrome_path(str(chrome_exe)) is True
 
-    def test_validate_chrome_path_not_exists(self, temp_config_dir: Path):
+    def test_validate_chrome_path_not_exists(self, mock_db: MagicMock, mock_user: User):
         """Test validating a non-existent Chrome path."""
-        manager = SessionManager(config_dir=temp_config_dir)
+        mock_db.get.return_value = mock_user
+        manager = SessionManager(db=mock_db, user_id=mock_user.id)
         assert manager.validate_chrome_path("/nonexistent/chrome.exe") is False
 
-    def test_validate_chrome_path_is_directory(self, temp_config_dir: Path):
+    def test_validate_chrome_path_is_directory(
+        self, mock_db: MagicMock, mock_user: User, tmp_path: Path
+    ):
         """Test validating when Chrome path is a directory."""
-        manager = SessionManager(config_dir=temp_config_dir)
-        assert manager.validate_chrome_path(str(temp_config_dir)) is False
+        mock_db.get.return_value = mock_user
+        manager = SessionManager(db=mock_db, user_id=mock_user.id)
+        assert manager.validate_chrome_path(str(tmp_path)) is False

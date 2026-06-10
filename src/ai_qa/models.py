@@ -129,6 +129,28 @@ class AgentMessage(BaseModel):
         return value.isoformat()
 
 
+class ArtifactChangeEvent(BaseModel):
+    """Event emitted when an artifact is created, updated, or deleted.
+
+    Broadcast to WebSocket clients assigned to the changed project so the
+    frontend can refresh the artifact tree without manual reload.
+    """
+
+    type: Literal["artifact_change"] = Field(
+        default="artifact_change",
+        description="Event type identifier for frontend routing",
+    )
+    project_id: str = Field(description="Project ID where the change occurred")
+    artifact_id: str | None = Field(default=None, description="Changed artifact ID")
+    change_type: Literal["created", "updated", "deleted"] = Field(
+        description="Type of artifact change"
+    )
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="When the change occurred",
+    )
+
+
 # =============================================================================
 # Configuration Models (Epic 2-8)
 # =============================================================================

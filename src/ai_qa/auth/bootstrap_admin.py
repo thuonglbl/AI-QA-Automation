@@ -44,7 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     except InvalidBootstrapInputError as exc:
         raise SystemExit(str(exc)) from exc
     except SQLAlchemyError as exc:
-        raise SystemExit("Admin bootstrap failed due to a database error") from exc
+        import traceback
+
+        traceback.print_exc()
+        raise SystemExit(f"Admin bootstrap failed due to a database error: {exc}") from exc
 
     print(f"Admin account ready: {user.email} ({user.display_name})")
     return 0

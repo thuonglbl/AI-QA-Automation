@@ -1,4 +1,3 @@
-import React from 'react';
 import { render, screen } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
 import { StepDots } from "../StepDots";
@@ -13,8 +12,10 @@ describe("StepDots", () => {
   });
 
   it("renders correct number of dots", () => {
-    const { container } = render(<StepDots currentStep={1} completedSteps={0} />);
-    const dots = container.querySelectorAll('.rounded-full');
+    const { container } = render(
+      <StepDots currentStep={1} completedSteps={0} />,
+    );
+    const dots = container.querySelectorAll(".rounded-full");
     expect(dots).toHaveLength(5);
   });
 });

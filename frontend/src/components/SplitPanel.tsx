@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
-import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
-import { ExternalLink, Check, X } from 'lucide-react';
+import { useState, useEffect } from "react";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { ExternalLink, Check, X } from "lucide-react";
 
 interface ExtractedPage {
   page_id: string;
@@ -28,10 +28,10 @@ export function SplitPanel({
   onApprove,
   onSkip,
   disabled,
-  className
+  className,
 }: SplitPanelProps) {
   const page = pages[currentIndex];
-  const [markdownContent, setMarkdownContent] = useState('');
+  const [markdownContent, setMarkdownContent] = useState("");
 
   // Reset local state when page changes
   useEffect(() => {
@@ -41,23 +41,36 @@ export function SplitPanel({
   }, [page]);
 
   if (!page) {
-    return <div className="p-4 text-center text-slate-500">No page selected.</div>;
+    return (
+      <div className="p-4 text-center text-slate-500">No page selected.</div>
+    );
   }
 
   return (
-    <div className={cn("flex flex-col h-[700px] border rounded-md overflow-hidden bg-white shadow-sm", className)}>
+    <div
+      className={cn(
+        "flex flex-col h-[700px] border rounded-md overflow-hidden bg-white shadow-sm",
+        className,
+      )}
+    >
       {/* Header */}
       <div className="flex items-center justify-between border-b px-4 py-3 bg-slate-50">
         <div className="font-medium text-sm text-slate-700">
-          Review Requirement Page ({currentIndex + 1} of {totalPages}) — <span className="font-semibold">{page.page_title}</span>
+          Review Requirement Page ({currentIndex + 1} of {totalPages}) —{" "}
+          <span className="font-semibold">{page.page_title}</span>
         </div>
         <div className="flex items-center gap-2">
-          <a href={page.source_url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+          <a
+            href={page.source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+          >
             Open Original <ExternalLink className="w-3 h-3" />
           </a>
         </div>
       </div>
-      
+
       {/* Split layout */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left Side: Source HTML */}
@@ -66,15 +79,15 @@ export function SplitPanel({
             <span>Raw Source (Read-only)</span>
           </div>
           <div className="flex-1 overflow-hidden bg-white">
-            <iframe 
-              srcDoc={page.raw_html} 
+            <iframe
+              srcDoc={page.raw_html}
               className="w-full h-full border-none"
-              sandbox="" 
+              sandbox=""
               title={`Source HTML for ${page.page_title}`}
             />
           </div>
         </div>
-        
+
         {/* Right Side: Editable Markdown */}
         <div className="w-1/2 flex flex-col bg-white">
           <div className="py-2 px-3 border-b text-xs font-medium text-slate-500 uppercase tracking-wider bg-slate-100">
@@ -93,8 +106,8 @@ export function SplitPanel({
 
       {/* Footer Buttons */}
       <div className="flex items-center justify-end gap-3 px-4 py-3 bg-slate-50 border-t">
-        <Button 
-          variant="outline" 
+        <Button
+          variant="outline"
           onClick={() => onSkip(page.page_id)}
           disabled={disabled}
           className="text-slate-600"
@@ -102,8 +115,8 @@ export function SplitPanel({
           <X className="w-4 h-4 mr-2" />
           Not requirement
         </Button>
-        <Button 
-          variant="default" 
+        <Button
+          variant="default"
           onClick={() => onApprove(page.page_id, markdownContent)}
           disabled={disabled}
           className="bg-blue-600 hover:bg-blue-700"

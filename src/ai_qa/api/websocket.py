@@ -22,9 +22,9 @@ from ai_qa.pipelines.context import PipelineContext
 
 logger = logging.getLogger(__name__)
 
-# Active connections storage with user context
-# Key: connection_id, Value: (websocket, user_session)
-active_connections: dict[str, tuple[WebSocket, UserSession | None]] = {}
+# Active connections storage with user context and scopes
+# Key: connection_id, Value: (websocket, user_session, query_project_id, query_thread_id)
+active_connections: dict[str, tuple[WebSocket, UserSession | None, UUID | None, UUID | None]] = {}
 
 
 def _get_user_from_websocket(websocket: WebSocket, settings: AppSettings) -> UserSession | None:
@@ -89,9 +89,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=4401, reason="Unauthorized")
         return
 
+    try:
+        query_project_id = _parse_uuid(websocket.query_params.get("projectId"), "projectId")
+        query_thread_id = _parse_uuid(websocket.query_params.get("threadId"), "threadId")
+    except HTTPException as exc:
+        await websocket.send_json(
+            {"type": "error", "message": f"Invalid connection parameters: {exc.detail}"}
+        )
+        await websocket.close(code=4422, reason=exc.detail)
+        return
+
     connection_id = str(id(websocket))
-    active_connections[connection_id] = (websocket, user)
-    query_project_id = _parse_project_id(websocket.query_params.get("projectId"))
+    active_connections[connection_id] = (websocket, user, query_project_id, query_thread_id)
 
     # Notify frontend that auth succeeded
     await websocket.send_json(
@@ -125,7 +134,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             if msg_type in ("start", "approve", "reject") and step:
                 # Handle pipeline actions
                 try:
-                    await _handle_action(message, user, websocket, query_project_id)
+                    await _handle_action(
+                        message, user, websocket, query_project_id, query_thread_id
+                    )
                 except Exception as e:
                     logger.error("Error handling action %s: %s", msg_type, e)
                     await websocket.send_json(
@@ -134,7 +145,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             elif msg_type == "navigate" and step:
                 # Handle navigation to different step
                 try:
-                    await _handle_navigate(message, user, websocket, query_project_id)
+                    await _handle_navigate(
+                        message, user, websocket, query_project_id, query_thread_id
+                    )
                 except Exception as e:
                     logger.error("Error handling navigate: %s", e)
                     await websocket.send_json(
@@ -157,13 +170,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         active_connections.pop(connection_id, None)
 
 
-def _parse_project_id(value: object) -> UUID | None:
+def _parse_uuid(value: object, field_name: str = "ID") -> UUID | None:
     if value in (None, ""):
         return None
     try:
         return UUID(str(value))
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Invalid projectId") from exc
+        raise HTTPException(status_code=422, detail=f"Invalid {field_name}") from exc
 
 
 def _db_session_from_websocket(websocket: WebSocket) -> Session:
@@ -189,15 +202,20 @@ async def _context_from_websocket(
     user: UserSession | None,
     websocket: WebSocket,
     query_project_id: UUID | None,
+    query_thread_id: UUID | None,
     *,
     create_run: bool = False,
 ) -> PipelineContext | None:
     from ai_qa.api.artifacts import get_artifact_storage
     from ai_qa.api.routes import _build_pipeline_context
 
-    project_id = _parse_project_id(message.get("projectId") or message.get("project_id"))
+    project_id = _parse_uuid(message.get("projectId") or message.get("project_id"), "projectId")
     if project_id is None:
         project_id = query_project_id
+
+    thread_id = _parse_uuid(message.get("threadId") or message.get("thread_id"), "threadId")
+    if thread_id is None:
+        thread_id = query_thread_id
 
     scope_state = getattr(websocket, "state", None)
     if scope_state is not None:
@@ -208,6 +226,7 @@ async def _context_from_websocket(
         storage = get_artifact_storage()
         return await _build_pipeline_context(
             project_id=project_id,
+            thread_id=thread_id,
             http_request=websocket,  # type: ignore[arg-type]
             db=session,
             storage=storage,
@@ -222,6 +241,7 @@ async def _handle_action(
     user: UserSession | None,
     websocket: WebSocket,
     query_project_id: UUID | None,
+    query_thread_id: UUID | None,
 ) -> None:
     """Handle pipeline action messages from WebSocket.
 
@@ -242,6 +262,7 @@ async def _handle_action(
         user,
         websocket,
         query_project_id,
+        query_thread_id,
         create_run=msg_type == "start",
     )
     user_email = user.email if user else None
@@ -278,6 +299,7 @@ async def _handle_navigate(
     user: UserSession | None,
     websocket: WebSocket,
     query_project_id: UUID | None,
+    query_thread_id: UUID | None,
 ) -> None:
     """Handle navigation to a different pipeline step.
 
@@ -286,7 +308,7 @@ async def _handle_navigate(
     step = message.get("step")
     direction = message.get("direction", "next")
 
-    await _context_from_websocket(message, user, websocket, query_project_id)
+    await _context_from_websocket(message, user, websocket, query_project_id, query_thread_id)
 
     if not isinstance(step, int):
         logger.warning("Invalid step value for navigate: %s", step)
@@ -329,17 +351,30 @@ async def _handle_navigate(
 
 
 async def broadcast_message(message: AgentMessage) -> None:
-    """Broadcast an AgentMessage to all connected WebSocket clients.
+    """Broadcast an AgentMessage to matching connected WebSocket clients.
 
     Called by agents to send updates to the frontend in real-time.
 
     Args:
         message: AgentMessage to broadcast to all connected clients.
     """
+    msg_project_id = None
+    msg_thread_id = None
+    if message.metadata:
+        msg_project_id = message.metadata.get("project_id") or message.metadata.get("projectId")
+        msg_thread_id = message.metadata.get("thread_id") or message.metadata.get("threadId")
+
     json_message = message.model_dump_json(by_alias=True)
     disconnected = []
 
-    for conn_id, (connection, _user) in active_connections.items():
+    for conn_id, (connection, _user, q_project_id, q_thread_id) in active_connections.items():
+        # Match thread scope if both are present
+        if msg_thread_id and q_thread_id and str(q_thread_id) != str(msg_thread_id):
+            continue
+        # Match project scope if both are present
+        if msg_project_id and q_project_id and str(q_project_id) != str(msg_project_id):
+            continue
+
         try:
             await connection.send_text(json_message)
         except Exception:
@@ -347,5 +382,45 @@ async def broadcast_message(message: AgentMessage) -> None:
             disconnected.append(conn_id)
 
     # Clean up disconnected clients
+    for conn_id in disconnected:
+        active_connections.pop(conn_id, None)
+
+
+async def broadcast_artifact_change(
+    project_id: str,
+    artifact_id: str | None = None,
+    change_type: str = "created",
+) -> None:
+    """Broadcast an artifact change event to WebSocket clients assigned to the project.
+
+    Unlike broadcast_message which uses AgentMessage, this sends a typed
+    artifact_change event so the frontend can refresh the artifact tree
+    without disrupting chat state.
+
+    Args:
+        project_id: The project where the artifact change occurred.
+        artifact_id: The changed artifact ID (optional for project-level events).
+        change_type: One of 'created', 'updated', 'deleted'.
+    """
+    from ai_qa.models import ArtifactChangeEvent
+
+    event = ArtifactChangeEvent(
+        project_id=project_id,
+        artifact_id=artifact_id,
+        change_type=change_type,  # type: ignore[arg-type]
+    )
+    json_message = event.model_dump_json()
+    disconnected = []
+
+    for conn_id, (connection, _user, q_project_id, _q_thread_id) in active_connections.items():
+        # Only send to clients connected to the same project
+        if q_project_id and str(q_project_id) != project_id:
+            continue
+
+        try:
+            await connection.send_text(json_message)
+        except Exception:
+            disconnected.append(conn_id)
+
     for conn_id in disconnected:
         active_connections.pop(conn_id, None)

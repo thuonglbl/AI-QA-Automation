@@ -54,7 +54,6 @@ function Join-DockerImagePath {
 $root = Split-Path -Parent $PSScriptRoot
 Import-EnvFile (Join-Path $root $EnvFile)
 
-$loginRegistry = Get-RequiredEnv "DOCKER_LOGIN_REGISTRY"
 $imagePrefix = Get-RequiredEnv "DOCKER_IMAGE_PREFIX"
 $backendImageName = Get-RequiredEnv "DOCKER_BACKEND_IMAGE"
 $frontendImageName = Get-RequiredEnv "DOCKER_FRONTEND_IMAGE"
@@ -69,7 +68,6 @@ $frontendImage = Join-DockerImagePath $imagePrefix $frontendImageName $imageVers
 
 Write-Host "Building AI QA Docker images" -ForegroundColor Cyan
 Write-Host "Image prefix: $imagePrefix"
-Write-Host "Login host  : $loginRegistry"
 Write-Host "Backend     : $backendImage"
 Write-Host "Frontend    : $frontendImage"
 Write-Host "Python      : $pythonVersion"
@@ -83,7 +81,7 @@ try {
         $username = Get-RequiredEnv "ARTIFACTORY_USERNAME"
         $password = Get-RequiredEnv "ARTIFACTORY_PASSWORD"
 
-        $password | docker login $loginRegistry --username $username --password-stdin
+        $password | docker login $imagePrefix --username $username --password-stdin
     }
 
     docker build --file Dockerfile.backend --build-arg PYTHON_VERSION=$pythonVersion --build-arg UV_VERSION=$uvVersion --tag $backendImage .

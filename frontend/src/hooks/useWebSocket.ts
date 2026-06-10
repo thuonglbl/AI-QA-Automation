@@ -19,6 +19,8 @@ export interface WebSocketActions {
   reconnect: () => void;
   /** Consume a specific number of messages from the queue */
   consumeMessages: (count: number) => void;
+  /** Register a handler for raw (non-AgentMessage) WebSocket events */
+  onRawEvent: (handler: (data: Record<string, unknown>) => void) => () => void;
 }
 
 /** WebSocket URL (Vite proxy handles routing) */
@@ -26,9 +28,13 @@ export interface WebSocketActions {
 const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
 const WS_URL = `${wsScheme}://${window.location.host}/ws`;
 
-function buildWsUrl(projectId: string): string {
+function buildWsUrl(params: {
+  projectId?: string | null;
+  threadId?: string | null;
+}): string {
   const url = new URL(WS_URL, window.location.origin);
-  url.searchParams.set("project_id", projectId);
+  if (params.projectId) url.searchParams.set("project_id", params.projectId);
+  if (params.threadId) url.searchParams.set("threadId", params.threadId);
   // Attach Bearer token so the backend can auth the WebSocket without relying
   // solely on cookies (cookies may be SameSite-blocked in some deployments).
   try {
@@ -59,7 +65,11 @@ const MAX_RECONNECT_ATTEMPTS = 5;
  *
  * @returns WebSocket state and actions
  */
-export function useWebSocket(projectId: string | null): WebSocketState & WebSocketActions {
+export function useWebSocket(params: {
+  projectId?: string | null;
+  threadId?: string | null;
+}): WebSocketState & WebSocketActions {
+  const { projectId, threadId } = params;
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastMessage, setLastMessage] = useState<AgentMessage | null>(null);
@@ -68,16 +78,22 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
   const wsRef = useRef<WebSocket | null>(null);
   const activeProjectIdRef = useRef(projectId);
   const reconnectAttemptsRef = useRef(0);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const intentionalCloseRef = useRef(false);
+  const rawEventHandlersRef = useRef<Set<(data: Record<string, unknown>) => void>>(new Set());
+
+  const activeThreadIdRef = useRef(threadId);
 
   const getWebSocketCtor = useCallback(() => globalThis.WebSocket, []);
 
   useEffect(() => {
     activeProjectIdRef.current = projectId;
+    activeThreadIdRef.current = threadId;
     setLastMessage(null);
     setMessageQueue([]);
-  }, [projectId]);
+  }, [projectId, threadId]);
 
   const connect = useCallback(() => {
     // Clear any pending reconnect
@@ -88,18 +104,21 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
 
     // Don't create new connection if already connected
     const WebSocketCtor = getWebSocketCtor();
-    if (wsRef.current?.readyState === WebSocketCtor.OPEN || wsRef.current?.readyState === WebSocketCtor.CONNECTING) {
+    if (
+      wsRef.current?.readyState === WebSocketCtor.OPEN ||
+      wsRef.current?.readyState === WebSocketCtor.CONNECTING
+    ) {
       return;
     }
 
-    if (!projectId) {
+    if (!projectId && !threadId) {
       setIsConnected(false);
       setError(null);
       return;
     }
 
     try {
-      const ws = new WebSocketCtor(buildWsUrl(projectId));
+      const ws = new WebSocketCtor(buildWsUrl({ projectId, threadId }));
       wsRef.current = ws;
       ws.onopen = () => {
         setIsConnected(true);
@@ -110,9 +129,29 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          const messageProjectId = data.project_id ?? data.projectId ?? data.metadata?.project_id ?? data.metadata?.projectId;
+          const messageProjectId =
+            data.project_id ??
+            data.projectId ??
+            data.metadata?.project_id ??
+            data.metadata?.projectId;
+          const messageThreadId =
+            data.thread_id ??
+            data.threadId ??
+            data.metadata?.thread_id ??
+            data.metadata?.threadId;
 
-          if (messageProjectId && messageProjectId !== activeProjectIdRef.current) {
+          if (
+            messageProjectId &&
+            activeProjectIdRef.current &&
+            messageProjectId !== activeProjectIdRef.current
+          ) {
+            return;
+          }
+          if (
+            messageThreadId &&
+            activeThreadIdRef.current &&
+            messageThreadId !== activeThreadIdRef.current
+          ) {
             return;
           }
 
@@ -120,12 +159,26 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
           if (data.sender && data.content && data.timestamp) {
             const agentMsg = data as AgentMessage;
             setLastMessage(agentMsg);
-            setMessageQueue(prev => [...prev, agentMsg]);
+            setMessageQueue((prev) => [...prev, agentMsg]);
           }
 
           // Handle other message types (ack, error)
           if (data.type === "error") {
             console.error("WebSocket error message:", data.message);
+          }
+
+          // Notify raw event handlers for non-AgentMessage types (e.g. artifact_change)
+          if (data.type && data.type !== "auth_status" && data.type !== "ack" && data.type !== "error") {
+            if (!data.sender || !data.content || !data.timestamp) {
+              // Not an AgentMessage — dispatch to raw handlers
+              for (const handler of rawEventHandlersRef.current) {
+                try {
+                  handler(data as Record<string, unknown>);
+                } catch (err) {
+                  console.error("Raw event handler error:", err);
+                }
+              }
+            }
           }
         } catch (parseError) {
           console.error("Failed to parse WebSocket message:", parseError);
@@ -146,7 +199,9 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
         // Dispatch auth-error so AuthContext can refresh and redirect to login.
         // Do NOT attempt reconnect — that would loop forever.
         if (event.code === 4401) {
-          console.warn("WebSocket closed with 4401 — session expired or invalid");
+          console.warn(
+            "WebSocket closed with 4401 — session expired or invalid",
+          );
           window.dispatchEvent(new Event("auth-error"));
           return;
         }
@@ -159,7 +214,8 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
         // Attempt reconnection with exponential backoff
         if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttemptsRef.current++;
-          const delay = RECONNECT_DELAY * Math.pow(2, reconnectAttemptsRef.current - 1);
+          const delay =
+            RECONNECT_DELAY * Math.pow(2, reconnectAttemptsRef.current - 1);
           console.log(
             `Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`,
           );
@@ -174,24 +230,50 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
     } catch (err) {
       setError(`Failed to create WebSocket: ${err}`);
     }
-  }, [getWebSocketCtor, projectId]);
+  }, [getWebSocketCtor, projectId, threadId]);
 
-  const sendMessage = useCallback((message: unknown) => {
-    const ws = wsRef.current;
-    const WebSocketCtor = getWebSocketCtor();
-    if (ws && ws.readyState === WebSocketCtor.OPEN && projectId) {
-      const payload = typeof message === "object" && message !== null
-        ? { ...message, projectId, project_id: projectId }
-        : message;
-      ws.send(JSON.stringify(payload));
-    } else {
-      console.warn("WebSocket not connected");
-    }
-  }, [getWebSocketCtor, projectId]);
+  const sendMessage = useCallback(
+    (message: unknown) => {
+      const ws = wsRef.current;
+      const WebSocketCtor = getWebSocketCtor();
+      if (
+        ws &&
+        ws.readyState === WebSocketCtor.OPEN &&
+        (projectId || threadId)
+      ) {
+        let payload = message as any;
+        if (typeof message === "object" && message !== null) {
+          payload = { ...message };
+          if (projectId) {
+            payload.projectId = projectId;
+            payload.project_id = projectId;
+          }
+          if (threadId) {
+            payload.threadId = threadId;
+            payload.thread_id = threadId;
+          }
+        }
+        ws.send(JSON.stringify(payload));
+      } else {
+        console.warn("WebSocket not connected");
+      }
+    },
+    [getWebSocketCtor, projectId, threadId],
+  );
 
   const consumeMessages = useCallback((count: number) => {
     setMessageQueue((prev) => prev.slice(count));
   }, []);
+
+  const onRawEvent = useCallback(
+    (handler: (data: Record<string, unknown>) => void) => {
+      rawEventHandlersRef.current.add(handler);
+      return () => {
+        rawEventHandlersRef.current.delete(handler);
+      };
+    },
+    [],
+  );
 
   const reconnect = useCallback(() => {
     reconnectAttemptsRef.current = 0;
@@ -213,7 +295,7 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
     intentionalCloseRef.current = false;
     setIsConnected(false);
 
-    if (!projectId) {
+    if (!projectId && !threadId) {
       setError(null);
       return;
     }
@@ -226,7 +308,7 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
       wsRef.current = null;
       intentionalCloseRef.current = false;
     };
-  }, [connect, projectId]);
+  }, [connect, projectId, threadId]);
 
   return {
     isConnected,
@@ -236,5 +318,6 @@ export function useWebSocket(projectId: string | null): WebSocketState & WebSock
     sendMessage,
     reconnect,
     consumeMessages,
+    onRawEvent,
   };
 }

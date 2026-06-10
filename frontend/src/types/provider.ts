@@ -4,11 +4,12 @@
 export type ProviderId =
   | "browser-use-cloud"
   | "claude"
-  | "gemini-chatgpt"
+  | "openai"
+  | "gemini"
   | "on-premises";
 
 /** Security level for provider */
-export type SecurityLevel = "cloud" | "enterprise" | "highest";
+export type SecurityLevel = "cloud" | "enterprise" | "highest" | "good";
 
 /** Credential field type */
 export type CredentialFieldType = "text" | "password" | "url";
@@ -38,11 +39,20 @@ export interface ProviderCredentials {
   server_url?: string;
 }
 
+/** Provider benchmark ranking hint (non-secret) surfaced in the review UI */
+export interface ProviderBenchmark {
+  accuracy_percent?: number;
+  benchmark?: string;
+  source_url?: string;
+  note?: string;
+}
+
 /** Model assignment for review */
 export interface ModelAssignment {
   agent: string;
   model: string;
   purpose: string;
+  rationale: string;
 }
 
 /** Connection test status */
@@ -59,18 +69,54 @@ export interface ConnectionTestMessage {
 export interface ProviderOptionsMessage {
   type: "provider_options";
   options: ProviderOption[];
-  onPremDefaults?: {
-    api_key: string;
+  on_prem_defaults?: {
+    server_url?: string;
+    api_key_configured: boolean;
   };
+}
+
+/** Per-agent entry in provider config response */
+export interface AgentConfigEntry {
+  agent: string;
+  model: string | null;
+  temperature: number;
+  rationale: string;
+}
+
+/** Response from GET /api/threads/{thread_id}/provider-config */
+export interface ProviderConfigResponse {
+  configured: boolean;
+  source: "thread" | "saved" | "none";
+  provider: string | null;
+  provider_name: string | null;
+  endpoint: string | null;
+  test_result: string | null;
+  tested_at: string | null;
+  agents: AgentConfigEntry[];
+}
+
+/** saved_config_prompt WebSocket metadata (Task 4) */
+export interface SavedConfigPrompt {
+  type: "saved_config_prompt";
+  saved_config: {
+    provider_name: string;
+    endpoint: string;
+    agents: AgentConfigEntry[];
+  };
+  options: ProviderOption[];
+  enabled_providers: string[];
 }
 
 /** Thinking trace data from Alice */
 export interface ThinkingTrace {
   connection_status?: "success" | "failed";
   available_models?: { id: string; name: string }[];
+  unavailable_models?: { id: string; name: string; status: string }[];
   bootstrap_model?: string | null;
+  bootstrap_rationale?: string | null;
   agent_needs?: Record<string, string>;
   assignments?: { agent: string; model: string; rationale: string }[];
+  benchmark?: ProviderBenchmark | null;
   chain_of_thought?: string[];
 }
 
@@ -124,6 +170,7 @@ export const SECURITY_LEVEL_COLORS: Record<SecurityLevel, string> = {
   cloud: "bg-blue-100 text-blue-700",
   enterprise: "bg-purple-100 text-purple-700",
   highest: "bg-green-100 text-green-700",
+  good: "bg-teal-100 text-teal-700",
 };
 
 /** Security level labels */
@@ -131,6 +178,7 @@ export const SECURITY_LEVEL_LABELS: Record<SecurityLevel, string> = {
   cloud: "Cloud",
   enterprise: "Enterprise",
   highest: "Highest Security",
+  good: "Good Security",
 };
 
 /** Quality rank labels */
@@ -139,4 +187,5 @@ export const QUALITY_RANK_LABELS: Record<number, string> = {
   2: "2nd Choice",
   3: "3rd Choice",
   4: "4th Choice",
+  5: "5th Choice",
 };

@@ -20,7 +20,10 @@ _bmad/
 .windsurf/
 .cline/
 .roo/
+.github/
 .*cache/
+.kiro/
+.opencode/
 
 # secret files
 .env
@@ -40,3 +43,6 @@ frontend/node_modules/
 # Workspace runtime data (users.json, audit, reports, etc.)
 /workspace/
 *.log
+playwright-report/
+test-results/
+.coverage
