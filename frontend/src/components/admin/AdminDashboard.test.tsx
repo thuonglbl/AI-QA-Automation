@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
 import { AdminDashboard } from "@/components/admin/AdminDashboard";
 import { ProjectProvider } from "@/contexts/ProjectContext";
 import { AuthProvider } from "@/contexts/AuthContext";
-import { ApiError, getSafeApiErrorMessage } from "@/lib/api";
 
 function jsonResponse(body: unknown, status = 200) {
   return Promise.resolve(
@@ -25,6 +24,8 @@ const project = {
   name: "Admin Project",
   description: null,
   confluence_base_url: "https://confluence",
+  jira_base_url: null,
+  enabled_providers: ["claude", "gemini"],
   created_by_user_id: null,
   current_user_role: "owner",
   membership_count: 1,
@@ -133,6 +134,8 @@ describe("AdminDashboard", () => {
           return Promise.resolve(new Response(null, { status: 204 }));
         if (url === "/auth/logout" && init?.method === "POST")
           return jsonResponse({ success: true });
+        if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/model-scores") return jsonResponse([]);
         return jsonResponse({}, 404);
       });
 
@@ -156,24 +159,49 @@ describe("AdminDashboard", () => {
       (await screen.findAllByText("member@example.com")).length,
     ).toBeGreaterThan(0);
 
+    // Admin now creates a project with NAME ONLY (config moved to project admin).
     fireEvent.change(screen.getByLabelText(/project name/i), {
       target: { value: "New Project" },
     });
-    fireEvent.change(screen.getByLabelText(/confluence base url/i), {
-      target: { value: "https://confluence" },
-    });
+    // Spy on window.setTimeout so we can capture the 3 s auto-dismiss callback
+    // and invoke it immediately — no real waiting, no fake-timer deadlock.
+    // The spy must be installed BEFORE the click so it intercepts the timeout
+    // that the useEffect schedules when setStatus("Project created successfully.")
+    // is called inside the async handler.
+    let dismissCallback: (() => void) | null = null;
+    const originalSetTimeout = window.setTimeout;
+    const setTimeoutSpy = vi
+      .spyOn(window, "setTimeout")
+      .mockImplementation(((fn: any, delay?: number, ...args: any[]) => {
+        if (typeof fn === "function" && delay === 3000) {
+          // Capture the dismiss callback but don't actually schedule it.
+          dismissCallback = fn;
+          return 0 as any;
+        }
+        // All other timeouts (e.g. RTL's internal polling) run normally.
+        return originalSetTimeout(fn, delay, ...args) as any;
+      }) as any);
+
     fireEvent.click(screen.getByRole("button", { name: /create project/i }));
+
+    // Wait for the banner with real timers (so findBy can poll normally).
     expect(
       await screen.findByText(/project created successfully/i),
     ).toBeInTheDocument();
 
-    await waitFor(
-      () =>
-        expect(
-          screen.queryByText(/project created successfully/i),
-        ).not.toBeInTheDocument(),
-      { timeout: 3500 },
-    );
+    // The useEffect has now called our spy with the dismiss callback.
+    // Invoke it manually inside act() so React processes the setState.
+    expect(dismissCallback).not.toBeNull();
+    const { act } = await import("@testing-library/react");
+    await act(async () => {
+      dismissCallback!();
+    });
+    expect(
+      screen.queryByText(/project created successfully/i),
+    ).not.toBeInTheDocument();
+
+    setTimeoutSpy.mockRestore();
+
 
     fireEvent.click(
       screen.getByRole("button", { name: /edit admin project/i }),
@@ -192,9 +220,8 @@ describe("AdminDashboard", () => {
       ),
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /delete admin project/i }),
-    );
+    const deleteButton = await screen.findByRole("button", { name: /delete admin project/i });
+    fireEvent.click(deleteButton);
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/admin/projects/project-1",
@@ -218,11 +245,21 @@ describe("AdminDashboard", () => {
     fireEvent.change(screen.getByLabelText(/display name/i), {
       target: { value: "New User" },
     });
+    // Admin may only create project_admin / standard users (not another admin).
     fireEvent.change(screen.getByLabelText(/^role$/i), {
-      target: { value: "admin" },
+      target: { value: "project_admin" },
+    });
+    // Selecting Project Admin reveals the required project picker (Story 15.3); the
+    // chosen project_id rides the create-user POST body.
+    fireEvent.change(screen.getByLabelText(/^project$/i), {
+      target: { value: "project-1" },
     });
     fireEvent.change(screen.getByLabelText(/initial password/i), {
       target: { value: "initial-secret" },
+    });
+    // Pick a deterministic timezone (the default is the env's browser zone).
+    fireEvent.change(screen.getByLabelText(/timezone/i), {
+      target: { value: "UTC" },
     });
     fireEvent.click(screen.getByRole("button", { name: /create user/i }));
     await waitFor(() =>
@@ -233,60 +270,28 @@ describe("AdminDashboard", () => {
           body: JSON.stringify({
             email: "new.user@example.com",
             display_name: "New User",
-            role: "admin",
+            role: "project_admin",
             initial_password: "initial-secret",
+            timezone: "UTC",
+            project_id: "project-1",
           }),
         }),
       ),
     );
 
-    const adminCard = screen
-      .getByText("Super Admin")
-      .closest("li") as HTMLElement;
-    expect(within(adminCard).queryByText("Projects")).not.toBeInTheDocument();
-    expect(
-      within(adminCard).queryByRole("combobox", { name: /select project/i }),
-    ).not.toBeInTheDocument();
-    expect(
-      within(adminCard).queryByRole("button", { name: /assign project/i }),
-    ).not.toBeInTheDocument();
-
+    // Membership management has moved to the Project Admin dashboard — the admin
+    // Users panel no longer offers per-user project assignment.
     const userCard = screen
       .getByText("Member User")
       .closest("li") as HTMLElement;
-    expect(within(userCard).getByText("Projects")).toBeInTheDocument();
-    expect(within(userCard).getByText("Admin Project")).toBeInTheDocument();
-    expect(screen.queryByText(/register/i)).not.toBeInTheDocument();
-
-    fireEvent.change(
-      within(userCard).getByRole("combobox", {
+    expect(
+      within(userCard).queryByRole("combobox", {
         name: /select project for member user/i,
       }),
-      { target: { value: "project-2" } },
-    );
-    fireEvent.click(
-      within(userCard).getByRole("button", {
-        name: /assign project to member user/i,
-      }),
-    );
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/admin/projects/project-2/memberships",
-        expect.objectContaining({ method: "POST" }),
-      ),
-    );
-
-    fireEvent.click(
-      within(userCard).getByRole("button", {
-        name: /remove admin project from member user/i,
-      }),
-    );
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/admin/projects/project-1/memberships/user-1",
-        expect.objectContaining({ method: "DELETE" }),
-      ),
-    );
+    ).not.toBeInTheDocument();
+    expect(
+      within(userCard).queryByRole("button", { name: /assign project/i }),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /logout/i }));
     await waitFor(() =>
@@ -299,9 +304,9 @@ describe("AdminDashboard", () => {
 
   it("surfaces a safe error when creating a duplicate user (409) and does not report success", async () => {
     // AC2: a duplicate email is rejected with 409 { detail: "User already exists" }.
-    // The dashboard must show a safe message via getSafeApiErrorMessage and must NOT
-    // falsely report "User created successfully". A 409 maps to kind "server" in the
-    // API client, so the rendered banner shows the generic safe fallback (no internals leaked).
+    // The dashboard must NOT falsely report "User created successfully". A 409 now maps
+    // to kind "conflict" in the API client, which surfaces the display-safe server
+    // `detail` ("User already exists") instead of the generic fallback.
     const postBody = JSON.stringify({ detail: "User already exists" });
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -323,6 +328,8 @@ describe("AdminDashboard", () => {
             }),
           );
         if (url === "/api/admin/users") return jsonResponse([]);
+        if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/model-scores") return jsonResponse([]);
         return jsonResponse({}, 404);
       });
 
@@ -354,12 +361,8 @@ describe("AdminDashboard", () => {
       ),
     );
 
-    // The banner shows exactly what handleCreateUser passes to addError:
-    // getSafeApiErrorMessage of the thrown 409 ApiError.
-    const expectedMessage = getSafeApiErrorMessage(
-      new ApiError("server", "Something went wrong. Please try again.", 409),
-    );
-    const banner = await screen.findByText(expectedMessage);
+    // The duplicate-email 409 detail is display-safe and now surfaced to the user.
+    const banner = await screen.findByText("User already exists");
     expect(banner).toBeInTheDocument();
 
     // No false success and no leaked internals (stack traces, raw DB errors).
@@ -370,11 +373,10 @@ describe("AdminDashboard", () => {
   });
 
   it("surfaces a safe error when creating a duplicate project (409) and does not report success", async () => {
-    // Story 8.3 AC2: a duplicate project name is rejected with 409
-    // { detail: "Project name already exists" }. The dashboard must show a safe
-    // message via getSafeApiErrorMessage and must NOT falsely report "Project
-    // created successfully". A 409 maps to kind "server" in the API client, so the
-    // rendered banner shows the generic safe fallback (no backend internals leaked).
+    // Story 8.3 AC2 / Story 15.1 AC4: a duplicate project name is rejected with 409
+    // { detail: "Project name already exists" }. The dashboard must NOT falsely report
+    // "Project created successfully". A 409 now maps to kind "conflict" in the API
+    // client, which surfaces the display-safe server `detail` instead of the generic copy.
     const postBody = JSON.stringify({ detail: "Project name already exists" });
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -396,6 +398,8 @@ describe("AdminDashboard", () => {
             }),
           );
         if (url === "/api/admin/users") return jsonResponse([]);
+        if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/model-scores") return jsonResponse([]);
         return jsonResponse({}, 404);
       });
 
@@ -412,9 +416,6 @@ describe("AdminDashboard", () => {
     fireEvent.change(screen.getByLabelText(/project name/i), {
       target: { value: "Existing Project" },
     });
-    fireEvent.change(screen.getByLabelText(/confluence base url/i), {
-      target: { value: "https://confluence" },
-    });
     fireEvent.click(screen.getByRole("button", { name: /create project/i }));
 
     await waitFor(() =>
@@ -424,12 +425,8 @@ describe("AdminDashboard", () => {
       ),
     );
 
-    // The banner shows what handleCreateProject passes to addError:
-    // getSafeApiErrorMessage of the thrown 409 ApiError.
-    const expectedMessage = getSafeApiErrorMessage(
-      new ApiError("server", "Something went wrong. Please try again.", 409),
-    );
-    const banner = await screen.findByText(expectedMessage);
+    // The duplicate-name 409 detail is display-safe and now surfaced to the user.
+    const banner = await screen.findByText("Project name already exists");
     expect(banner).toBeInTheDocument();
 
     // No false success and no leaked internals.
@@ -470,6 +467,8 @@ describe("AdminDashboard", () => {
         });
       if (url === "/api/projects") return jsonResponse([]);
       if (url === "/api/admin/users") return jsonResponse([]);
+      if (url === "/api/admin/discovered-models") return jsonResponse([]);
+      if (url === "/api/admin/model-scores") return jsonResponse([]);
       return jsonResponse({}, 404);
     }
 
@@ -501,6 +500,8 @@ describe("AdminDashboard", () => {
         if (url === "/api/admin/users") return jsonResponse([]);
         if (url === "/api/admin/tests/e2e" && init?.method === "POST")
           return e2ePromise;
+        if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/model-scores") return jsonResponse([]);
         return jsonResponse({}, 404);
       });
 
@@ -519,6 +520,7 @@ describe("AdminDashboard", () => {
       resolveE2E(
         new Response(
           JSON.stringify({
+            status: "completed",
             exit_code: 0,
             passed: true,
             report_available: false,
@@ -535,6 +537,7 @@ describe("AdminDashboard", () => {
 
     it("shows passed result after successful E2E run", async () => {
       const e2eResult = {
+        status: "completed",
         exit_code: 0,
         passed: true,
         report_available: false,
@@ -554,7 +557,17 @@ describe("AdminDashboard", () => {
         if (url === "/api/projects") return jsonResponse([]);
         if (url === "/api/admin/users") return jsonResponse([]);
         if (url === "/api/admin/tests/e2e" && init?.method === "POST")
-          return jsonResponse(e2eResult);
+          return jsonResponse({
+            status: "running",
+            exit_code: null,
+            passed: null,
+            report_available: false,
+            stdout: "",
+            stderr: "",
+          });
+        if (url === "/api/admin/tests/e2e/status") return jsonResponse(e2eResult);
+        if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/model-scores") return jsonResponse([]);
         return jsonResponse({}, 404);
       });
 
@@ -569,6 +582,7 @@ describe("AdminDashboard", () => {
 
     it("shows failed result when E2E tests fail", async () => {
       const e2eResult = {
+        status: "completed",
         exit_code: 1,
         passed: false,
         report_available: false,
@@ -588,7 +602,17 @@ describe("AdminDashboard", () => {
         if (url === "/api/projects") return jsonResponse([]);
         if (url === "/api/admin/users") return jsonResponse([]);
         if (url === "/api/admin/tests/e2e" && init?.method === "POST")
-          return jsonResponse(e2eResult);
+          return jsonResponse({
+            status: "running",
+            exit_code: null,
+            passed: null,
+            report_available: false,
+            stdout: "",
+            stderr: "",
+          });
+        if (url === "/api/admin/tests/e2e/status") return jsonResponse(e2eResult);
+        if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/model-scores") return jsonResponse([]);
         return jsonResponse({}, 404);
       });
 
@@ -603,6 +627,7 @@ describe("AdminDashboard", () => {
 
     it("shows download button when report is available", async () => {
       const e2eResult = {
+        status: "completed",
         exit_code: 0,
         passed: true,
         report_available: true,
@@ -622,7 +647,17 @@ describe("AdminDashboard", () => {
         if (url === "/api/projects") return jsonResponse([]);
         if (url === "/api/admin/users") return jsonResponse([]);
         if (url === "/api/admin/tests/e2e" && init?.method === "POST")
-          return jsonResponse(e2eResult);
+          return jsonResponse({
+            status: "running",
+            exit_code: null,
+            passed: null,
+            report_available: false,
+            stdout: "",
+            stderr: "",
+          });
+        if (url === "/api/admin/tests/e2e/status") return jsonResponse(e2eResult);
+        if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/model-scores") return jsonResponse([]);
         return jsonResponse({}, 404);
       });
 
@@ -638,6 +673,7 @@ describe("AdminDashboard", () => {
 
     it("hides download button when report is not available", async () => {
       const e2eResult = {
+        status: "completed",
         exit_code: 0,
         passed: true,
         report_available: false,
@@ -657,7 +693,17 @@ describe("AdminDashboard", () => {
         if (url === "/api/projects") return jsonResponse([]);
         if (url === "/api/admin/users") return jsonResponse([]);
         if (url === "/api/admin/tests/e2e" && init?.method === "POST")
-          return jsonResponse(e2eResult);
+          return jsonResponse({
+            status: "running",
+            exit_code: null,
+            passed: null,
+            report_available: false,
+            stdout: "",
+            stderr: "",
+          });
+        if (url === "/api/admin/tests/e2e/status") return jsonResponse(e2eResult);
+        if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/model-scores") return jsonResponse([]);
         return jsonResponse({}, 404);
       });
 
@@ -676,18 +722,41 @@ describe("AdminDashboard", () => {
 
 // Additional tests for Jira URL and provider management
 
-test("AdminDashboard project form with Jira URL and provider checkboxes", async () => {
-  vi.mock("@/lib/api", () => ({
-    apiFetch: vi.fn(),
-  }));
+// These tests use the same global-fetch spy pattern as the suite above (real
+// apiFetch + AuthProvider). They previously used file-wide vi.mock() which
+// vitest 4 hoists across the whole file, stubbing apiFetch and breaking the
+// fetch-spy tests above.
+const jiraProject = {
+  ...project,
+  id: "project-jira",
+  name: "Test Project",
+  confluence_base_url: null,
+  jira_base_url: "https://jira.example.com",
+  enabled_providers: ["claude", "gemini"],
+  memberships: [],
+  membership_count: 0,
+};
 
-  // Mock the auth state to return admin user
-  vi.mock("@/contexts/AuthContext", () => ({
-    useAuth: () => ({
-      user: { role: "admin" },
-      logout: vi.fn(),
-    }),
-  }));
+function mockAdminFetch(projects: unknown[]) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = String(input);
+    if (url === "/auth/status")
+      return jsonResponse({
+        authenticated: true,
+        email: "admin@example.com",
+        name: "Admin User",
+        role: "admin",
+      });
+    if (url === "/api/projects") return jsonResponse(projects);
+    if (url === "/api/admin/users") return jsonResponse([]);
+    if (url === "/api/admin/discovered-models") return jsonResponse([]);
+    if (url === "/api/admin/model-scores") return jsonResponse([]);
+    return jsonResponse({}, 404);
+  });
+}
+
+test("AdminDashboard project form is name + description only (config moved to project admin)", async () => {
+  mockAdminFetch([]);
 
   render(
     <AuthProvider>
@@ -697,53 +766,254 @@ test("AdminDashboard project form with Jira URL and provider checkboxes", async 
     </AuthProvider>,
   );
 
-  // Wait for admin dashboard to load
-  await screen.findByText(/admin/i);
+  await screen.findByLabelText(/project name/i);
+  expect(screen.getByLabelText(/description/i)).toBeInTheDocument();
 
-  // Click on "Create Project" button
-  const createButton = screen.getByRole("button", { name: /create project/i });
-  fireEvent.click(createButton);
+  // Confluence/Jira/provider editors are no longer in the admin form.
+  expect(
+    screen.queryByPlaceholderText("https://jira.company.com"),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByPlaceholderText("https://confluence.company.com"),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: /^claude$/i })).not.toBeInTheDocument();
+});
 
-  // Wait for form to appear
-  await screen.findByRole("heading", { name: /create project/i });
+test("AdminDashboard project list no longer shows project config (Jira/providers)", async () => {
+  mockAdminFetch([jiraProject]);
 
-  // Verify Jira URL field exists
-  const jiraUrlInput = screen.getByPlaceholderText(/jira base url/i);
-  expect(jiraUrlInput).toBeInTheDocument();
+  render(
+    <AuthProvider>
+      <ProjectProvider>
+        <AdminDashboard />
+      </ProjectProvider>
+    </AuthProvider>,
+  );
 
-  // Verify provider checkboxes exist
-  const providerCheckboxes = [
-    /browser use/i,
-    /claude/i,
-    /gemini/i,
-    /chatgpt/i,
-    /on premises/i,
+  // The card shows the name + member count, but config is owned by the project admin.
+  expect(await screen.findByText("Test Project")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("link", { name: /jira\.example\.com/i }),
+  ).not.toBeInTheDocument();
+});
+
+test("AdminDashboard edit project form is name + description only", async () => {
+  mockAdminFetch([jiraProject]);
+
+  render(
+    <AuthProvider>
+      <ProjectProvider>
+        <AdminDashboard />
+      </ProjectProvider>
+    </AuthProvider>,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: /edit test project/i }));
+
+  // Name is pre-populated; the Jira field + provider checkboxes are gone.
+  expect(await screen.findByDisplayValue("Test Project")).toBeInTheDocument();
+  expect(
+    screen.queryByDisplayValue("https://jira.example.com"),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: /claude/i })).not.toBeInTheDocument();
+});
+
+test("AdminDashboard omits obsolete 'project admin' helper copy (Story 15.2)", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = String(input);
+    if (url === "/auth/status")
+      return jsonResponse({
+        authenticated: true,
+        email: "admin@example.com",
+        name: "Admin User",
+        role: "admin",
+      });
+    if (url === "/api/projects") return jsonResponse([project]);
+    if (url === "/api/admin/users") return jsonResponse([user]);
+    if (url === "/api/admin/discovered-models") return jsonResponse([]);
+    if (url === "/api/admin/model-scores") return jsonResponse([]);
+    return jsonResponse({}, 404);
+  });
+
+  render(
+    <AuthProvider>
+      <ProjectProvider>
+        <AdminDashboard />
+      </ProjectProvider>
+    </AuthProvider>,
+  );
+
+  // A non-admin user row is present and the Create Project form is shown — none of the
+  // obsolete "…by the project admin" helper sentences should render anywhere.
+  await screen.findByText("Member User");
+  expect(
+    screen.queryByText(/managed by the project admin/i),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/configured by the project admin/i),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/membership is managed by the project admin/i),
+  ).not.toBeInTheDocument();
+});
+
+test("Models & Benchmarks section discovers + syncs scores via the Sync button (no manual form)", async () => {
+  const unbenchmarked = {
+    model_id: "inference-mysteryco-9-700b",
+    display_name: "Mystery",
+    supports_vision: false,
+    last_seen_at: "2026-06-18T00:00:00Z",
+    tier_source: "parsed",
+    unbenchmarked: true,
+    scores: [],
+  };
+  const benchmarked = {
+    ...unbenchmarked,
+    tier_source: "admin",
+    unbenchmarked: false,
+    scores: [
+      {
+        id: "s1",
+        model_id: "inference-mysteryco-9-700b",
+        capability: "global",
+        score: 72.5,
+        note: "Synced from llm-stats.com on 2026-06-21",
+        updated_by_user_id: null,
+        updated_at: "2026-06-21T00:00:00Z",
+      },
+    ],
+  };
+  const syncResult = {
+    providers: [
+      {
+        provider_id: "on-premises",
+        connected: true,
+        skipped: false,
+        models_found: 1,
+        error: null,
+      },
+      {
+        provider_id: "claude",
+        connected: false,
+        skipped: true,
+        models_found: 0,
+        error: "No server key configured.",
+      },
+    ],
+    models_discovered: 1,
+    models_benchmarked: 1,
+    models_unbenchmarked: 0,
+    scores_written: 1,
+    benchmark_source_available: true,
+    warnings: [],
+  };
+  let discoveredCalls = 0;
+  let syncCalled = false;
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    const url = String(input);
+    if (url === "/auth/status")
+      return jsonResponse({
+        authenticated: true,
+        email: "admin@example.com",
+        name: "Admin User",
+        role: "admin",
+      });
+    if (url === "/api/projects") return jsonResponse([]);
+    if (url === "/api/admin/users") return jsonResponse([]);
+    if (url === "/api/admin/discovered-models") {
+      discoveredCalls += 1;
+      // First load shows the unbenchmarked model; after sync it has scores.
+      return jsonResponse([discoveredCalls === 1 ? unbenchmarked : benchmarked]);
+    }
+    if (url === "/api/admin/models/sync" && init?.method === "POST") {
+      syncCalled = true;
+      return jsonResponse(syncResult);
+    }
+    return jsonResponse({}, 404);
+  });
+
+  render(
+    <AuthProvider>
+      <ProjectProvider>
+        <AdminDashboard />
+      </ProjectProvider>
+    </AuthProvider>,
+  );
+
+  // The model is listed and flagged unbenchmarked initially.
+  const modelCell = await screen.findByText("inference-mysteryco-9-700b");
+  const row = modelCell.closest("tr");
+  expect(row).not.toBeNull();
+  expect(within(row as HTMLElement).getByText("No benchmark")).toBeInTheDocument();
+
+  // The manual scoring form is gone (replaced by the Sync action).
+  expect(
+    screen.queryByLabelText("Score for inference-mysteryco-9-700b"),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/How to score — where to get the numbers/i),
+  ).not.toBeInTheDocument();
+
+  // Click Sync -> POST fires, result panel renders, table refreshes with scores.
+  fireEvent.click(
+    screen.getByRole("button", { name: /sync models and benchmarks/i }),
+  );
+
+  await waitFor(() => expect(syncCalled).toBe(true));
+
+  const resultPanel = await screen.findByTestId("model-sync-result");
+  expect(resultPanel.textContent).toMatch(/Discovered 1 model/i);
+  expect(resultPanel.textContent).toMatch(/on-premises/);
+  expect(resultPanel.textContent).toMatch(/skipped/);
+
+  // Table refreshed from the second discovered-models load: score shown, flag gone.
+  await waitFor(() =>
+    expect(screen.queryByText("No benchmark")).not.toBeInTheDocument(),
+  );
+  expect(screen.getByText("72.5")).toBeInTheDocument();
+});
+
+test("Models table sorts by global → reasoning → coding → vision (desc)", async () => {
+  const ts = "2026-06-21T00:00:00Z";
+  const score = (modelId: string, capability: string, value: number) => ({
+    id: `${modelId}-${capability}`,
+    model_id: modelId,
+    capability,
+    score: value,
+    note: null,
+    updated_by_user_id: null,
+    updated_at: ts,
+  });
+  const mk = (modelId: string, scores: ReturnType<typeof score>[]) => ({
+    model_id: modelId,
+    display_name: modelId,
+    supports_vision: false,
+    last_seen_at: ts,
+    tier_source: "admin",
+    unbenchmarked: false,
+    scores,
+  });
+  // a-high wins on global; m-mid and z-low tie on global(50) so reasoning breaks it.
+  const models = [
+    mk("z-low", [score("z-low", "global", 50)]),
+    mk("a-high", [score("a-high", "global", 90)]),
+    mk("m-mid", [score("m-mid", "global", 50), score("m-mid", "reasoning", 80)]),
   ];
-  for (const text of providerCheckboxes) {
-    const checkbox = screen.getByRole("checkbox", { name: text });
-    expect(checkbox).toBeInTheDocument();
-  }
 
-  // Verify validation error when no URL and no providers
-  const submitButton = screen.getByRole("button", { name: /create project/i });
-  fireEvent.click(submitButton);
-
-  // Should show validation error
-  await screen.findByText(/no link to extract requirement/i);
-});
-
-test("AdminDashboard project list shows Jira link and provider icons", async () => {
-  vi.mock("@/lib/api", () => ({
-    apiFetch: vi.fn(),
-  }));
-
-  vi.mock("@/contexts/AuthContext", () => ({
-    useAuth: () => ({
-      user: { role: "admin" },
-      logout: vi.fn(),
-    }),
-  }));
-
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = String(input);
+    if (url === "/auth/status")
+      return jsonResponse({
+        authenticated: true,
+        email: "admin@example.com",
+        name: "Admin User",
+        role: "admin",
+      });
+    if (url === "/api/projects") return jsonResponse([]);
+    if (url === "/api/admin/users") return jsonResponse([]);
+    if (url === "/api/admin/discovered-models") return jsonResponse(models);
+    return jsonResponse({}, 404);
+  });
 
   render(
     <AuthProvider>
@@ -753,32 +1023,15 @@ test("AdminDashboard project list shows Jira link and provider icons", async () 
     </AuthProvider>,
   );
 
-  // Wait for admin dashboard to load
-  await screen.findByText(/admin/i);
-
-  // Verify Jira link is shown in project card
-  const jiraLink = screen.getByRole("link", { name: /jira.example.com/i });
-  expect(jiraLink).toBeInTheDocument();
-  expect(jiraLink).toHaveAttribute("href", "https://jira.example.com");
-  expect(jiraLink).toHaveAttribute("target", "_blank");
-
-  // Verify provider icons are shown
-  const providerIcons = screen.getAllByRole("img");
-  expect(providerIcons.length).toBeGreaterThan(0);
+  await screen.findByText("a-high");
+  const order = screen
+    .getAllByText(/^(a-high|m-mid|z-low)$/)
+    .map((n) => n.textContent);
+  expect(order).toEqual(["a-high", "m-mid", "z-low"]);
 });
 
-test("AdminDashboard edit project form preserves Jira URL and provider configuration", async () => {
-  vi.mock("@/lib/api", () => ({
-    apiFetch: vi.fn(),
-  }));
-
-  vi.mock("@/contexts/AuthContext", () => ({
-    useAuth: () => ({
-      user: { role: "admin" },
-      logout: vi.fn(),
-    }),
-  }));
-
+test("Create User shows the project picker only for Project Admin (Story 15.3)", async () => {
+  mockAdminFetch([project, assignableProject]);
 
   render(
     <AuthProvider>
@@ -788,24 +1041,247 @@ test("AdminDashboard edit project form preserves Jira URL and provider configura
     </AuthProvider>,
   );
 
-  // Wait for admin dashboard to load
-  await screen.findByText(/admin/i);
+  // Wait until projects have loaded (they appear in the Projects panel).
+  await screen.findByText("Admin Project");
+  // Standard role (default): no project picker.
+  expect(screen.queryByLabelText(/^project$/i)).not.toBeInTheDocument();
 
-  // Click on edit button for project
-  const editButton = screen.getByRole("button", { name: /edit test project/i });
-  fireEvent.click(editButton);
+  // Switching to Project Admin reveals a project picker listing the projects.
+  fireEvent.change(screen.getByLabelText(/^role$/i), {
+    target: { value: "project_admin" },
+  });
+  const picker = screen.getByLabelText(/^project$/i) as HTMLSelectElement;
+  expect(picker).toBeInTheDocument();
+  const optionLabels = Array.from(picker.options).map((o) => o.textContent);
+  expect(optionLabels).toContain("Admin Project");
 
-  // Wait for edit form to appear
-  await screen.findByRole("heading", { name: /edit project/i });
+  // Switching back to Standard removes it again.
+  fireEvent.change(screen.getByLabelText(/^role$/i), {
+    target: { value: "standard" },
+  });
+  expect(screen.queryByLabelText(/^project$/i)).not.toBeInTheDocument();
+});
 
-  // Verify Jira URL field is pre-populated
-  const jiraUrlInput = screen.getByPlaceholderText(/jira base url/i);
-  expect(jiraUrlInput).toHaveValue("https://jira.example.com");
+test("Create User blocks Project Admin when no projects exist (Story 15.3)", async () => {
+  mockAdminFetch([]);
 
-  // Verify provider checkboxes are checked
-  const claudeCheckbox = screen.getByRole("checkbox", { name: /claude/i });
-  expect(claudeCheckbox).toBeChecked();
+  render(
+    <AuthProvider>
+      <ProjectProvider>
+        <AdminDashboard />
+      </ProjectProvider>
+    </AuthProvider>,
+  );
 
-  const geminiCheckbox = screen.getByRole("checkbox", { name: /gemini/i });
-  expect(geminiCheckbox).toBeChecked();
+  await screen.findByLabelText(/^role$/i);
+  fireEvent.change(screen.getByLabelText(/^role$/i), {
+    target: { value: "project_admin" },
+  });
+
+  expect(
+    screen.getByText(/create a project first before adding a project admin/i),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /create user/i })).toBeDisabled();
+});
+
+test("Users Management sorts by role/status/name and shows admin projects (Story 15.4)", async () => {
+  const ts = "2026-01-01T00:00:00Z";
+  const usersFixture = [
+    {
+      id: "u-zoe",
+      email: "zoe@example.com",
+      display_name: "Zoe Standard",
+      role: "standard",
+      is_active: true,
+      timezone: "UTC",
+      project_memberships: [],
+      created_at: ts,
+      updated_at: ts,
+    },
+    {
+      id: "u-aaron",
+      email: "aaron@example.com",
+      display_name: "Aaron Standard",
+      role: "standard",
+      is_active: false,
+      timezone: "UTC",
+      project_memberships: [],
+      created_at: ts,
+      updated_at: ts,
+    },
+    {
+      id: "u-admin",
+      email: "admin@example.com",
+      display_name: "Platform Admin",
+      role: "admin",
+      is_active: true,
+      timezone: "UTC",
+      project_memberships: [],
+      created_at: ts,
+      updated_at: ts,
+    },
+    {
+      id: "u-pa",
+      email: "pa@example.com",
+      display_name: "Pat ProjectAdmin",
+      role: "project_admin",
+      is_active: true,
+      timezone: "UTC",
+      project_memberships: [
+        {
+          id: "m1",
+          project_id: "p1",
+          project_name: "Alpha",
+          role: "project_admin",
+          created_at: ts,
+          updated_at: ts,
+        },
+      ],
+      created_at: ts,
+      updated_at: ts,
+    },
+  ];
+
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = String(input);
+    if (url === "/auth/status")
+      return jsonResponse({
+        authenticated: true,
+        email: "admin@example.com",
+        name: "Admin User",
+        role: "admin",
+      });
+    if (url === "/api/projects") return jsonResponse([]);
+    if (url === "/api/admin/users") return jsonResponse(usersFixture);
+    if (url === "/api/admin/discovered-models") return jsonResponse([]);
+    if (url === "/api/admin/model-scores") return jsonResponse([]);
+    return jsonResponse({}, 404);
+  });
+
+  render(
+    <AuthProvider>
+      <ProjectProvider>
+        <AdminDashboard />
+      </ProjectProvider>
+    </AuthProvider>,
+  );
+
+  await screen.findByText("Platform Admin");
+
+  // Order: admin → project_admin → standard; within standard, active (Zoe) before
+  // inactive (Aaron) even though Aaron sorts first alphabetically.
+  const names = screen
+    .getAllByText(
+      /^(Platform Admin|Pat ProjectAdmin|Zoe Standard|Aaron Standard)$/,
+    )
+    .map((n) => n.textContent);
+  expect(names).toEqual([
+    "Platform Admin",
+    "Pat ProjectAdmin",
+    "Zoe Standard",
+    "Aaron Standard",
+  ]);
+
+  // The project_admin row shows its administered project name.
+  expect(screen.getByText(/Admin of: Alpha/i)).toBeInTheDocument();
+
+  // Status is conveyed with text (+icon), not color alone.
+  expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
+  expect(screen.getByText("Inactive")).toBeInTheDocument();
+});
+
+test("Users Management: edit/delete hidden for admin row, PUT/DELETE fire (Story 15.5)", async () => {
+  const ts = "2026-01-01T00:00:00Z";
+  const adminRow = {
+    id: "u-admin",
+    email: "admin@example.com",
+    display_name: "Platform Admin",
+    role: "admin",
+    is_active: true,
+    timezone: "UTC",
+    project_memberships: [],
+    created_at: ts,
+    updated_at: ts,
+  };
+  const standardRow = {
+    id: "u-std",
+    email: "std@example.com",
+    display_name: "Stan Dard",
+    role: "standard",
+    is_active: true,
+    timezone: "UTC",
+    project_memberships: [],
+    created_at: ts,
+    updated_at: ts,
+  };
+
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/auth/status")
+        return jsonResponse({
+          authenticated: true,
+          email: "admin@example.com",
+          name: "Admin User",
+          role: "admin",
+        });
+      if (url === "/api/projects") return jsonResponse([]);
+      if (url === "/api/admin/users") return jsonResponse([adminRow, standardRow]);
+      if (url === "/api/admin/users/u-std" && init?.method === "PUT")
+        return jsonResponse({ ...standardRow, display_name: "Stan Updated" });
+      if (url === "/api/admin/users/u-std" && init?.method === "DELETE")
+        return Promise.resolve(new Response(null, { status: 204 }));
+      if (url === "/api/admin/discovered-models") return jsonResponse([]);
+      if (url === "/api/admin/model-scores") return jsonResponse([]);
+      return jsonResponse({}, 404);
+    });
+
+  render(
+    <AuthProvider>
+      <ProjectProvider>
+        <AdminDashboard />
+      </ProjectProvider>
+    </AuthProvider>,
+  );
+
+  await screen.findByText("Stan Dard");
+
+  // AC6: the platform admin row exposes NO edit/delete controls.
+  expect(
+    screen.queryByRole("button", { name: /edit user platform admin/i }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: /delete user platform admin/i }),
+  ).not.toBeInTheDocument();
+
+  // The non-admin row has distinct user edit/delete controls (no collision with the
+  // project card's "Edit X"/"Delete X" labels).
+  const editBtn = screen.getByRole("button", { name: /edit user stan dard/i });
+  fireEvent.click(editBtn);
+
+  fireEvent.change(
+    screen.getByLabelText(/display name/i, {
+      selector: "input#edit-user-name-u-std",
+    }),
+    { target: { value: "Stan Updated" } },
+  );
+  fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/users/u-std",
+      expect.objectContaining({ method: "PUT" }),
+    ),
+  );
+
+  const deleteBtn = await screen.findByRole("button", {
+    name: /delete user stan dard/i,
+  });
+  fireEvent.click(deleteBtn);
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/users/u-std",
+      expect.objectContaining({ method: "DELETE" }),
+    ),
+  );
 });

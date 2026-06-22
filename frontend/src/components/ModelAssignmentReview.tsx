@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ModelAssignment } from "@/types/provider";
+import { MessageTime } from "@/components/MessageTime";
 
 interface ModelAssignmentReviewProps {
   provider: string;
@@ -9,6 +10,8 @@ interface ModelAssignmentReviewProps {
   unavailableModels?: Array<{ id: string; name: string }>;
   onApprove: (updatedAssignments: Record<string, string>) => void;
   disabled?: boolean;
+  /** ISO timestamp of Alice's message; rendered as hh:mm:ss beside the "Alice" label. */
+  messageTimestamp?: string;
 }
 
 const AGENT_COLORS: Record<string, string> = {
@@ -26,6 +29,7 @@ export function ModelAssignmentReview({
   unavailableModels = [],
   onApprove,
   disabled = false,
+  messageTimestamp,
 }: ModelAssignmentReviewProps) {
   const [selectedModels, setSelectedModels] = useState<Record<string, string>>(
     {},
@@ -47,7 +51,10 @@ export function ModelAssignmentReview({
   return (
     <div className="max-w-[90vw] md:max-w-max self-start">
       {/* Alice Message */}
-      <div className="text-[11px] font-semibold text-[#3b82f6] mb-1">Alice</div>
+      <div className="text-[11px] font-semibold text-[#3b82f6] mb-1">
+        Alice
+        <MessageTime timestamp={messageTimestamp} fallbackToNow />
+      </div>
       <div className="p-4 bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-sm text-[#0f172a] leading-relaxed">
         ✅ Connected successfully to <strong>{provider}</strong>!
         <br />

@@ -11,6 +11,7 @@ in ``agents/base.py`` (provider names) or ``agents/alice.py`` (provider ids).
 
 # Canonical secret type identifiers (one per provider / integration).
 SECRET_TYPE_CLAUDE = "claude"
+SECRET_TYPE_CLAUDE_SSO = "claude_sso"
 SECRET_TYPE_OPENAI = "openai"
 SECRET_TYPE_GEMINI = "gemini"
 SECRET_TYPE_BROWSER_USE = "browser_use"
@@ -22,6 +23,7 @@ SECRET_TYPE_MCP = "mcp"
 # and validate that an incoming ``secret_type`` is one of the canonical keys.
 CANONICAL_SECRET_TYPES: tuple[str, ...] = (
     SECRET_TYPE_CLAUDE,
+    SECRET_TYPE_CLAUDE_SSO,
     SECRET_TYPE_OPENAI,
     SECRET_TYPE_GEMINI,
     SECRET_TYPE_BROWSER_USE,
@@ -36,6 +38,9 @@ PROVIDER_SECRET_TYPE_MAP: dict[str, str] = {
     # Claude / Anthropic
     "claude": SECRET_TYPE_CLAUDE,
     "anthropic": SECRET_TYPE_CLAUDE,
+    # Claude via enterprise SSO login (stores the OAuth token, not an api_key)
+    "claude-sso": SECRET_TYPE_CLAUDE_SSO,
+    "claude_sso": SECRET_TYPE_CLAUDE_SSO,
     # OpenAI
     "openai": SECRET_TYPE_OPENAI,
     # Gemini / Google
@@ -69,6 +74,7 @@ def resolve_secret_type(provider: str) -> str:
 
 __all__ = [
     "SECRET_TYPE_CLAUDE",
+    "SECRET_TYPE_CLAUDE_SSO",
     "SECRET_TYPE_OPENAI",
     "SECRET_TYPE_GEMINI",
     "SECRET_TYPE_BROWSER_USE",

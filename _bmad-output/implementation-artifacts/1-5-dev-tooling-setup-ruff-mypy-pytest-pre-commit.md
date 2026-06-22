@@ -20,7 +20,7 @@
 
 **Given** the project structure is in place
 **When** the engineer runs dev tools
-**Then** `ruff check src/ tests/` passes with Python 3.12 target and line-length 100
+**Then** `ruff check src/ tests/` passes with Python 3.14 target and line-length 100
 **And** `mypy src/` passes with type hints validated
 **And** `pytest` runs with pytest-asyncio and pytest-cov configured
 **And** `tests/` directory mirrors `src/ai_qa/` structure with `conftest.py`
@@ -99,7 +99,7 @@ asyncio_mode = "auto"
 addopts = "--cov=src/ai_qa --cov-report=term-missing --cov-fail-under=50"
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
@@ -120,7 +120,7 @@ ignore = [
 "tests/*" = ["S101"]  # allow assert in tests
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 strict = true
 ```
 

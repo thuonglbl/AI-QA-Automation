@@ -15,7 +15,7 @@
 | Ticket           | N/A |
 | Date opened      | 2026-06-08 |
 | Status           | Concluded |
-| System           | Windows / Chromium (Playwright 1.60.0), React 18 + TypeScript, FastAPI backend |
+| System           | Windows / Chromium (Playwright 1.60.0), React 19 + TypeScript, FastAPI backend |
 | Evidence sources | `_bmad-output/test-artifacts/results.xml`, `frontend/test-results/*/error-context.md`, `frontend/e2e/story-9-4-dynamic-model-discovery.spec.ts`, `frontend/src/App.tsx`, `frontend/src/components/ThinkingBubble.tsx`, `src/ai_qa/agents/alice.py` |
 
 ---

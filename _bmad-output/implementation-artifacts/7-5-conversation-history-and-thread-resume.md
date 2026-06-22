@@ -85,7 +85,7 @@ Recent commits focus on 8-6 (Admin E2E test execution) and 7-4 (Thread-scoped me
 
 ### Latest Tech Information
 
-- Python 3.12+, FastAPI, SQLAlchemy/Alembic, PostgreSQL
+- Python 3.14+, FastAPI, SQLAlchemy/Alembic, PostgreSQL
 - React 18+, TypeScript, Vite, Shadcn/ui
 
 ### References

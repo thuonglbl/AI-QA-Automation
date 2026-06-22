@@ -65,6 +65,12 @@ class ArtifactStorageFake:
         self.deleted.append(storage_path)
         self.contents.pop(storage_path, None)
 
+    def delete_prefix(self, prefix: str) -> None:
+        keys = [k for k in self.contents if k.startswith(prefix)]
+        for k in keys:
+            self.deleted.append(k)
+            self.contents.pop(k, None)
+
 
 @pytest.fixture
 def browsing_client() -> Generator[TestClient]:
@@ -206,7 +212,7 @@ def _list_project_members(client: TestClient, project: Project) -> list[User]:
             .filter(ProjectMembership.project_id == project.id)
             .all()
         )
-        return [session.get(User, m.user_id) for m in memberships]
+        return [u for m in memberships if (u := session.get(User, m.user_id)) is not None]
     finally:
         session_gen.close()
 
@@ -693,3 +699,316 @@ def test_artifact_delete_removes_from_listing(
     )
     assert list_before.status_code == 200
     assert len(list_before.json()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 5.1 — GET /projects/{id}/artifacts/tree endpoint tests
+# ---------------------------------------------------------------------------
+
+
+def test_tree_empty_project_returns_four_folders(browsing_client: TestClient) -> None:
+    """Empty project: 4 browse folders; required 3 are marked required=true, all entries empty."""
+    member = _create_user(browsing_client, "member@tree.com", STANDARD_ROLE)
+    project = _create_project(browsing_client, "Tree Empty Project")
+    _add_membership(browsing_client, project, member)
+
+    response = browsing_client.get(
+        f"/api/projects/{project.id}/artifacts/tree",
+        headers=_auth_headers(browsing_client, member),
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["project_id"] == str(project.id)
+
+    folders = data["folders"]
+    folder_names = [f["name"] for f in folders]
+    assert folder_names == ["requirements", "test_cases", "test_scripts", "reports"]
+
+    required_names = {f["name"] for f in folders if f["required"]}
+    assert required_names == {"requirements", "test_cases", "test_scripts"}
+
+    for folder in folders:
+        assert folder["is_empty"] is True
+        assert folder["entries"] == []
+
+    # Reports present but not required
+    reports_folder = next(f for f in folders if f["name"] == "reports")
+    assert reports_folder["required"] is False
+
+
+def test_tree_groups_artifacts_by_kind(browsing_client: TestClient) -> None:
+    """Populated project: raw_html/image → requirements, playwright_script → test_scripts,
+    testcase → test_cases, report → reports.
+    """
+    member = _create_user(browsing_client, "member@grouping.com", STANDARD_ROLE)
+    project = _create_project(browsing_client, "Tree Grouping Project")
+    _add_membership(browsing_client, project, member)
+
+    for kind, name in [
+        ("raw_html", "page.html"),
+        ("testcase", "tc.json"),
+        ("playwright_script", "pw.ts"),
+        ("report", "rep.md"),
+        ("image", "img.png"),
+    ]:
+        r = browsing_client.post(
+            f"/api/projects/{project.id}/artifacts",
+            headers=_auth_headers(browsing_client, member),
+            json={"kind": kind, "name": name, "content": f"content of {name}"},
+        )
+        assert r.status_code == 200, f"Failed to create {kind}/{name}: {r.json()}"
+
+    response = browsing_client.get(
+        f"/api/projects/{project.id}/artifacts/tree",
+        headers=_auth_headers(browsing_client, member),
+    )
+    assert response.status_code == 200
+    folders = {f["name"]: f for f in response.json()["folders"]}
+
+    assert {e["name"] for e in folders["requirements"]["entries"]} == {"page.html", "img.png"}
+    assert {e["name"] for e in folders["test_cases"]["entries"]} == {"tc.json"}
+    assert {e["name"] for e in folders["test_scripts"]["entries"]} == {"pw.ts"}
+    assert {e["name"] for e in folders["reports"]["entries"]} == {"rep.md"}
+
+
+def test_tree_entries_carry_title_and_parent_source_id(browsing_client: TestClient) -> None:
+    """title + parent_source_id round-trip all the way through the tree *API* response
+    (not just the service dict) so the frontend can show friendly names and build a
+    Confluence-like hierarchy. Guards the api/artifacts.py ArtifactTreeEntry construction
+    against silently dropping these fields.
+    """
+    member = _create_user(browsing_client, "member@hierarchy.com", STANDARD_ROLE)
+    project = _create_project(browsing_client, "Tree Hierarchy Project")
+    _add_membership(browsing_client, project, member)
+
+    # title/parent_source_id are set by the on-approve save path, not the create API,
+    # so insert directly via the model (mirrors test_tree_null_creator_yields_null_display).
+    session_gen = _session_from_override(browsing_client)
+    session = next(session_gen)
+    try:
+        from uuid import uuid4
+
+        from ai_qa.artifacts.storage import build_artifact_key
+
+        for name, title, parent_source_id in [
+            ("100/requirement.md", "Personal Travel Plan", None),
+            ("101/requirement.md", "US01 - Create journey", "100"),
+        ]:
+            artifact_id = uuid4()
+            session.add(
+                Artifact(
+                    id=artifact_id,
+                    project_id=project.id,
+                    kind="requirements",
+                    name=name,
+                    storage_path=build_artifact_key(
+                        project_id=project.id,
+                        artifact_id=artifact_id,
+                        version=1,
+                        kind="requirements",
+                        safe_name=Path(name).name,
+                    ),
+                    title=title,
+                    parent_source_id=parent_source_id,
+                )
+            )
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = browsing_client.get(
+        f"/api/projects/{project.id}/artifacts/tree",
+        headers=_auth_headers(browsing_client, member),
+    )
+    assert response.status_code == 200
+    folders = {f["name"]: f for f in response.json()["folders"]}
+    by_name = {e["name"]: e for e in folders["requirements"]["entries"]}
+
+    assert by_name["100/requirement.md"]["title"] == "Personal Travel Plan"
+    assert by_name["100/requirement.md"]["parent_source_id"] is None
+    assert by_name["101/requirement.md"]["title"] == "US01 - Create journey"
+    assert by_name["101/requirement.md"]["parent_source_id"] == "100"
+
+
+def test_tree_entries_carry_resolved_display_names(browsing_client: TestClient) -> None:
+    """Entries carry name, kind, updated_at AND resolved created_by_display/updated_by_display
+    equal to User.display_name (not UUIDs).
+    """
+    member = _create_user(browsing_client, "alice@display.com", STANDARD_ROLE)
+    project = _create_project(browsing_client, "Tree Display Names Project", creator=member)
+    _add_membership(browsing_client, project, member)
+
+    created = browsing_client.post(
+        f"/api/projects/{project.id}/artifacts",
+        headers=_auth_headers(browsing_client, member),
+        json={"kind": "requirements", "name": "req.md", "content": "# Req"},
+    )
+    assert created.status_code == 200
+
+    response = browsing_client.get(
+        f"/api/projects/{project.id}/artifacts/tree",
+        headers=_auth_headers(browsing_client, member),
+    )
+    assert response.status_code == 200
+    folders = {f["name"]: f for f in response.json()["folders"]}
+    entry = folders["requirements"]["entries"][0]
+
+    # Presence of required fields
+    assert entry["name"] == "req.md"
+    assert entry["kind"] == "requirements"
+    assert "updated_at" in entry
+
+    # Display name is the display_name string, not a UUID
+    created_display = entry["created_by_display"]
+    assert created_display == member.display_name
+    # Resolved to a display name, not the raw creator UUID
+    assert created_display != entry["created_by_user_id"]
+
+
+def test_tree_null_creator_yields_null_display(browsing_client: TestClient) -> None:
+    """Artifact with created_by_user_id=None → created_by_display is None (no crash)."""
+    member = _create_user(browsing_client, "member@nullcreator.com", STANDARD_ROLE)
+    project = _create_project(browsing_client, "Tree Null Creator Project")
+    _add_membership(browsing_client, project, member)
+
+    # Create artifact via API (member sets created_by), then directly insert a no-creator one
+    session_gen = _session_from_override(browsing_client)
+    session = next(session_gen)
+    from ai_qa.db.models import Artifact as ArtifactModel
+
+    try:
+        from uuid import uuid4
+
+        from ai_qa.artifacts.storage import build_artifact_key
+
+        artifact_id = uuid4()
+        storage_path = build_artifact_key(
+            project_id=project.id,
+            artifact_id=artifact_id,
+            version=1,
+            kind="requirements",
+            safe_name="anon.md",
+        )
+        a = ArtifactModel(
+            id=artifact_id,
+            project_id=project.id,
+            kind="requirements",
+            name="anon.md",
+            storage_path=storage_path,
+            created_by_user_id=None,
+            updated_by_user_id=None,
+        )
+        session.add(a)
+        session.commit()
+    finally:
+        session_gen.close()
+
+    response = browsing_client.get(
+        f"/api/projects/{project.id}/artifacts/tree",
+        headers=_auth_headers(browsing_client, member),
+    )
+    assert response.status_code == 200
+    folders = {f["name"]: f for f in response.json()["folders"]}
+    entry = next(e for e in folders["requirements"]["entries"] if e["name"] == "anon.md")
+
+    assert entry["created_by_display"] is None
+    assert entry["updated_by_display"] is None
+
+
+def test_tree_pii_canary(browsing_client: TestClient) -> None:
+    """The /artifacts/tree response body contains no email, password_hash, or storage_path."""
+    member = _create_user(browsing_client, "pii-canary@example.com", STANDARD_ROLE)
+    project = _create_project(browsing_client, "Tree PII Canary Project")
+    _add_membership(browsing_client, project, member)
+
+    browsing_client.post(
+        f"/api/projects/{project.id}/artifacts",
+        headers=_auth_headers(browsing_client, member),
+        json={"kind": "requirements", "name": "req.md", "content": "content"},
+    )
+
+    response = browsing_client.get(
+        f"/api/projects/{project.id}/artifacts/tree",
+        headers=_auth_headers(browsing_client, member),
+    )
+    assert response.status_code == 200
+    body = response.text
+
+    assert "pii-canary@example.com" not in body
+    assert "password_hash" not in body
+    assert "storage_path" not in body
+
+
+def test_tree_cross_project_scoping(browsing_client: TestClient) -> None:
+    """Project-B artifacts never appear in project-A's tree."""
+    member_a = _create_user(browsing_client, "member-a@scope.com", STANDARD_ROLE)
+    member_b = _create_user(browsing_client, "member-b@scope.com", STANDARD_ROLE)
+    project_a = _create_project(browsing_client, "Tree Project A")
+    project_b = _create_project(browsing_client, "Tree Project B")
+    _add_membership(browsing_client, project_a, member_a)
+    _add_membership(browsing_client, project_b, member_b)
+
+    browsing_client.post(
+        f"/api/projects/{project_a.id}/artifacts",
+        headers=_auth_headers(browsing_client, member_a),
+        json={"kind": "requirements", "name": "a_req.md", "content": "A"},
+    )
+    browsing_client.post(
+        f"/api/projects/{project_b.id}/artifacts",
+        headers=_auth_headers(browsing_client, member_b),
+        json={"kind": "requirements", "name": "b_req.md", "content": "B"},
+    )
+
+    response_a = browsing_client.get(
+        f"/api/projects/{project_a.id}/artifacts/tree",
+        headers=_auth_headers(browsing_client, member_a),
+    )
+    assert response_a.status_code == 200
+    body_a = response_a.text
+    assert "b_req.md" not in body_a
+    assert "a_req.md" in body_a
+
+
+def test_tree_non_member_gets_404(browsing_client: TestClient) -> None:
+    """Non-member requesting /tree gets 404 RESOURCE_NOT_FOUND_DETAIL."""
+    member = _create_user(browsing_client, "member@403tree.com", STANDARD_ROLE)
+    outsider = _create_user(browsing_client, "outsider@403tree.com", STANDARD_ROLE)
+    project = _create_project(browsing_client, "Tree Protected Project")
+    _add_membership(browsing_client, project, member)
+
+    response = browsing_client.get(
+        f"/api/projects/{project.id}/artifacts/tree",
+        headers=_auth_headers(browsing_client, outsider),
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Resource not found"
+    # Leak-canary (Task 5.1): the 404 body must not leak the project storage prefix
+    # or any storage_path key to a non-member.
+    body = response.text
+    assert f"projects/{project.id}/" not in body
+    assert "storage_path" not in body
+
+
+def test_tree_unauthenticated_gets_401(browsing_client: TestClient) -> None:
+    """Unauthenticated /tree request returns 401."""
+    member = _create_user(browsing_client, "member@401tree.com", STANDARD_ROLE)
+    project = _create_project(browsing_client, "Tree Auth Project")
+    _add_membership(browsing_client, project, member)
+
+    response = browsing_client.get(f"/api/projects/{project.id}/artifacts/tree")
+    assert response.status_code == 401
+
+
+def test_tree_openapi_schema_includes_tree_endpoint(browsing_client: TestClient) -> None:
+    """OpenAPI schema includes the /tree endpoint and new response models."""
+    schema = browsing_client.get("/openapi.json").json()
+
+    paths = schema.get("paths", {})
+    tree_path = next((k for k in paths if k.endswith("/artifacts/tree")), None)
+    assert tree_path is not None, "No /tree path in OpenAPI schema"
+
+    components = schema.get("components", {}).get("schemas", {})
+    assert "ArtifactTreeEntry" in components
+    assert "ArtifactTreeFolder" in components
+    assert "ArtifactTreeResponse" in components

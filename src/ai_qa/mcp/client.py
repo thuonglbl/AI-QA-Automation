@@ -260,6 +260,24 @@ class MCPClient:
                 raise MCPToolError(f"Tool '{name}' not found on server") from e
             raise
 
+    async def check_required_tools(self, required_tools: list[str]) -> list[str]:
+        """Return names from required_tools that are absent on the MCP server.
+
+        Args:
+            required_tools: Tool names to check for (use prefixed names when applicable).
+
+        Returns:
+            List of missing tool names; empty list means all required tools are present.
+
+        Raises:
+            MCPConnectionError: If list_tools() fails due to connectivity.
+            MCPAuthenticationError: If authentication fails.
+        """
+        if not required_tools:
+            return []
+        available = {t.name for t in await self.list_tools()}
+        return [name for name in required_tools if name not in available]
+
     async def discover_capabilities(self) -> ServerCapabilities:
         """Discover server capabilities.
 

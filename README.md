@@ -164,11 +164,11 @@ OpenAPI documentation is available at:
 
 ### Prerequisites
 
-- Python 3.14.5
-- Node.js 26.1.0
+- Python 3.14.6
+- Node.js 26.3.0
 - Docker (prefer Rancher Desktop 1.22.2)
-- `uv` 0.11.13
-- PostgreSQL 18 with pgAdmin 4 9.15
+- `uv` 0.11.20
+- PostgreSQL 18.4 with pgAdmin 4 9.15
 
 ### Database & File Storage Setup
 
@@ -302,28 +302,22 @@ Default local URLs:
 
 ## Docker Build, Push, and UAT Deployment
 
-The production deployment now uses separate images for frontend and backend:
+The production deployment uses separate images, all grouped under the
+`ai-qa-automation/` project path and tagged with plain SemVer (no leading `v`):
 
 | Component | Image path |
 | --- | --- |
-| Backend | ai-qa-backend:v0.2.2 |
-| Frontend | ai-qa-frontend:v0.2.2 |
-| Database | ai-qa-db:18 |
-| Storage Server | chrislusf/seaweedfs:4.31 |
-
-### Configure deployment variables
-
-On server, copy `.env.example` to `.env` and update
-On server, copy `docker-compose-server.yml.example` to `docker-compose.yml` and update
-
-Do not commit `.env` and `docker-compose-server.yml`. They are ignored by Git and contain credentials.
+| Backend | ai-qa-automation/backend:0.5.1 |
+| Frontend | ai-qa-automation/frontend:0.5.1 |
+| Database | ai-qa-automation/database:18.4 |
+| Storage Server | ai-qa-automation/file-storage:4.33 |
 
 ### Build images locally
 
-Need to input the newest version number from your local development environment in .env file e.g v0.2.0
+Need to input the newest version number from your local development environment in .env file e.g 0.5.1
 
 ```powershell
-.\scripts\build-docker-images.ps1 -Version v0.2.0
+.\scripts\build-docker-images.ps1 -Version 0.5.1
 ```
 
 Confirm image files exist
@@ -332,28 +326,17 @@ Confirm image files exist
 docker images | findstr ai-qa
 ```
 
-Backend smoke test
-
-```powershell
-docker run --rm --name ai-qa-backend-test -p 8000:8000 --env-file .env <register-url>/<repository-url>/ai-qa-backend:v0.2.0
-curl -UseBasicParsing http://localhost:8000/openapi.json
-docker stop ai-qa-backend-test
-```
-
-Frontend smoke test
-
-```powershell
-docker run --rm --name ai-qa-frontend-test -p 8080:80 <register-url>/<repository-url>/ai-qa-frontend:v0.2.0
-http://localhost:8080
-docker stop ai-qa-frontend-test
-```
-
 DB and SeaweedFS images (update only when version change)
 
 ```powershell
-docker pull postgres:18-alpine
-docker pull chrislusf/seaweedfs:4.31
+docker pull postgres:18.4-alpine
+docker pull chrislusf/seaweedfs:4.33
 # Tag and push to your private registry if necessary
+docker login <docker-image-prefix>
+docker tag postgres:18.4-alpine <docker-image-prefix>/ai-qa-automation/database:18.4
+docker tag chrislusf/seaweedfs:4.33 <docker-image-prefix>/ai-qa-automation/file-storage:4.33
+docker push <docker-image-prefix>/ai-qa-automation/database:18.4
+docker push <docker-image-prefix>/ai-qa-automation/file-storage:4.33
 ```
 
 ### Push images to Artifactory
@@ -361,7 +344,7 @@ docker pull chrislusf/seaweedfs:4.31
 Automation login using ARTIFACTORY_USERNAME and ARTIFACTORY_PASSWORD in `.env` file:
 
 ```powershell
-.\scripts\build-docker-images.ps1 -Version v0.2.0 -Login -Push
+.\scripts\build-docker-images.ps1 -Version 0.5.1 -Login -Push
 ```
 
 ### Deploy on UAT web server
@@ -382,7 +365,7 @@ docker --version
 docker compose version
 ```
 
-For Docker deployment, the server does not need the same Python or Node.js versions as local development. Python `3.14.5`, Node.js `26.1.0`, uv `0.11.13`, and Nginx `1.27` are already inside the Docker images. The UAT server mainly needs Docker Engine and Docker Compose.
+For Docker deployment, the server does not need the same Python or Node.js versions as local development. Python `3.14.6`, Node.js `26.3.0`, uv `0.11.20`, and Nginx `1.31.1` are already inside the Docker images. The UAT server mainly needs Docker Engine and Docker Compose.
 
 Find the existing Compose file:
 
@@ -400,7 +383,7 @@ nano .env
 nano docker-compose.yml
 ```
 
-Use the pushed images with the newest version e.g v0.2.0 and keep the three services on the same Docker Compose network.
+Use the pushed images with the newest version e.g 0.4.0 and keep the services on the same Docker Compose network.
 
 Pull and recreate the containers:
 
@@ -424,6 +407,21 @@ docker compose -f docker-compose.yml exec backend python -m ai_qa.auth.bootstrap
 ```
 
 The frontend image serves the Vite build through Nginx and proxies `/api`, `/auth`, and `/ws` to the backend service named `ai-qa-backend` inside the Docker Compose network.
+
+### Run E2E tests from the deployed server
+
+The admin "Run E2E Tests" button triggers an in-process Playwright run inside the backend container. The backend image therefore bundles a Playwright runner (Node.js, Chromium, and the `frontend/e2e` specs) on top of the Python runtime — this makes the backend image noticeably larger than a pure API image.
+
+To make the button work on the server, set these in the deployment `.env` (the compose file forwards them to the backend container):
+
+- `E2E_SERVER_MODE=1` — runs headless (no display on a server), disables the Chromium sandbox (root in a container), and ignores TLS errors.
+- `BASE_URL=https://<your-deployed-host>` — the browser drives the deployed app over HTTPS. It **must** be HTTPS, because the session cookie is `Secure` and a browser never sends a `Secure` cookie over plain HTTP.
+- `API_URL=http://localhost:8000` — used by E2E global setup/teardown (server-to-server, Bearer token); the backend reaches itself in-container.
+- `ADMIN_EMAIL` / `ADMIN_PASSWORD` — the admin account E2E uses to seed and clean up synthetic test data.
+
+The compose example sets `shm_size: "1gb"` for the backend (Chromium needs more shared memory than the 64 MB default). If the backend container cannot resolve the public `BASE_URL` hostname, uncomment the `extra_hosts` mapping in `docker-compose-server.yml.example`.
+
+> Local development is unchanged: the button runs headed with slow motion against the running uvicorn + Vite servers, reusing them instead of starting its own.
 
 ## Useful Manual Checks
 

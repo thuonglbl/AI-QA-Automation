@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Plus,
   Shield,
@@ -11,26 +11,215 @@ import {
   Download,
   CheckCircle,
   XCircle,
+  Gauge,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  assignProjectMembership,
   createAdminProject,
   createAdminUser,
   deleteAdminProject,
+  deleteAdminUser,
   listAdminUsers,
-  removeProjectMembership,
   updateAdminProject,
+  updateAdminUser,
   runE2ETests,
+  getE2EStatus,
   downloadE2EReport,
+  listDiscoveredModels,
+  syncModelsAndBenchmarks,
 } from "@/lib/projects";
 import { getSafeApiErrorMessage, API_BASE_PATH } from "@/lib/api";
+import { BROWSER_TIMEZONE, TIMEZONE_OPTIONS } from "@/lib/timezone";
 import { useProject } from "@/hooks/useProject";
 import { useAuth } from "@/hooks/useAuth";
-import type { AdminUser, E2ETestRunResult } from "@/types/project";
+import type {
+  AdminUser,
+  E2ETestRunResult,
+  DiscoveredModel,
+  ModelSyncResult,
+  ProjectEnvironment,
+  UpdateAdminUserRequest,
+} from "@/types/project";
+
+/**
+ * Editor for a project's named target environments (name + URL rows). Project-wide
+ * and admin-managed: Sarah picks one when generating scripts; Jack (future) picks one
+ * to run against. All optional — add/remove/edit rows freely; blanks are dropped on save.
+ */
+/** Trim rows and drop any with a blank name or URL before sending to the API. */
+export function cleanEnvironments(environments: ProjectEnvironment[]): ProjectEnvironment[] {
+  return environments
+    .map((e) => ({ name: e.name.trim(), url: e.url.trim() }))
+    .filter((e) => e.name && e.url);
+}
+
+export function EnvironmentsEditor({
+  environments,
+  onChange,
+}: {
+  environments: ProjectEnvironment[];
+  onChange: (envs: ProjectEnvironment[]) => void;
+}) {
+  const update = (index: number, patch: Partial<ProjectEnvironment>) =>
+    onChange(environments.map((e, i) => (i === index ? { ...e, ...patch } : e)));
+  const remove = (index: number) => onChange(environments.filter((_, i) => i !== index));
+  const add = () => onChange([...environments, { name: "", url: "" }]);
+
+  return (
+    <div>
+      <Label className="text-slate-700 block mb-1.5">Environments</Label>
+      <div className="space-y-2">
+        {environments.map((env, i) => (
+          <div key={i} className="flex gap-2 items-center">
+            <Input
+              aria-label={`Environment name ${i + 1}`}
+              placeholder="Name (e.g. Test 1)"
+              value={env.name}
+              onChange={(e) => update(i, { name: e.target.value })}
+              className="w-32"
+            />
+            <Input
+              aria-label={`Environment URL ${i + 1}`}
+              placeholder="https://test1.example.com"
+              value={env.url}
+              onChange={(e) => update(i, { url: e.target.value })}
+              className="flex-1"
+            />
+            <button
+              type="button"
+              onClick={() => remove(i)}
+              aria-label={`Remove environment ${i + 1}`}
+              className="text-red-500 hover:text-red-700 p-1 flex-shrink-0"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={add}
+        className="mt-2 h-7 text-xs"
+      >
+        <Plus className="h-3.5 w-3.5 mr-1" /> Add environment
+      </Button>
+      <p className="text-xs text-slate-400 mt-1">
+        App-under-test URLs (local, test, integrate, production…). Optional — add or edit
+        anytime.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Editor for a project's app-under-test roles (Admin/User/…). Chip-style: type a name,
+ * Add, remove with ×. These roles (× environments) are the matrix each captured login
+ * session is keyed by. Distinct from pipeline-access roles (ProjectMembership.role).
+ */
+export function AppRolesEditor({
+  roles,
+  onChange,
+}: {
+  roles: string[];
+  onChange: (roles: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const add = () => {
+    const value = draft.trim();
+    if (!value) return;
+    if (!roles.some((r) => r.toLowerCase() === value.toLowerCase())) {
+      onChange([...roles, value]);
+    }
+    setDraft("");
+  };
+  const remove = (index: number) => onChange(roles.filter((_, i) => i !== index));
+
+  return (
+    <div>
+      <Label className="text-slate-700 block mb-1.5">App roles</Label>
+      <div className="flex gap-2">
+        <Input
+          aria-label="New app role"
+          placeholder="e.g. Admin"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+          className="flex-1"
+        />
+        <Button type="button" variant="outline" size="sm" onClick={add} className="h-9 text-xs">
+          <Plus className="h-3.5 w-3.5 mr-1" /> Add
+        </Button>
+      </div>
+      {roles.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-2">
+          {roles.map((r, i) => (
+            <span
+              key={r}
+              className="inline-flex items-center gap-1 bg-slate-100 border border-slate-200 text-slate-700 px-2 py-1 rounded text-xs"
+            >
+              {r}
+              <button
+                type="button"
+                onClick={() => remove(i)}
+                aria-label={`Remove role ${r}`}
+                className="text-red-500 hover:text-red-700 font-bold ml-1"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="text-xs text-slate-400 mt-1">
+        Roles of the app under test (Admin, User…). Optional — each role gets its own
+        captured login session later.
+      </p>
+    </div>
+  );
+}
+
+// Users Management sort order: platform admin first, then project_admins, then
+// standard users, then anything else.
+const ROLE_RANK: Record<string, number> = {
+  admin: 0,
+  project_admin: 1,
+  standard: 2,
+};
+
+// Synced-models table: rows sort by these capability scores in priority order
+// (highest first); chips within a row render in this fixed order for easy column scan.
+const SCORE_SORT_ORDER = ["global", "reasoning", "coding", "vision"] as const;
+const CAPABILITY_DISPLAY_ORDER = [
+  "global",
+  "reasoning",
+  "coding",
+  "vision",
+  "instruction",
+  "fast",
+];
+
+function capabilityRank(capability: string): number {
+  const i = CAPABILITY_DISPLAY_ORDER.indexOf(capability);
+  return i < 0 ? CAPABILITY_DISPLAY_ORDER.length : i;
+}
+
+/** How often to poll the E2E run status while a background run is in progress. */
+const E2E_POLL_INTERVAL_MS = 3000;
+/** Stop polling after this long so the UI can never hang forever on a stuck run. */
+const E2E_MAX_POLL_MS = 20 * 60 * 1000;
+/** Tolerate this many consecutive poll failures (transient network blips) before giving up. */
+const E2E_MAX_POLL_ERRORS = 5;
 
 export function AdminDashboard() {
   const { projects, reloadProjects } = useProject();
@@ -39,52 +228,33 @@ export function AdminDashboard() {
   const [isLoadingUsers, setIsLoadingUsers] = useState(true);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [confluenceBaseUrl, setConfluenceBaseUrl] = useState("");
-  const [jiraBaseUrl, setJiraBaseUrl] = useState("");
-  const PROVIDER_OPTIONS = [
-    { id: "browser-use-cloud", label: "Browser Use" },
-    { id: "claude",            label: "Claude" },
-    { id: "gemini",            label: "Gemini" },
-    { id: "openai",            label: "ChatGPT" },
-    { id: "on-premises",       label: "On Premises" },
-  ] as const;
-  const [enabledProviders, setEnabledProviders] = useState<string[]>([]);
-
-  const PROVIDER_ICON_FILES: Record<string, string> = {
-    "browser-use-cloud": "/provider-icons/browser-use.png",
-    "claude":            "/provider-icons/anthropic.svg",
-    "gemini":            "/provider-icons/google-gemini.svg",
-    "openai":            "/provider-icons/openai.svg",
-    "on-premises":       "/provider-icons/on-premises.png",
-  };
-
-  function toggleProvider(
-    providerId: string,
-    current: string[],
-    setter: React.Dispatch<React.SetStateAction<string[]>>,
-  ) {
-    setter(
-      current.includes(providerId)
-        ? current.filter((p) => p !== providerId)
-        : [...current, providerId],
-    );
-  }
+  // Project CONFIG (Confluence/Jira/providers/environments/app_roles) and membership are
+  // managed by the project_admin in the Project Admin dashboard — the platform admin only
+  // creates/edits a project's name + description here.
   const [createUserEmail, setCreateUserEmail] = useState("");
   const [createUserDisplayName, setCreateUserDisplayName] = useState("");
-  const [createUserRole, setCreateUserRole] = useState<"standard" | "admin">(
+  const [createUserRole, setCreateUserRole] = useState<"standard" | "project_admin">(
     "standard",
   );
   const [createUserPassword, setCreateUserPassword] = useState("");
+  const [createUserTimezone, setCreateUserTimezone] =
+    useState<string>(BROWSER_TIMEZONE);
+  // Selected project for a new project_admin (required when role is project_admin).
+  const [createUserProjectId, setCreateUserProjectId] = useState<string>("");
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [editProjectName, setEditProjectName] = useState("");
   const [editProjectDescription, setEditProjectDescription] = useState("");
-  const [editProjectConfluenceBaseUrl, setEditProjectConfluenceBaseUrl] =
-    useState("");
-  const [editProjectJiraBaseUrl, setEditProjectJiraBaseUrl] = useState("");
-  const [editEnabledProviders, setEditEnabledProviders] = useState<string[]>([]);
-  const [selectedProjectByUserId, setSelectedProjectByUserId] = useState<
-    Record<string, string>
-  >({});
+  // Per-user inline edit (project_admin / standard only — the admin row is immutable).
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [editUserDisplayName, setEditUserDisplayName] = useState("");
+  const [editUserRole, setEditUserRole] = useState<"standard" | "project_admin">(
+    "standard",
+  );
+  const [editUserTimezone, setEditUserTimezone] =
+    useState<string>(BROWSER_TIMEZONE);
+  const [editUserIsActive, setEditUserIsActive] = useState(true);
+  const [editUserPassword, setEditUserPassword] = useState("");
+  const [editUserProjectId, setEditUserProjectId] = useState<string>("");
   const [status, setStatus] = useState<string | null>(null);
   const [errors, setErrors] = useState<{ id: number; msg: string }[]>([]);
   const [isBusy, setIsBusy] = useState(false);
@@ -123,19 +293,85 @@ export function AdminDashboard() {
     loadUsers().finally(() => setIsLoadingUsers(false));
   }, []);
 
+  // Sorted view of the users list (never mutate state): role → status → timezone → name.
+  const sortedUsers = useMemo(
+    () =>
+      [...users].sort((a, b) => {
+        const ra = ROLE_RANK[a.role] ?? 3;
+        const rb = ROLE_RANK[b.role] ?? 3;
+        if (ra !== rb) return ra - rb;
+        const aActive = a.is_active ? 0 : 1;
+        const bActive = b.is_active ? 0 : 1;
+        if (aActive !== bActive) return aActive - bActive;
+        const tz = (a.timezone ?? "").localeCompare(b.timezone ?? "");
+        if (tz !== 0) return tz;
+        return a.display_name.localeCompare(b.display_name);
+      }),
+    [users],
+  );
+
+  // --- Model & benchmark sync ---
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>(
+    [],
+  );
+  const [isLoadingModels, setIsLoadingModels] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<ModelSyncResult | null>(null);
+
+  // Sort by global → reasoning → coding → vision (desc); models without a given
+  // score sink (treated as -1), so benchmarked models float to the top.
+  const sortedModels = useMemo(() => {
+    const scoreFor = (m: DiscoveredModel, capability: string): number => {
+      const found = m.scores.find((s) => s.capability === capability);
+      return found ? found.score : -1;
+    };
+    return [...discoveredModels].sort((a, b) => {
+      for (const capability of SCORE_SORT_ORDER) {
+        const diff = scoreFor(b, capability) - scoreFor(a, capability);
+        if (diff !== 0) return diff;
+      }
+      return a.model_id.localeCompare(b.model_id);
+    });
+  }, [discoveredModels]);
+
+  const loadDiscoveredModels = async () => {
+    try {
+      const models = await listDiscoveredModels();
+      setDiscoveredModels(models || []);
+    } catch (err) {
+      addError(getSafeApiErrorMessage(err));
+    }
+  };
+
+  useEffect(() => {
+    setIsLoadingModels(true);
+    loadDiscoveredModels().finally(() => setIsLoadingModels(false));
+  }, []);
+
+  const handleSyncModels = async () => {
+    setIsSyncing(true);
+    setSyncResult(null);
+    setErrors([]);
+    setStatus(null);
+    try {
+      const result = await syncModelsAndBenchmarks();
+      setSyncResult(result);
+      setStatus(
+        `Synced ${result.models_discovered} model(s); ${result.models_benchmarked} benchmarked.`,
+      );
+      await loadDiscoveredModels();
+    } catch (err) {
+      addError(getSafeApiErrorMessage(err));
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   async function handleCreateProject(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedName = name.trim();
     if (!trimmedName) {
       addError("Project name is required.");
-      return;
-    }
-    if (!confluenceBaseUrl.trim() && !jiraBaseUrl.trim()) {
-      addError("No link to extract requirement. Please provide Confluence URL, Jira URL, or both.");
-      return;
-    }
-    if (enabledProviders.length === 0) {
-      addError("No provider to execute. Please enable at least one provider.");
       return;
     }
 
@@ -146,15 +382,9 @@ export function AdminDashboard() {
       await createAdminProject({
         name: trimmedName,
         description: description.trim() || null,
-        confluence_base_url: confluenceBaseUrl.trim() || null,
-        jira_base_url: jiraBaseUrl.trim() || null,
-        enabled_providers: enabledProviders,
       });
       setName("");
       setDescription("");
-      setConfluenceBaseUrl("");
-      setJiraBaseUrl("");
-      setEnabledProviders([]);
       setStatus("Project created successfully.");
       await reloadProjects();
       await loadUsers();
@@ -176,11 +406,17 @@ export function AdminDashboard() {
         display_name: createUserDisplayName.trim(),
         role: createUserRole,
         initial_password: createUserPassword,
+        timezone: createUserTimezone,
+        ...(createUserRole === "project_admin"
+          ? { project_id: createUserProjectId }
+          : {}),
       });
       setCreateUserEmail("");
       setCreateUserDisplayName("");
       setCreateUserRole("standard");
       setCreateUserPassword("");
+      setCreateUserTimezone(BROWSER_TIMEZONE);
+      setCreateUserProjectId("");
       setStatus("User created successfully.");
       await loadUsers();
     } catch (err) {
@@ -194,18 +430,12 @@ export function AdminDashboard() {
     setEditingProjectId(project.id);
     setEditProjectName(project.name);
     setEditProjectDescription(project.description ?? "");
-    setEditProjectConfluenceBaseUrl(project.confluence_base_url ?? "");
-    setEditProjectJiraBaseUrl(project.jira_base_url ?? "");
-    setEditEnabledProviders(project.enabled_providers ?? []);
   }
 
   function cancelEditingProject() {
     setEditingProjectId(null);
     setEditProjectName("");
     setEditProjectDescription("");
-    setEditProjectConfluenceBaseUrl("");
-    setEditProjectJiraBaseUrl("");
-    setEditEnabledProviders([]);
   }
 
   async function handleEditProject(
@@ -218,14 +448,6 @@ export function AdminDashboard() {
       addError("Project name is required.");
       return;
     }
-    if (!editProjectConfluenceBaseUrl.trim() && !editProjectJiraBaseUrl.trim()) {
-      addError("No link to extract requirement. Please provide Confluence URL, Jira URL, or both.");
-      return;
-    }
-    if (editEnabledProviders.length === 0) {
-      addError("No provider to execute. Please enable at least one provider.");
-      return;
-    }
     setIsBusy(true);
     setErrors([]);
     setStatus(null);
@@ -233,9 +455,6 @@ export function AdminDashboard() {
       await updateAdminProject(project.id, {
         name: trimmedName,
         description: editProjectDescription.trim() || null,
-        confluence_base_url: editProjectConfluenceBaseUrl.trim() || null,
-        jira_base_url: editProjectJiraBaseUrl.trim() || null,
-        enabled_providers: editEnabledProviders,
       });
       cancelEditingProject();
       setStatus("Project updated successfully.");
@@ -264,36 +483,50 @@ export function AdminDashboard() {
     }
   }
 
-  async function handleAssignUserToProject(targetUser: AdminUser) {
-    if (!targetUser.is_active) {
-      addError("Inactive users cannot be assigned to projects.");
-      return;
-    }
-    const availableProjects = projects.filter(
-      (project) =>
-        !project.memberships?.some(
-          (membership) => membership.user_id === targetUser.id,
-        ),
-    );
-    const selectedProjectId = selectedProjectByUserId[targetUser.id];
-    const availableProject =
-      availableProjects.find((project) => project.id === selectedProjectId) ??
-      availableProjects[0];
-    if (!availableProject) {
-      addError("No available projects to assign.");
+  function startEditingUser(u: AdminUser) {
+    setEditingUserId(u.id);
+    setEditUserDisplayName(u.display_name);
+    setEditUserRole(u.role === "project_admin" ? "project_admin" : "standard");
+    setEditUserTimezone(u.timezone || BROWSER_TIMEZONE);
+    setEditUserIsActive(u.is_active);
+    setEditUserPassword("");
+    setEditUserProjectId("");
+  }
+
+  function cancelEditingUser() {
+    setEditingUserId(null);
+    setEditUserDisplayName("");
+    setEditUserPassword("");
+    setEditUserProjectId("");
+  }
+
+  async function handleEditUser(
+    event: React.FormEvent<HTMLFormElement>,
+    u: AdminUser,
+  ) {
+    event.preventDefault();
+    const trimmedName = editUserDisplayName.trim();
+    if (!trimmedName) {
+      addError("Display name is required.");
       return;
     }
     setIsBusy(true);
     setErrors([]);
     setStatus(null);
     try {
-      await assignProjectMembership(availableProject.id, {
-        user_id: targetUser.id,
-        role: "member",
-      });
-      setSelectedProjectByUserId((prev) => ({ ...prev, [targetUser.id]: "" }));
-      setStatus("Project assigned successfully.");
-      await reloadProjects();
+      const promoting =
+        u.role === "standard" && editUserRole === "project_admin";
+      const body: UpdateAdminUserRequest = {
+        display_name: trimmedName,
+        role: editUserRole,
+        timezone: editUserTimezone,
+        is_active: editUserIsActive,
+        ...(editUserPassword ? { new_password: editUserPassword } : {}),
+        ...(promoting ? { project_id: editUserProjectId } : {}),
+      };
+      await updateAdminUser(u.id, body);
+      cancelEditingUser();
+      setStatus("User updated successfully.");
       await loadUsers();
     } catch (err) {
       addError(getSafeApiErrorMessage(err));
@@ -302,17 +535,13 @@ export function AdminDashboard() {
     }
   }
 
-  async function handleRemoveUserFromProject(
-    projectId: string,
-    targetUser: AdminUser,
-  ) {
+  async function handleDeleteUser(u: AdminUser) {
     setIsBusy(true);
     setErrors([]);
     setStatus(null);
     try {
-      await removeProjectMembership(projectId, targetUser.id);
-      setStatus("Project unassigned successfully.");
-      await reloadProjects();
+      await deleteAdminUser(u.id);
+      setStatus("User deleted successfully.");
       await loadUsers();
     } catch (err) {
       addError(getSafeApiErrorMessage(err));
@@ -322,12 +551,36 @@ export function AdminDashboard() {
   }
 
   async function handleRunE2ETests() {
+    if (isRunningE2E) return; // defense-in-depth beyond the disabled button
     setIsRunningE2E(true);
     setE2eResult(null);
     setErrors([]);
     setStatus(null);
     try {
-      const result = await runE2ETests();
+      // The run executes in the background on the server (a full suite takes
+      // minutes). Kick it off, then poll the status endpoint until it finishes —
+      // this keeps every request short, so no reverse proxy times it out.
+      let result = await runE2ETests();
+      const startedAt = Date.now();
+      let consecutiveErrors = 0;
+      while (result.status === "running") {
+        if (Date.now() - startedAt > E2E_MAX_POLL_MS) {
+          throw new Error(
+            "Timed out waiting for the E2E run. Check the report or the server logs.",
+          );
+        }
+        try {
+          result = await getE2EStatus();
+          consecutiveErrors = 0;
+        } catch (pollErr) {
+          // Tolerate transient blips; only fail after several in a row.
+          consecutiveErrors += 1;
+          if (consecutiveErrors >= E2E_MAX_POLL_ERRORS) throw pollErr;
+        }
+        if (result.status === "running") {
+          await new Promise((resolve) => setTimeout(resolve, E2E_POLL_INTERVAL_MS));
+        }
+      }
       setE2eResult(result);
       setStatus(
         result.passed
@@ -362,32 +615,6 @@ export function AdminDashboard() {
 
 
 
-  const projectsByUserId = useMemo(() => {
-    const map = new Map<string, typeof projects>();
-    projects.forEach((p) => {
-      p.memberships?.forEach((m) => {
-        if (!map.has(m.user_id)) map.set(m.user_id, []);
-        map.get(m.user_id)!.push(p);
-      });
-    });
-    return map;
-  }, [projects]);
-
-  const assignableProjectsByUserId = useMemo(() => {
-    const map = new Map<string, typeof projects>();
-    users.forEach((u) => {
-      map.set(
-        u.id,
-        projects.filter(
-          (project) =>
-            !project.memberships?.some(
-              (membership) => membership.user_id === u.id,
-            ),
-        ),
-      );
-    });
-    return map;
-  }, [projects, users]);
 
   return (
     <div className="min-h-screen bg-[#f8fafc] flex flex-col">
@@ -518,66 +745,6 @@ export function AdminDashboard() {
                               className="mt-1.5"
                             />
                           </div>
-                          <div>
-                            <Label
-                              htmlFor={`edit-project-confluence-${proj.id}`}
-                              className="text-slate-700"
-                            >
-                              Confluence Base URL
-                            </Label>
-                            <Input
-                              id={`edit-project-confluence-${proj.id}`}
-                              value={editProjectConfluenceBaseUrl}
-                              onChange={(e) =>
-                                setEditProjectConfluenceBaseUrl(e.target.value)
-                              }
-                              placeholder="https://confluence.company.com"
-                              className="mt-1.5"
-                            />
-                          </div>
-                          <div>
-                            <Label
-                              htmlFor={`edit-project-jira-${proj.id}`}
-                              className="text-slate-700"
-                            >
-                              Jira Base URL
-                            </Label>
-                            <Input
-                              id={`edit-project-jira-${proj.id}`}
-                              value={editProjectJiraBaseUrl}
-                              onChange={(e) =>
-                                setEditProjectJiraBaseUrl(e.target.value)
-                              }
-                              placeholder="https://jira.company.com"
-                              className="mt-1.5"
-                            />
-                            <p className="text-xs text-slate-400 mt-1">
-                              At least one of Confluence or Jira URL is required.
-                            </p>
-                          </div>
-                          <div>
-                            <Label className="text-slate-700 block mb-1.5">
-                              Enabled Providers
-                            </Label>
-                            <div className="flex flex-wrap gap-x-4 gap-y-2">
-                              {PROVIDER_OPTIONS.map((opt) => (
-                                <label
-                                  key={opt.id}
-                                  className="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={editEnabledProviders.includes(opt.id)}
-                                    onChange={() =>
-                                      toggleProvider(opt.id, editEnabledProviders, setEditEnabledProviders)
-                                    }
-                                    className="rounded border-slate-300 accent-blue-600"
-                                  />
-                                  {opt.label}
-                                </label>
-                              ))}
-                            </div>
-                          </div>
                           <div className="flex gap-2">
                             <Button
                               type="submit"
@@ -631,47 +798,6 @@ export function AdminDashboard() {
                           {proj.description && (
                             <div className="text-sm text-slate-600 mb-2">
                               {proj.description}
-                            </div>
-                          )}
-                          {proj.confluence_base_url && (
-                            <div className="text-xs text-slate-500 mb-1 break-all">
-                              <a
-                                href={proj.confluence_base_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-500 hover:underline"
-                              >
-                                {proj.confluence_base_url}
-                              </a>
-                            </div>
-                          )}
-                          {proj.jira_base_url && (
-                            <div className="text-xs text-slate-500 mb-1 break-all">
-                              <a
-                                href={proj.jira_base_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-500 hover:underline"
-                              >
-                                {proj.jira_base_url}
-                              </a>
-                            </div>
-                          )}
-                          {proj.enabled_providers && proj.enabled_providers.length > 0 && (
-                            <div className="flex items-center gap-1.5 mb-2">
-                              {proj.enabled_providers.map((pid) =>
-                                PROVIDER_ICON_FILES[pid] ? (
-                                  <img
-                                    key={pid}
-                                    src={PROVIDER_ICON_FILES[pid]}
-                                    alt={pid}
-                                    title={
-                                      PROVIDER_OPTIONS.find((p) => p.id === pid)?.label ?? pid
-                                    }
-                                    className="w-4 h-4 object-contain"
-                                  />
-                                ) : null,
-                              )}
                             </div>
                           )}
                           <div className="text-xs text-slate-500">
@@ -729,65 +855,6 @@ export function AdminDashboard() {
                       rows={3}
                     />
                   </div>
-                  <div>
-                    <Label
-                      htmlFor="admin-project-confluence"
-                      className="text-slate-700 block"
-                    >
-                      Confluence Base URL
-                    </Label>
-                    <Input
-                      id="admin-project-confluence"
-                      value={confluenceBaseUrl}
-                      onChange={(e) => setConfluenceBaseUrl(e.target.value)}
-                      placeholder="https://confluence.company.com"
-                      className="mt-1.5 focus-visible:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <Label
-                      htmlFor="admin-project-jira"
-                      className="text-slate-700 block"
-                    >
-                      Jira Base URL
-                    </Label>
-                    <Input
-                      id="admin-project-jira"
-                      value={jiraBaseUrl}
-                      onChange={(e) => setJiraBaseUrl(e.target.value)}
-                      placeholder="https://jira.company.com"
-                      className="mt-1.5 focus-visible:ring-blue-500"
-                    />
-                    <p className="text-xs text-slate-400 mt-1">
-                      At least one of Confluence or Jira URL is required.
-                    </p>
-                  </div>
-                  <div>
-                    <Label className="text-slate-700 block mb-1.5">
-                      Enabled Providers
-                    </Label>
-                    <div className="flex flex-wrap gap-x-4 gap-y-2">
-                      {PROVIDER_OPTIONS.map((opt) => (
-                        <label
-                          key={opt.id}
-                          className="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={enabledProviders.includes(opt.id)}
-                            onChange={() =>
-                              toggleProvider(opt.id, enabledProviders, setEnabledProviders)
-                            }
-                            className="rounded border-slate-300 accent-blue-600"
-                          />
-                          {opt.label}
-                        </label>
-                      ))}
-                    </div>
-                    <p className="text-xs text-slate-400 mt-1">
-                      At least one provider must be enabled.
-                    </p>
-                  </div>
                   <Button
                     id="create-project-button"
                     type="submit"
@@ -815,117 +882,248 @@ export function AdminDashboard() {
                   </div>
                 ) : (
                   <ul className="space-y-3">
-                    {users.map((u) => {
+                    {sortedUsers.map((u) => {
                       const isAdminUser = u.role === "admin";
-                      const userProjects = u.project_memberships?.length
-                        ? u.project_memberships.map((membership) => ({
-                            id: membership.project_id,
-                            name: membership.project_name,
-                          }))
-                        : projectsByUserId.get(u.id) || [];
-                      const assignableProjects =
-                        assignableProjectsByUserId.get(u.id) || [];
+                      const adminProjects = u.project_memberships
+                        .filter((m) => m.role === "project_admin")
+                        .map((m) => m.project_name);
                       return (
                         <li
                           key={u.id}
                           className="rounded-lg border border-slate-100 bg-slate-50 p-4 hover:border-slate-300 transition-colors"
                         >
-                          <div className="font-semibold text-slate-900">
-                            {u.display_name}
-                          </div>
-                          <div className="text-sm text-slate-600 mb-2">
-                            {u.email}
-                          </div>
-                          <div className="flex items-center gap-2 mt-1 mb-3">
-                            <span
-                              className={`inline-flex px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${isAdminUser ? "bg-purple-100 text-purple-700" : "bg-slate-200 text-slate-700"}`}
+                          {editingUserId === u.id ? (
+                            <form
+                              onSubmit={(event) => handleEditUser(event, u)}
+                              className="space-y-3"
                             >
-                              {u.role}
-                            </span>
-                            <span
-                              className={`inline-flex px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${u.is_active ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}
-                            >
-                              {u.is_active ? "active" : "inactive"}
-                            </span>
-                          </div>
-                          {!isAdminUser && (
-                            <>
-                              <div className="flex items-center justify-between mb-2">
-                                <div className="text-xs text-slate-700 font-medium">
-                                  Projects
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <select
-                                    value={selectedProjectByUserId[u.id] ?? ""}
-                                    onChange={(e) =>
-                                      setSelectedProjectByUserId((prev) => ({
-                                        ...prev,
-                                        [u.id]: e.target.value,
-                                      }))
-                                    }
-                                    disabled={
-                                      isBusy ||
-                                      !u.is_active ||
-                                      assignableProjects.length === 0
-                                    }
-                                    aria-label={`Select project for ${u.display_name}`}
-                                    className="h-7 max-w-36 rounded-md border border-slate-300 bg-white px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"
-                                  >
-                                    <option value="">Select project...</option>
-                                    {assignableProjects.map((project) => (
-                                      <option
-                                        key={project.id}
-                                        value={project.id}
-                                      >
-                                        {project.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => handleAssignUserToProject(u)}
-                                    disabled={
-                                      isBusy ||
-                                      !u.is_active ||
-                                      assignableProjects.length === 0
-                                    }
-                                    className="h-7 w-7 p-0"
-                                    aria-label={`Assign project to ${u.display_name}`}
-                                  >
-                                    <Plus className="h-3.5 w-3.5" />
-                                  </Button>
-                                </div>
+                              <div>
+                                <Label
+                                  htmlFor={`edit-user-name-${u.id}`}
+                                  className="text-slate-700"
+                                >
+                                  Display Name
+                                </Label>
+                                <Input
+                                  id={`edit-user-name-${u.id}`}
+                                  value={editUserDisplayName}
+                                  onChange={(e) =>
+                                    setEditUserDisplayName(e.target.value)
+                                  }
+                                  required
+                                  className="mt-1.5"
+                                />
                               </div>
-                              {userProjects.length > 0 ? (
-                                <div className="flex flex-wrap gap-1">
-                                  {userProjects.map((up) => (
-                                    <span
-                                      key={up.id}
-                                      className="inline-flex items-center gap-1 bg-white border border-slate-200 text-slate-600 px-2 py-1 rounded text-xs"
+                              <div>
+                                <Label
+                                  htmlFor={`edit-user-role-${u.id}`}
+                                  className="text-slate-700 block"
+                                >
+                                  Role
+                                </Label>
+                                <select
+                                  id={`edit-user-role-${u.id}`}
+                                  aria-label={`Role for ${u.display_name}`}
+                                  value={editUserRole}
+                                  onChange={(e) => {
+                                    const nextRole = e.target.value as
+                                      | "standard"
+                                      | "project_admin";
+                                    setEditUserRole(nextRole);
+                                    if (
+                                      !(
+                                        u.role === "standard" &&
+                                        nextRole === "project_admin"
+                                      )
+                                    )
+                                      setEditUserProjectId("");
+                                  }}
+                                  className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                                >
+                                  <option value="standard">Standard</option>
+                                  <option value="project_admin">
+                                    Project Admin
+                                  </option>
+                                </select>
+                              </div>
+                              {u.role === "standard" &&
+                                editUserRole === "project_admin" && (
+                                  <div>
+                                    <Label
+                                      htmlFor={`edit-user-project-${u.id}`}
+                                      className="text-slate-700 block"
                                     >
-                                      {up.name}
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          handleRemoveUserFromProject(up.id, u)
-                                        }
-                                        disabled={isBusy}
-                                        className="text-red-500 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50 font-bold ml-1"
-                                        title="Remove user from project"
-                                        aria-label={`Remove ${up.name} from ${u.display_name}`}
-                                      >
-                                        ×
-                                      </button>
-                                    </span>
+                                      Project
+                                    </Label>
+                                    <select
+                                      id={`edit-user-project-${u.id}`}
+                                      aria-label={`Project for ${u.display_name}`}
+                                      value={editUserProjectId}
+                                      onChange={(e) =>
+                                        setEditUserProjectId(e.target.value)
+                                      }
+                                      disabled={projects.length === 0}
+                                      className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:bg-slate-100"
+                                    >
+                                      <option value="">Select a project…</option>
+                                      {projects.map((proj) => (
+                                        <option key={proj.id} value={proj.id}>
+                                          {proj.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    {projects.length === 0 && (
+                                      <p className="text-xs text-amber-600 mt-1">
+                                        Create a project first before assigning a
+                                        project admin.
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+                              <div>
+                                <Label
+                                  htmlFor={`edit-user-timezone-${u.id}`}
+                                  className="text-slate-700 block"
+                                >
+                                  Timezone
+                                </Label>
+                                <select
+                                  id={`edit-user-timezone-${u.id}`}
+                                  aria-label={`Timezone for ${u.display_name}`}
+                                  value={editUserTimezone}
+                                  onChange={(e) =>
+                                    setEditUserTimezone(e.target.value)
+                                  }
+                                  className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                                >
+                                  {TIMEZONE_OPTIONS.map((tz) => (
+                                    <option key={tz} value={tz}>
+                                      {tz}
+                                    </option>
                                   ))}
+                                </select>
+                              </div>
+                              <label className="flex items-center gap-2 text-sm text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  checked={editUserIsActive}
+                                  onChange={(e) =>
+                                    setEditUserIsActive(e.target.checked)
+                                  }
+                                  aria-label={`Active for ${u.display_name}`}
+                                />
+                                Active
+                              </label>
+                              <div>
+                                <Label
+                                  htmlFor={`edit-user-password-${u.id}`}
+                                  className="text-slate-700 block"
+                                >
+                                  New password (optional)
+                                </Label>
+                                <Input
+                                  id={`edit-user-password-${u.id}`}
+                                  type="password"
+                                  value={editUserPassword}
+                                  onChange={(e) =>
+                                    setEditUserPassword(e.target.value)
+                                  }
+                                  minLength={8}
+                                  placeholder="Leave blank to keep current"
+                                  className="mt-1.5"
+                                />
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  type="submit"
+                                  size="sm"
+                                  disabled={
+                                    isBusy ||
+                                    (u.role === "standard" &&
+                                      editUserRole === "project_admin" &&
+                                      (projects.length === 0 ||
+                                        editUserProjectId === ""))
+                                  }
+                                  className="h-7 text-xs"
+                                >
+                                  Save
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={cancelEditingUser}
+                                  disabled={isBusy}
+                                  className="h-7 text-xs"
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </form>
+                          ) : (
+                            <>
+                              <div className="flex justify-between items-start">
+                                <div className="font-semibold text-slate-900">
+                                  {u.display_name}
                                 </div>
-                              ) : (
-                                <div className="text-xs text-slate-500 italic">
-                                  No projects
-                                </div>
-                              )}
+                                {!isAdminUser && (
+                                  <div className="flex gap-2">
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => startEditingUser(u)}
+                                      disabled={isBusy}
+                                      className="h-7 text-xs"
+                                      aria-label={`Edit user ${u.display_name}`}
+                                    >
+                                      Edit
+                                    </Button>
+                                    <Button
+                                      variant="destructive"
+                                      size="sm"
+                                      onClick={() => handleDeleteUser(u)}
+                                      disabled={isBusy}
+                                      className="h-7 text-xs"
+                                      aria-label={`Delete user ${u.display_name}`}
+                                    >
+                                      Delete
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
+                              <div className="text-sm text-slate-600 mb-2">
+                                {u.email}
+                              </div>
+                              <div className="flex items-center gap-2 mt-1 mb-3 flex-wrap">
+                                <span
+                                  className={`inline-flex px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${isAdminUser ? "bg-purple-100 text-purple-700" : "bg-slate-200 text-slate-700"}`}
+                                >
+                                  {u.role}
+                                </span>
+                                <span
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${u.is_active ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}
+                                >
+                                  {u.is_active ? (
+                                    <CheckCircle className="h-3 w-3" />
+                                  ) : (
+                                    <XCircle className="h-3 w-3" />
+                                  )}
+                                  {u.is_active ? "Active" : "Inactive"}
+                                </span>
+                                {u.timezone && (
+                                  <span
+                                    className="inline-flex px-2 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700"
+                                    title="User's timezone (message times localized to this)"
+                                  >
+                                    {u.timezone}
+                                  </span>
+                                )}
+                                {adminProjects.length > 0 && (
+                                  <span className="text-[11px] text-slate-500">
+                                    Admin of: {adminProjects.join(", ")}
+                                  </span>
+                                )}
+                              </div>
                             </>
                           )}
                         </li>
@@ -991,17 +1189,50 @@ export function AdminDashboard() {
                       id="create-user-role"
                       aria-label="Role"
                       value={createUserRole}
-                      onChange={(e) =>
-                        setCreateUserRole(
-                          e.target.value as "standard" | "admin",
-                        )
-                      }
+                      onChange={(e) => {
+                        const nextRole = e.target.value as
+                          | "standard"
+                          | "project_admin";
+                        setCreateUserRole(nextRole);
+                        if (nextRole !== "project_admin")
+                          setCreateUserProjectId("");
+                      }}
                       className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                     >
                       <option value="standard">Standard</option>
-                      <option value="admin">Admin</option>
+                      <option value="project_admin">Project Admin</option>
                     </select>
                   </div>
+                  {createUserRole === "project_admin" && (
+                    <div>
+                      <Label
+                        htmlFor="create-user-project"
+                        className="text-slate-700 block"
+                      >
+                        Project
+                      </Label>
+                      <select
+                        id="create-user-project"
+                        aria-label="Project"
+                        value={createUserProjectId}
+                        onChange={(e) => setCreateUserProjectId(e.target.value)}
+                        disabled={projects.length === 0}
+                        className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:bg-slate-100"
+                      >
+                        <option value="">Select a project…</option>
+                        {projects.map((proj) => (
+                          <option key={proj.id} value={proj.id}>
+                            {proj.name}
+                          </option>
+                        ))}
+                      </select>
+                      {projects.length === 0 && (
+                        <p className="text-xs text-amber-600 mt-1">
+                          Create a project first before adding a project admin.
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <div>
                     <Label
                       htmlFor="create-user-password"
@@ -1019,10 +1250,38 @@ export function AdminDashboard() {
                       className="mt-1.5 focus-visible:ring-blue-500"
                     />
                   </div>
+                  <div>
+                    <Label
+                      htmlFor="create-user-timezone"
+                      className="text-slate-700 block"
+                    >
+                      Timezone
+                    </Label>
+                    <select
+                      id="create-user-timezone"
+                      aria-label="Timezone"
+                      value={createUserTimezone}
+                      onChange={(e) => setCreateUserTimezone(e.target.value)}
+                      className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    >
+                      {TIMEZONE_OPTIONS.map((tz) => (
+                        <option key={tz} value={tz}>
+                          {tz}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Message times are shown to this user in this timezone.
+                    </p>
+                  </div>
                   <Button
                     id="create-user-button"
                     type="submit"
-                    disabled={isBusy}
+                    disabled={
+                      isBusy ||
+                      (createUserRole === "project_admin" &&
+                        (projects.length === 0 || createUserProjectId === ""))
+                    }
                     className="w-full bg-slate-800 hover:bg-slate-900 text-white mt-2"
                   >
                     Create user
@@ -1056,8 +1315,9 @@ export function AdminDashboard() {
           </div>
           <div className="p-5">
             <p className="text-sm text-slate-600 mb-4">
-              Trigger a Playwright end-to-end test run in headed mode with slow
-              motion so you can observe browser execution live.
+              Trigger a Playwright end-to-end test run on the server. It runs in
+              the background and can take a few minutes; the result and report
+              appear here when it finishes.
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <Button
@@ -1103,8 +1363,7 @@ export function AdminDashboard() {
             {isRunningE2E && (
               <div className="mt-4 flex items-center gap-2 text-sm text-slate-600 animate-pulse">
                 <span className="inline-block w-2 h-2 rounded-full bg-blue-500"></span>
-                Tests are running — Playwright browser is open with slow motion
-                enabled.
+                Tests are running on the server — this can take a few minutes.
               </div>
             )}
 
@@ -1149,6 +1408,180 @@ export function AdminDashboard() {
                     </pre>
                   </details>
                 )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Model Benchmark Overrides — operator Tier-0 scores for Alice selection */}
+        <div className="mt-6 rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center gap-2 border-b border-slate-200 px-5 py-4">
+            <Gauge className="h-5 w-5 text-slate-500" />
+            <h2 className="text-lg font-semibold text-slate-800">
+              Models &amp; Benchmarks
+            </h2>
+          </div>
+          <div className="p-5">
+            <p className="mb-4 text-sm text-slate-500">
+              Connect to every configured provider, discover their LLM models
+              (skipping embedding / speech models), detect vision support, and pull
+              fresh benchmark scores for all six capabilities from llm-stats.com — in
+              one click. Scores are overwritten on each sync and feed
+              Alice&apos;s model selection.
+            </p>
+
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <Button
+                id="sync-models-button"
+                type="button"
+                onClick={handleSyncModels}
+                disabled={isSyncing}
+                className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2"
+              >
+                <RefreshCw
+                  className={`w-4 h-4 ${isSyncing ? "animate-spin" : ""}`}
+                />
+                {isSyncing
+                  ? "Syncing models & benchmarks…"
+                  : "Sync models and benchmarks"}
+              </Button>
+            </div>
+
+            {isSyncing && (
+              <div className="mb-4 flex items-center gap-2 text-sm text-slate-600 animate-pulse">
+                <span className="inline-block w-2 h-2 rounded-full bg-blue-500"></span>
+                Connecting to providers and fetching benchmark scores…
+              </div>
+            )}
+
+            {syncResult && !isSyncing && (
+              <div
+                className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm"
+                data-testid="model-sync-result"
+              >
+                <div className="mb-2 font-medium text-slate-700">
+                  Discovered {syncResult.models_discovered} model(s) —{" "}
+                  {syncResult.models_benchmarked} benchmarked,{" "}
+                  {syncResult.models_unbenchmarked} without scores.
+                </div>
+                <ul className="space-y-1 text-xs">
+                  {syncResult.providers.map((p) => (
+                    <li key={p.provider_id} className="flex items-center gap-2">
+                      {p.connected ? (
+                        <CheckCircle className="h-3.5 w-3.5 text-emerald-600" />
+                      ) : (
+                        <XCircle
+                          className={`h-3.5 w-3.5 ${
+                            p.skipped ? "text-slate-400" : "text-red-500"
+                          }`}
+                        />
+                      )}
+                      <span className="font-mono text-slate-700">
+                        {p.provider_id}
+                      </span>
+                      <span className="text-slate-500">
+                        {p.connected
+                          ? `${p.models_found} model(s)`
+                          : p.skipped
+                            ? "skipped"
+                            : "failed"}
+                        {p.error ? ` — ${p.error}` : ""}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                {!syncResult.benchmark_source_available && (
+                  <p className="mt-2 text-xs text-amber-600">
+                    Benchmark source unavailable — models discovered but not
+                    scored.
+                  </p>
+                )}
+                {syncResult.warnings.length > 0 && (
+                  <ul className="mt-2 list-disc pl-5 text-xs text-amber-600">
+                    {syncResult.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            {isLoadingModels ? (
+              <p className="text-sm text-slate-400">Loading models…</p>
+            ) : discoveredModels.length === 0 ? (
+              <p className="text-sm text-slate-400">
+                No models discovered yet — click “Sync models and benchmarks”
+                above.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
+                      <th className="py-2 pr-3">Model</th>
+                      <th className="py-2 pr-3">Source</th>
+                      <th className="py-2 pr-3">Benchmark scores</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedModels.map((m) => (
+                      <tr
+                        key={m.model_id}
+                        className="border-b border-slate-100 align-top"
+                      >
+                        <td className="py-3 pr-3">
+                          <div className="font-mono text-xs text-slate-800">
+                            {m.model_id}
+                          </div>
+                          {m.supports_vision && (
+                            <span className="text-[10px] text-emerald-600">
+                              vision
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 pr-3">
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] ${
+                              m.tier_source === "admin"
+                                ? "bg-purple-100 text-purple-700"
+                                : m.tier_source === "curated"
+                                  ? "bg-emerald-100 text-emerald-700"
+                                  : "bg-amber-100 text-amber-700"
+                            }`}
+                          >
+                            {m.tier_source === "admin" ? "synced" : m.tier_source}
+                          </span>
+                          {m.unbenchmarked && (
+                            <span className="ml-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-600">
+                              No benchmark
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 pr-3">
+                          {m.scores.length === 0 ? (
+                            <span className="text-xs text-slate-400">—</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-x-3 gap-y-1">
+                              {[...m.scores]
+                                .sort(
+                                  (a, b) =>
+                                    capabilityRank(a.capability) -
+                                    capabilityRank(b.capability),
+                                )
+                                .map((s) => (
+                                  <span
+                                    key={s.id}
+                                    className="text-xs text-slate-600"
+                                  >
+                                    {s.capability}: <b>{s.score}</b>
+                                  </span>
+                                ))}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>

@@ -1,5 +1,5 @@
 # generated: 2026-05-29T00:14:09.493182
-# last_updated: 2026-06-07T12:00:00.000000
+# last_updated: 2026-06-12T17:00:00.000000
 # project: ai qa automation
 # project_key: NOKEY
 # tracking_system: file-system
@@ -36,7 +36,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-29T00:14:09.493182
-last_updated: 2026-06-10T23:59:00.000000
+last_updated: 2026-06-22T23:55:00.000000
 project: ai qa automation
 project_key: NOKEY
 tracking_system: file-system
@@ -137,98 +137,268 @@ development_status:
   9-6-runtime-secret-resolution-for-agent-runs: done
   9-7-saved-provider-configuration-and-rotation-behavior: done
   epic-9-retrospective: done
-  epic-10: in-progress
-  10-1-project-artifact-storage-foundation: review
-  10-2-artifact-list-and-empty-folder-browsing: backlog
-  10-3-artifact-read-and-preview-access: backlog
-  10-4-artifact-edit-delete-and-version-metadata: backlog
-  10-5-agent-artifact-service-integration: backlog
-  10-6-project-scoped-artifact-change-events: backlog
+  epic-10: done
+  10-1-project-artifact-storage-foundation: done
+  10-2-artifact-list-and-empty-folder-browsing: done
+  10-3-artifact-read-and-preview-access: done
+  10-4-artifact-edit-delete-and-version-metadata: done
+  10-5-agent-artifact-service-integration: done
+  10-6-project-scoped-artifact-change-events: done
   10-7-realtime-artifact-refresh-ux: done
   10-8-open-artifact-update-delete-notice: done
-  epic-10-retrospective: optional
-  epic-11: backlog
-  11-1-mcp-client-foundation-for-confluence-and-jira: backlog
-  11-2-bob-confluence-url-intake-and-pipeline-trigger: backlog
-  11-3-confluence-content-retrieval-and-parsing: backlog
-  11-4-jira-requirements-retrieval: backlog
-  11-5-input-quality-detection-before-generation: backlog
-  11-6-bob-reviewable-extraction-output: backlog
-  11-7-requirements-artifact-save: backlog
-  epic-11-retrospective: optional
-  epic-12: backlog
-  12-1-test-case-generation-input-selection: backlog
-  12-2-browser-automation-oriented-test-case-generation: backlog
-  12-3-confidence-scoring-for-generated-test-cases: backlog
-  12-4-mary-review-workflow: backlog
-  12-5-test-case-artifact-save: backlog
-  epic-12-retrospective: optional
-  epic-13: backlog
-  13-1-approved-test-case-input-selection: backlog
-  13-2-python-playwright-script-generation: backlog
-  13-3-stable-selector-and-assertion-mapping: backlog
-  13-4-browser-sso-session-compatibility: backlog
-  13-5-sarah-side-by-side-review-ux: backlog
-  13-6-script-edit-before-approval: backlog
-  13-7-script-approval-rejection-and-regeneration: backlog
-  13-8-test-script-artifact-save: backlog
-  epic-13-retrospective: optional
-  epic-14: backlog
-  14-1-audit-event-model-and-persistence: backlog
-  14-2-pipeline-audit-logging: backlog
-  14-3-admin-audit-trail-view: backlog
-  14-4-execution-metrics-aggregation: backlog
-  14-5-leadership-metrics-dashboard: backlog
-  14-6-llm-cost-tracking: backlog
-  14-7-provider-comparison-backlog-support: backlog
-  epic-14-retrospective: optional
-  epic-15: backlog
-  15-1-approved-script-execution-input-selection: backlog
-  15-2-playwright-execution-runner: backlog
-  15-3-configurable-execution-output-path: backlog
-  15-4-multi-browser-execution-support: backlog
-  15-5-execution-result-report-generation: backlog
-  15-6-execution-report-review-ux: backlog
-  epic-15-retrospective: optional
-  epic-16: backlog
-  16-1-agent-based-conversational-shell: backlog
-  16-2-stateful-workflow-controls: backlog
-  16-3-processing-and-progress-indicators: backlog
-  16-4-rich-review-panels: backlog
-  16-5-error-empty-and-recovery-states: backlog
-  16-6-keyboard-and-accessibility-support: backlog
-  16-7-alice-configuration-review-ux-integration: backlog
+  epic-10-retrospective: done
+  epic-11: done
+  11-1-mcp-client-foundation-for-confluence-and-jira: done
+  11-2-bob-confluence-url-intake-and-pipeline-trigger: done
+  11-3-confluence-content-retrieval-and-parsing: done
+  11-4-jira-requirements-retrieval: done
+  11-5-input-quality-detection-before-generation: done
+  11-6-bob-reviewable-extraction-output: done
+  11-7-requirements-artifact-save: done
+  11-8-technical-debt-sweep-and-hardening: done
+  epic-11-retrospective: done
+  epic-12: done
+  12-1-test-case-generation-input-selection: done
+  12-2-browser-automation-oriented-test-case-generation: done
+  12-3-confidence-scoring-for-generated-test-cases: done
+  12-4-mary-review-workflow: done
+  12-5-test-case-artifact-save: done
+  epic-12-retrospective: done
+  epic-13: done
+  13-1-approved-test-case-input-selection: done
+  13-2-python-playwright-script-generation: done
+  13-3-stable-selector-and-assertion-mapping: done
+  13-4-browser-sso-session-compatibility: done
+  13-5-sarah-side-by-side-review-ux: done
+  13-6-script-edit-before-approval: done
+  13-7-script-approval-rejection-and-regeneration: done
+  13-8-test-script-artifact-save: done
+  epic-13-retrospective: done
+  # Sprint change 2026-06-17 (correct-course) — provider reorder + Claude SSO login.
+  # See planning-artifacts/sprint-change-proposal-2026-06-17.md. Implemented + verified
+  # (backend 1432 passed, frontend 272 passed, mypy/ruff/eslint/build clean).
+  provider-auth-enhancements: done
+  pa-1-provider-reorder-and-claude-sso-registry: done
+  pa-2-claude-sso-adapter-and-runtime: done
+  pa-3-oauth-sso-login-router-mock-idp: done
+  pa-4-provider-selector-sso-ui-and-admin-dashboard: done
+  pa-5-env-vars-tests-and-verification: done
+  provider-auth-enhancements-retrospective: done
+  # 2026-06-18 — browser-use-driven test-script generation (Sarah). Sarah now drives
+  # the real app via browser-use → verified trace → deterministic Playwright (real
+  # selectors), reusing the thread's provider/LLM; falls back to LLM-only. See
+  # planning-artifacts/design-browseruse-driven-script-generation-2026-06-18.md.
+  # Unit-tested + suite green (backend 1454 passed); the live exploration is
+  # integration-only (needs Chrome + reachable app + active SSO + a provider key) —
+  # confirm with a manual run.
+  browseruse-driven-script-generation: done
+  bsg-1-provider-browseruse-llm-factory: done
+  bsg-2-explorer-and-trace-to-playwright-translation: done
+  bsg-3-wire-into-sarah-with-fallback: done
+  bsg-4-docs-and-sprint-status: done
+  # bsg-5: closes the UI gap found during live-run prep — Sarah now asks the user
+  # for the application URL (+ Chrome path if not on file) via a sarah_inputs_request
+  # form, so the explore path runs through the real app UI (not just unit tests).
+  bsg-5-sarah-target-url-and-chrome-path-ui: done
+  # bsg-6: Chrome SSO reuse. The explorer can CONNECT to a running Chrome via CDP
+  # (cdp_url -> BrowserProfile(cdp_url)) and reuse its live authenticated session
+  # (no profile lock, no re-login); launch mode (chrome_path) remains for non-SSO.
+  # The Sarah inputs form offers the debug URL field. Threaded explorer -> generator
+  # -> Sarah -> form; tests + full suite green.
+  bsg-6-chrome-sso-via-cdp-connect: done
+  browseruse-driven-script-generation-retrospective: done
+  # ============================================================
+  # 2026-06-20 ROADMAP RE-PRIORITIZATION (correct-course)
+  # Reordered by business value. Verified against live code via parallel
+  # sub-agent review BEFORE removing/merging anything. Source of truth: epics.md.
+  #   Test Execution (Jack)  : old Epic 15 -> Epic 14  (HIGHEST value)
+  #   Conversational UX      : old Epic 16 -> Epic 15  (2nd value)
+  #   NEW Epic 16  Document Attachment Reading (excel/word/pdf in Confluence/Jira)
+  #   NEW Epic 17  Source Change Detection & downstream cascade update
+  #   NEW Epic 18  Frontend UX via ui-ux-pro-max skill (low priority)
+  #   Audit/Metrics          : old Epic 14 -> Epic 19  (lower value; placed before the SSO epics)
+  #   NEW Epic 20  Claude SSO auth for Browser Use (IT-gated)
+  #   NEW Epic 21  Company SSO + Oracle SharedERP user sync (subsumes old Epic 22; policy-gated)
+  # REMOVED (verified already delivered, or intentionally dropped):
+  #   old Epic 17 test-case generation            -> DONE via Epic 12 (Mary)
+  #   old Epic 18 Confluence-variation/input-quality/low-confidence -> DONE via Epic 11+12
+  #   old Epic 19-1/19-2 script-edit + side-by-side review -> DONE via Epic 13 (13-5/13-6); nothing to merge
+  #   old Epic 19-3/19-4 multi-LLM switching + comparison -> DROPPED (LLM selection stays deterministic single-best)
+  #   old Epic 20-1a Jira MCP                      -> DONE via Epic 11 (11-4); audit-logger folded into Epic 19
+  #   old Epic 21 metrics service/API/dashboard    -> COVERED by Epic 19 (Audit/Metrics, 19-4/19-5)
+  # ============================================================
+
+  # Epic 14 — Test Execution & Reporting (Jack). HIGHEST business value. (was Epic 15)
+  # NOTE: old Epic 19 "script edit before approval" + "side-by-side review" are already
+  # delivered in Epic 13 (13-5/13-6, code-verified) — intentionally NOT re-added as backlog.
+  epic-14: done
+  14-1-approved-script-execution-input-selection: done
+  14-2-playwright-execution-runner: done
+  14-3-configurable-execution-output-path: done
+  14-4-multi-browser-execution-support: done
+  14-5-execution-result-report-generation: done
+  14-6-execution-report-review-ux: done
+  epic-14-retrospective: done
+
+  # ============================================================
+  # 2026-06-21 RENUMBER (correct-course): inserted NEW Epic 15 (Admin Dashboard —
+  # Project-Admin RBAC & User/Project Management) from sprint-change-proposal-2026-06-21.md.
+  # All former epics 15-21 shifted +1 -> 16-22 (sprint-status keys + epics.md headings updated).
+  # The 2026-06-20 mapping block above is historical (pre-shift numbering).
+  # ============================================================
+
+  # Epic 15 — Admin Dashboard: Project-Admin RBAC & User/Project Management (NEW). Active.
+  # Source: investigation admin-dashboard-project-user-mgmt-investigation.md + proposal 2026-06-21.
+  # Decisions: project_admin<->project = many-to-many; platform admin account immutable;
+  # demoting project_admin->standard deletes the project_admin membership.
+  epic-15: done
+  15-1-fix-project-create-confluence-nullable: done
+  15-2-trim-admin-dashboard-helper-copy: done
+  15-3-project-admin-picker-and-membership-on-create: done
+  15-4-sort-users-management-and-show-project-admin-project: done
+  15-5-user-edit-delete-with-admin-immutability: done
+  epic-15-retrospective: done
+
+  # Epic 16 — Conversational UX System & Accessibility. (was Epic 15 in the 2026-06-20 plan)
+  epic-16: in-progress
+  # 2026-06-22 — added via sprint planning (user request). PRIORITY 0 (bug) —
+  #   work BEFORE 16-1..16-11. Sarah cannot drive Chrome to write scripts: browser-use
+  #   ChatAnthropic (claude/claude-sso) fails with "Could not resolve authentication
+  #   method", the failure is not absorbed by the vision/LLM-only fallback, so the whole
+  #   batch aborts and the Scripts folder stays empty. Fix credential resolution for the
+  #   driving + fallback models and make exploration failures degrade gracefully.
+  #   Areas: agents/sarah.py::_build_explore_llm, browser/llm_factory.py, pipelines/
+  #   script_generator.py (explore gating + fallback), agents/base.py::get_llm_config.
+  16-12-fix-sarah-browser-use-chrome-driven-script-generation: done
+  16-1-agent-based-conversational-shell: ready-for-dev
+  16-2-stateful-workflow-controls: ready-for-dev
+  16-3-processing-and-progress-indicators: ready-for-dev
+  16-4-rich-review-panels: ready-for-dev
+  16-5-error-empty-and-recovery-states: ready-for-dev
+  16-6-keyboard-and-accessibility-support: ready-for-dev
+  16-7-alice-configuration-review-ux-integration: ready-for-dev
+  # 2026-06-21 — added via sprint planning (user request):
+  #   16-8: Requirements tree must mirror the multi-level Confluence hierarchy
+  #         (today the FE result tree flattens to one level). Builds on the
+  #         existing Artifact.parent_source_id capture + buildResultTree.
+  #   16-9: Per-user conversation language (Admin Dashboard config) — agents chat
+  #         in the user's language and understand replies in it, but ALL persisted
+  #         specs/artifacts stay English (App-UI-English-only convention preserved).
+  16-8-hierarchical-requirements-tree-mirroring-source-structure: ready-for-dev
+  16-9-multilingual-agent-conversation-with-english-specifications: ready-for-dev
+  # 2026-06-21 — added via sprint planning (user request):
+  #   16-10: Test cases / scripts no longer saved under a per-role sub-folder
+  #          (e.g. Attributor/) — one case can apply to multiple roles and the role
+  #          is already in the MD body header. Save flat at the folder root for both
+  #          Mary (test cases) and Sarah (scripts); drop role_to_folder from the storage
+  #          paths; resolve name-uniqueness across the flat folder; downstream role-aware
+  #          grouping (Jack) reads role from content/metadata, not the folder path.
+  16-10-flat-test-case-and-script-storage-remove-per-role-sub-folders: ready-for-dev
+  # 2026-06-22 — added via sprint planning (user request):
+  #   16-11: Display the current frontend version in the UI. Version sourced from
+  #          frontend package.json (optionally + short build/commit) injected at build
+  #          time; shown unobtrusively (footer / user menu / About) under the
+  #          App-UI-English-only convention; safe fallback (dev/unknown) when missing.
+  16-11-display-current-frontend-version-in-ui: ready-for-dev
+  # 2026-06-22 — added via sprint planning (user request). LOW priority bug — work at
+  #   the END of Epic 16 (after 16-1..16-11). Admin Dashboard → Users Management → Edit:
+  #   when a user is ALREADY a Project Admin, no project selector is shown, so the platform
+  #   admin cannot assign/change which project that project_admin manages. The picker only
+  #   renders while PROMOTING a standard user. Fix spans FE + BE:
+  #     FE components/admin/AdminDashboard.tsx — edit-form picker gate
+  #        (u.role === "standard" && editUserRole === "project_admin") + handleEditUser promoting logic.
+  #     BE api/admin.py::update_user + AdminUserUpdateRequest — project_id is only consumed on the
+  #        standard→project_admin transition; add a branch to manage membership for an existing project_admin.
+  #   Preserve many-to-many project_admin↔project + platform-admin immutability (Epic 15).
+  16-13-fix-project-selection-when-editing-a-project-admin-user: ready-for-dev
   epic-16-retrospective: optional
-  epic-17: deferred
-  17-1-test-case-generation-input-selection: deferred
-  17-2-browser-automation-oriented-test-case-generation: deferred
-  17-3-confidence-scoring-for-generated-test-cases: deferred
-  17-4-mary-review-workflow: deferred
-  17-5-test-case-artifact-save: deferred
+
+  # Epic 17 — Document Attachment Reading (NEW). Read excel/word/pdf attached in Confluence/Jira. After UX. (was Epic 16)
+  # 2026-06-22 — all 4 stories created via bmad-create-story ("toàn bộ epic 17").
+  #   Key finding: Bob ALREADY calls confluence_list_attachments + confluence_download_attachment
+  #   (bob.py:1078-1116) for image captioning — the MCP attachment tools are proven to work.
+  #   Merge seam = requirement_formatter._format_story (Content:\n{raw_markdown}, line 284).
+  #   Decisions (Thuong 2026-06-22): (1) PERSIST attachment bytes as a new "attachment" artifact
+  #   kind (raw companion, hidden in FE); (2) Jira BEST-EFFORT (discover tool via list_tools,
+  #   degrade gracefully if absent); (3) supported types = xlsx/docx/pdf/csv/txt/pptx, ~10MB cap,
+  #   skip+log others/oversized. Deps: pypdf + python-docx already locked (transitive via
+  #   browser-use → promote to direct); add openpyxl + python-pptx; csv/txt via stdlib.
+  #   Dev order: 17-1 (download+persist+new kind) → 17-2 (parser, parallelizable) →
+  #   17-3 (merge into extraction) → 17-4 (surface coverage). Epic still "Provisional/no PRD"
+  #   in epics.md — stories ground the provisional ACs against live code.
+  epic-17: in-progress
+  17-1-attachment-discovery-and-download: ready-for-dev
+  17-2-document-parsing-xlsx-docx-pdf: ready-for-dev
+  17-3-attachment-content-into-extraction: ready-for-dev
+  17-4-surface-attachments-read: ready-for-dev
   epic-17-retrospective: optional
-  epic-18: deferred
-  18-1-confluence-content-variation-handling: deferred
-  18-2-input-quality-detection-and-pre-generation-warning: deferred
-  18-3-low-confidence-generation-flagging: deferred
+
+  # Epic 18 — Source Change Detection & Downstream Cascade Update (NEW). After read-docs. (was Epic 17)
+  # 2026-06-22 — all 5 stories created via bmad-create-story ("toàn bộ epic 18"), grounded
+  #   against live code by 3 parallel forensic sweeps. Epic still "Provisional/no PRD" in
+  #   epics.md; stories ground the provisional ACs + bake sensible defaults with DECISION GATES.
+  #   KEY FINDINGS: (1) NO source-snapshot table exists — DiscoveredModelSnapshot (db/models.py:395)
+  #     is the precedent; alembic head = 273b69541e94 (18-1 chains on it, 18-3 chains on 18-1).
+  #   (2) ConfluencePage.version (int) exists; JiraIssue has NO updated field → 18-1 adds JiraIssue.updated_at.
+  #   (3) content_hash = SHA-256 (ArtifactVersion.content_hash, String(128)); hash the RAW source, not the LLM .md.
+  #   (4) THE LINEAGE GAP (crux): no artifact→artifact FK. Mary→requirement link is dropped at save
+  #     (in mem as tc.source_requirement_id), Sarah→test-case link is in a .metadata.json sidecar,
+  #     only Jack→script/test-case is a real FK (TestExecutionResult). 18-3 DECISION GATE: Approach A
+  #     (RECOMMENDED) adds self-referential Artifact.derived_from_artifact_id, populated forward from
+  #     values already in memory at save time; Approach B = brittle name-match reconstruction.
+  #   (5) Cross-agent auto-handoff does NOT exist; agents are human-review-gated (base.py:341/349).
+  #     18-4 DECISION GATE: cascade = GUIDED (respect review gates, pre-load inputs), per-source
+  #     granularity, user-chosen depth (requirements→test_cases→scripts→execution) — NOT auto-approve.
+  #   (6) AUDIT TABLE ALREADY EXISTS (AuditEvent, db/models.py:291; audit_events in initial schema) —
+  #     corrects the roadmap note: 18-5 writes audit with NO migration + NO Epic-20 dependency
+  #     (Epic 20 builds only the read/view side). NB: AuditEvent has no TimestampMixin → set created_at.
+  #   Dev order: 18-1 (snapshot table+migration+Jira updated) → 18-2 (detection report) →
+  #     18-3 (lineage FK migration + staleness mapper) → 18-4 (guided cascade, biggest) →
+  #     18-5 (notice+realtime+audit, cross-cutting). Two migrations total (18-1, 18-3), chained.
+  epic-18: in-progress
+  18-1-source-snapshot-persistence: ready-for-dev
+  18-2-source-change-detection-on-rerun: ready-for-dev
+  18-3-downstream-staleness-mapping: ready-for-dev
+  18-4-guided-cascade-rerun-confirmation: ready-for-dev
+  18-5-cascade-change-notice-and-audit: ready-for-dev
   epic-18-retrospective: optional
-  epic-19: deferred
-  19-1-script-editing-before-approval: deferred
-  19-2-side-by-side-source-and-script-review-enhancement: deferred
-  19-3-multi-provider-llm-switching: deferred
-  19-4-llm-comparison-testing: deferred
+
+  # Epic 19 — Frontend UX Enhancement via ui-ux-pro-max skill (NEW). LOW priority. After change-detection. (was Epic 18)
+  # https://github.com/nextlevelbuilder/ui-ux-pro-max-skill
+  epic-19: backlog
+  19-1-current-ui-audit-against-skill-conventions: backlog
+  19-2-adopt-design-system-conventions: backlog
+  19-3-polish-key-workflow-screens: backlog
+  19-4-polish-admin-and-navigation-surfaces: backlog
+  19-5-visual-regression-and-conventions-guardrail: backlog
   epic-19-retrospective: optional
-  epic-20: deferred
-  20-1a-jira-mcp-integration: deferred
-  20-1b-audit-logger-foundation: deferred
-  20-2-audit-trail-logger-extended-event-types: deferred
-  20-3-audit-integration-across-all-agents: deferred
+
+  # Epic 20 — Audit, Metrics & Leadership Visibility. (was Epic 19; originally old Epic 14, lower value, before the SSO epics)
+  # Audit-logger foundation/extended folds into 20-1/20-2; metrics into 20-4/20-5.
+  epic-20: backlog
+  20-1-audit-event-model-and-persistence: backlog
+  20-2-pipeline-audit-logging: backlog
+  20-3-admin-audit-trail-view: backlog
+  20-4-execution-metrics-aggregation: backlog
+  20-5-leadership-metrics-dashboard: backlog
+  20-6-llm-cost-tracking: backlog
+  20-7-provider-comparison-backlog-support: backlog
   epic-20-retrospective: optional
-  epic-21: deferred
-  21-1-metrics-collection-service: deferred
-  21-2-rest-api-for-metrics-data: deferred
-  21-3-metrics-dashboard-frontend: deferred
+
+  # Epic 21 — Claude SSO Authentication for Browser Use (NEW, IT-gated). After Audit. (was Epic 20)
+  epic-21: backlog
+  21-1-confirm-it-supported-claude-credential-path: backlog
+  21-2-source-claude-credential-from-sso-or-gateway: backlog
+  21-3-drive-browser-use-via-sso-claude-credential: backlog
+  21-4-validate-claude-sso-connection-and-models: backlog
+  21-5-claude-capable-gateway-mcp-fallback: backlog
   epic-21-retrospective: optional
-  epic-22: deferred
-  22-1-azure-entra-id-sso-authentication-foundation: deferred
-  22-2-sync-company-users-via-oracle-sharederp: deferred
+
+  # Epic 22 — Company SSO & User Directory Sync (NEW; Azure Entra + Oracle SharedERP). LOW priority, policy-gated. (was Epic 21)
+  epic-22: backlog
+  22-1-entra-sso-login-foundation: backlog
+  22-2-sso-identity-account-linking: backlog
+  22-3-sharederp-user-directory-sync: backlog
+  22-4-sso-auth-mode-and-local-fallback: backlog
+  22-5-admin-directory-sync-management-ui: backlog
   epic-22-retrospective: optional

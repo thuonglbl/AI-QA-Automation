@@ -95,7 +95,7 @@ From 8-1 (Admin Routing) and 6-8/6-9 (Admin Dashboard):
 
 ### Latest Tech Information
 
-- Backend: Python 3.12+, FastAPI with `Depends(require_admin)` RBAC; Pydantic v2 `Field`/`field_validator` for `AdminUserCreateRequest` validation (min_length, Literal role, email normalization). 409 (duplicate) vs 422 (validation) split is deliberate.
+- Backend: Python 3.14+, FastAPI with `Depends(require_admin)` RBAC; Pydantic v2 `Field`/`field_validator` for `AdminUserCreateRequest` validation (min_length, Literal role, email normalization). 409 (duplicate) vs 422 (validation) split is deliberate.
 - Frontend: React 18 + TypeScript + Vite, Vitest + Testing Library (unit), Playwright (e2e). Error surfacing goes through `getSafeApiErrorMessage` → red banner via `addError`.
 
 ### References

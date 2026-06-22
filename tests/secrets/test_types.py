@@ -62,10 +62,13 @@ class TestUserSecretEncryptedString:
         decrypted = enc_type.process_result_value(encrypted, dialect)
         assert decrypted == "super-secret-key"
 
-    def test_corrupt_value_returns_raw(
+    def test_corrupt_value_returns_none(
         self, enc_type: UserSecretEncryptedString, dialect: MagicMock
     ) -> None:
-        assert enc_type.process_result_value("not-encrypted", dialect) == "not-encrypted"
+        # Hardening (db/types.py): undecryptable ciphertext is treated as missing
+        # (returns None) so callers raise "key not configured" instead of sending
+        # garbage to a provider — never echo the raw stored value back.
+        assert enc_type.process_result_value("not-encrypted", dialect) is None
 
     def test_cache_ok(self) -> None:
         assert UserSecretEncryptedString.cache_ok is True

@@ -1,24 +1,58 @@
 # syntax=docker/dockerfile:1
 
-ARG PYTHON_VERSION=3.14.5
-ARG UV_VERSION=0.11.13
+ARG PYTHON_VERSION=3.14.6
+ARG UV_VERSION=0.11.20
+ARG NODE_VERSION=26.3.0
 
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
 ARG UV_VERSION
+ARG NODE_VERSION
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    PATH="/app/.venv/bin:${PATH}"
+    PATH="/app/.venv/bin:${PATH}" \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl libatomic1 tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir "uv==${UV_VERSION}"
+
+# --- E2E runner toolchain (admin "Run E2E Tests" feature) ------------------
+# The backend hosts an in-process Playwright runner (POST /api/admin/tests/e2e).
+# Running it requires Node + Chromium + the frontend e2e assets in this image.
+# These layers are placed before the (frequently changing) backend source so
+# they stay cached across normal code changes.
+#
+# Node is installed from the official prebuilt tarball rather than copied from
+# the node:* image: the official Linux binaries link against an old glibc and
+# run on any modern Debian, so this avoids a glibc mismatch with python:slim.
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" -o /tmp/node.tar.gz \
+    && tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 \
+    && rm /tmp/node.tar.gz \
+    && node --version && npm --version
+
+# Install the frontend's JS deps (the e2e devDependencies live here, so a full
+# `npm ci` is required — `--omit=dev` would drop @playwright/test). Skip the
+# automatic browser download; only Chromium is installed explicitly below.
+COPY frontend/package.json frontend/package-lock.json ./frontend/
+RUN cd frontend && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci
+
+# Install Chromium + its system libraries into PLAYWRIGHT_BROWSERS_PATH.
+RUN cd frontend && npx playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+# The Playwright config + the e2e specs/support helpers (frontend/src is NOT
+# needed — no spec imports it; tsconfig.node.json has no path aliases).
+COPY frontend/playwright.config.ts frontend/tsconfig.node.json ./frontend/
+COPY frontend/e2e ./frontend/e2e
+COPY frontend/support ./frontend/support
+# ---------------------------------------------------------------------------
 
 COPY pyproject.toml uv.lock .python-version README.md ./
 COPY src/ ./src/

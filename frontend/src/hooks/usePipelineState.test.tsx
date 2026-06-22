@@ -95,3 +95,74 @@ describe("usePipelineState thread access denial (Story 7.6 AC3)", () => {
     expect(onThreadDenied).not.toHaveBeenCalled();
   });
 });
+
+describe("usePipelineState thread-load mapping (cross-thread bleed fix)", () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset();
+    window.localStorage.clear();
+  });
+
+  it("preserves message_metadata and maps real MessageResponse fields", async () => {
+    // GET /threads/{id} returns MessageResponse rows: sender / agent_name /
+    // content / message_type / message_metadata / created_at. The thread-load
+    // branch must read those exact fields so the chat filter can hide
+    // metadata-tagged carrier messages instead of leaking them as raw text.
+    apiFetchMock.mockResolvedValue({
+      current_step: 2,
+      status: "review_request",
+      messages: [
+        {
+          id: "m1",
+          sender: "user",
+          agent_name: null,
+          content: "Hello",
+          message_type: "text",
+          message_metadata: null,
+          created_at: "2026-06-18T10:00:00Z",
+        },
+        {
+          id: "m2",
+          sender: "agent",
+          agent_name: "Alice",
+          content: "Finished model assignment reasoning.",
+          message_type: "info",
+          message_metadata: { type: "thinking_trace", trace: {} },
+          created_at: "2026-06-18T10:00:01Z",
+        },
+      ],
+      agent_runs: [],
+    });
+
+    const { result } = renderHook(() =>
+      usePipelineState({ projectId: null, threadId: "thread-1" }),
+    );
+
+    await waitFor(() => expect(result.current.isLoaded).toBe(true));
+
+    const messages = result.current.messages;
+    expect(messages).toHaveLength(2);
+    // User message keeps the user side (not mislabeled "agent").
+    expect(messages[0]!.sender).toBe("user");
+    // Carrier message retains its metadata + real message_type + agent name.
+    expect(messages[1]!.sender).toBe("agent");
+    expect(messages[1]!.agentName).toBe("Alice");
+    expect(messages[1]!.messageType).toBe("info");
+    expect(messages[1]!.metadata).toEqual({ type: "thinking_trace", trace: {} });
+  });
+
+  it("exposes loadedThreadId set to the loaded thread after load completes", async () => {
+    apiFetchMock.mockResolvedValue({
+      current_step: 1,
+      status: "review_request",
+      messages: [],
+      agent_runs: [],
+    });
+
+    const { result } = renderHook(() =>
+      usePipelineState({ projectId: null, threadId: "thread-42" }),
+    );
+
+    await waitFor(() => expect(result.current.isLoaded).toBe(true));
+    expect(result.current.loadedThreadId).toBe("thread-42");
+  });
+});

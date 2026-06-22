@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-ARG NODE_VERSION=26.1.0
-ARG NGINX_VERSION=1.27
+ARG NODE_VERSION=26.3.0
+ARG NGINX_VERSION=1.31.1
 
 FROM node:${NODE_VERSION}-slim AS builder
 

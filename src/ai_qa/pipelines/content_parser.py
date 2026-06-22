@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ai_qa.pipelines.pipeline_artifact_adapter import PipelineArtifactAdapter
+    from ai_qa.pipelines.artifact_adapter import PipelineArtifactAdapter
 
 import httpx
 import markdownify
@@ -35,7 +35,7 @@ MULTIPLE_BLANK_LINES = re.compile(r"\n{3,}")
 class ContentParser:
     """Pipeline stage for converting Confluence content to LLM-friendly formats."""
 
-    def __init__(self, adapter: "PipelineArtifactAdapter") -> None:
+    def __init__(self, adapter: PipelineArtifactAdapter) -> None:
         self.adapter = adapter
 
     async def parse(self, page: ConfluencePage) -> StageResult:
@@ -138,7 +138,9 @@ class ContentParser:
         )
 
     def _html_to_markdown(self, html: str) -> str:
-        md = str(markdownify.markdownify(html, heading_style="ATX", escape_asterisks=False))
+        # Annotated because markdownify ships no type stubs (its return is Any);
+        # the annotation keeps mypy from reporting a no-any-return on md.strip().
+        md: str = markdownify.markdownify(html, heading_style="ATX", escape_asterisks=False)
         md = MULTIPLE_BLANK_LINES.sub("\n\n", md)
         return md.strip()
 

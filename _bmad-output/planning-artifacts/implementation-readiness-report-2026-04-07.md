@@ -136,7 +136,7 @@ documentsIncluded:
 
 **Technical Constraints:**
 
-- Python 3.12+ with `uv` package manager required
+- Python 3.14+ with `uv` package manager required
 - browser-use >= 0.12.5, langchain-anthropic >= 1.3.1, python-dotenv >= 1.2.1
 - LLM: Claude Sonnet 4.6, temperature 0.0 for deterministic output
 - MCP server is the single integration point for Confluence and Jira
@@ -264,7 +264,7 @@ The UX spec was authored with PRD and Architecture as explicit inputs (`inputDoc
 
 | UX Requirement | Architecture Support | Status |
 |---|---|---|
-| React 18+ / TypeScript / Shadcn/ui / Tailwind / Vite | Architecture explicitly specifies this stack | ✅ Aligned |
+| React 19+ / TypeScript / Shadcn/ui / Tailwind / Vite | Architecture explicitly specifies this stack | ✅ Aligned |
 | WebSocket real-time chat updates | FastAPI WebSocket at `/ws`, `useWebSocket` hook | ✅ Aligned |
 | Named component files (AgentTopBar, ChatMessage, etc.) | Architecture lists all 6 components by filename | ✅ Aligned |
 | `react-markdown` + `react-syntax-highlighter` | Architecture lists both in frontend stack | ✅ Aligned |

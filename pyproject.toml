@@ -7,7 +7,7 @@ name = "ai-qa-automation"
 version = "0.1.0"
 description = "AI QA Automation Framework"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "browser-use>=0.12.5",
     "fastapi>=0.115.0",
@@ -31,6 +31,10 @@ dependencies = [
     "psycopg[binary]>=3.1",
     "pwdlib[argon2]>=0.3.0",
     "boto3>=1.43.12",
+    "playwright>=1.60.0",
+    "pytest-playwright>=0.8.0",
+    "pytest-timeout>=2.4.0",
+    "tzdata>=2026.2",
 ]
 
 [project.scripts]
@@ -40,11 +44,11 @@ ai-qa = "ai_qa.__main__:run"
 packages = ["src/ai_qa"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 100
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 strict = true
 ignore_missing_imports = true  # third-party libs (browser-use) lack stubs
 
@@ -66,9 +70,15 @@ ignore = [
 "tests/*" = ["S101"]  # allow assert in tests
 
 [tool.pytest.ini_options]
-testpaths = ["tests/unit", "tests/integration", "tests/api", "tests"]
+testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "--cov=src/ai_qa --cov-report=term-missing --cov-fail-under=80"
+# -p no:base_url disables the pytest-base-url plugin (pulled in transitively by
+# pytest-playwright, Story 14.2). The suite uses `base_url` as a plain test parameter
+# in many places; the plugin's session-scoped `base_url` fixture/_verify_url collides
+# with those (ScopeMismatch). We never use the plugin in-process — Jack's execution
+# subprocess sets APP_BASE_URL via env and runs with a fresh rootdir/addopts, so it
+# still loads pytest-playwright + base-url there.
+addopts = "--cov=src/ai_qa --cov-report=term-missing --cov-fail-under=80 -p no:base_url"
 markers = [
     "integration: mark a test as an integration test",
     "live_provider: real provider model-discovery test; skipped unless TEST_*_KEY is set",
@@ -78,6 +88,9 @@ filterwarnings = [
     # This is a third-party library issue — we cannot fix it upstream
     "ignore::DeprecationWarning:browser_use",
     "ignore::DeprecationWarning:observability",
+    # google-genai (pulled in by browser_use's ChatGoogle) uses a typing construct
+    # deprecated in Python 3.17 — third-party, cannot fix upstream.
+    "ignore::DeprecationWarning:google.genai.types",
     # SQLite ResourceWarning: SQLAlchemy connection pool cleanup happens in GC timing
     # that is outside our control (triggered in third-party unittest.mock or pydantic code)
     "ignore::ResourceWarning:sqlalchemy",
@@ -91,10 +104,10 @@ omit = [
 
 [dependency-groups]
 dev = [
-    "mypy>=1.14.0",
+    "mypy>=2.1.0",
     "pre-commit>=4.0.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.25.0",
     "pytest-cov>=6.0.0",
-    "ruff>=0.9.0",
+    "ruff>=0.15.16",
 ]

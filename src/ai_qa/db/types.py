@@ -3,7 +3,7 @@
 from typing import Any, cast
 
 from cryptography.fernet import Fernet
-from sqlalchemy.types import String, TypeDecorator
+from sqlalchemy.types import String, Text, TypeDecorator
 
 from ai_qa.config import AppSettings
 
@@ -61,6 +61,31 @@ class EncryptedString(TypeDecorator[str]):
             return cast(str, value)
 
 
+class EncryptedText(TypeDecorator[str]):
+    """``EncryptedString`` for values whose ciphertext can exceed a varchar bound (TEXT-backed).
+
+    Same shared ``db_encryption_key`` and None / corrupt-value fallback semantics as
+    :class:`EncryptedString`, but TEXT-backed so a long plaintext — whose Fernet ciphertext
+    expands well past the plaintext length — cannot overflow the column on PostgreSQL.
+    """
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value: Any, dialect: Any) -> str | None:
+        if value is None:
+            return None
+        return get_fernet().encrypt(str(value).encode("utf-8")).decode("utf-8")
+
+    def process_result_value(self, value: Any, dialect: Any) -> str | None:
+        if value is None:
+            return None
+        try:
+            return get_fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+        except Exception:
+            return cast(str, value)
+
+
 class UserSecretEncryptedString(TypeDecorator[str]):
     """Encrypts per-user secrets with the dedicated user-secrets Fernet key.
 
@@ -87,4 +112,29 @@ class UserSecretEncryptedString(TypeDecorator[str]):
             # Corrupt or foreign-key ciphertext: treat as missing so callers
             # raise the UX-DR12 "key not configured" error instead of sending
             # garbage to the provider (Task 6 hardening — scope: this type only).
+            return None
+
+
+class UserSecretEncryptedText(TypeDecorator[str]):
+    """``UserSecretEncryptedString`` for LARGE values (TEXT-backed, no length cap).
+
+    Used for captured browser-session blobs (``storageState`` JSON, 2-10 KB+, larger
+    after encryption) which would overflow the ``String(1024)`` per-user-secret column.
+    Same dedicated user-secrets Fernet key and None/corrupt-value semantics.
+    """
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value: Any, dialect: Any) -> str | None:
+        if value is None:
+            return None
+        return get_user_secrets_fernet().encrypt(str(value).encode("utf-8")).decode("utf-8")
+
+    def process_result_value(self, value: Any, dialect: Any) -> str | None:
+        if value is None:
+            return None
+        try:
+            return get_user_secrets_fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+        except Exception:
             return None

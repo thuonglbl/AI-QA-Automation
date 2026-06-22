@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
+from typing import Any, TypedDict
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from ai_qa.artifacts.storage import ArtifactStorage, LocalArtifactStorage
-from ai_qa.db.models import Artifact, ArtifactVersion
+from ai_qa.artifacts.storage import ArtifactStorage, LocalArtifactStorage, folder_for_kind
+from ai_qa.db.models import Artifact, ArtifactVersion, User
 from ai_qa.threads.models import AgentRun, Thread
 
 ARTIFACT_KINDS = frozenset(
     {
         "configuration",
+        "execution_screenshot",  # Story 14.3 — execution-run screenshot (browses under reports)
         "image",
+        "log",  # Story 14.3 — execution run log
         "markdown",
         "mermaid",
         "playwright_script",
@@ -25,10 +29,44 @@ ARTIFACT_KINDS = frozenset(
         "screenshot",
         "testcase",
         "testscript",
+        "trace",  # Story 14.3 — execution Playwright trace
     }
 )
 
 REQUIRED_ARTIFACT_FOLDERS = ("requirements", "test_cases", "test_scripts")
+
+
+class ArtifactTreeEntryDict(TypedDict):
+    """Typed dict shape for a single artifact entry in the tree response."""
+
+    id: UUID
+    project_id: UUID
+    agent_run_id: UUID | None
+    kind: str
+    name: str
+    current_version: int
+    created_at: datetime
+    updated_at: datetime
+    created_by_user_id: UUID | None
+    updated_by_user_id: UUID | None
+    thread_id: UUID | None
+    created_by_display: str | None
+    updated_by_display: str | None
+    source_type: str | None
+    source_url: str | None
+    warnings: list[dict[str, Any]] | None
+    title: str | None
+    parent_source_id: str | None
+
+
+class ArtifactTreeFolderDict(TypedDict):
+    """Typed dict shape for a single browse folder in the tree response."""
+
+    name: str
+    prefix: str | None
+    required: bool
+    is_empty: bool
+    entries: list[ArtifactTreeEntryDict]
 
 
 class ArtifactService:
@@ -48,6 +86,11 @@ class ArtifactService:
         content: str | bytes,
         agent_run_id: UUID | None = None,
         thread_id: UUID | None = None,
+        source_type: str | None = None,
+        source_url: str | None = None,
+        warnings: list[dict[str, Any]] | None = None,
+        title: str | None = None,
+        parent_source_id: str | None = None,
     ) -> Artifact:
         """Create an artifact and initial version row for project-owned content."""
         self._validate_kind(kind)
@@ -67,6 +110,11 @@ class ArtifactService:
             name=clean_name,
             storage_path="pending",
             current_version=1,
+            source_type=source_type,
+            source_url=source_url,
+            warnings=warnings,
+            title=title,
+            parent_source_id=parent_source_id,
         )
         self.db.add(artifact)
         self.db.flush()
@@ -205,6 +253,103 @@ class ArtifactService:
         Story 10.2 uses these to render empty-folder placeholders.
         """
         return [f"projects/{project_id}/{folder}/" for folder in REQUIRED_ARTIFACT_FOLDERS]
+
+    def list_artifact_tree(
+        self,
+        *,
+        project_id: UUID,
+    ) -> list[ArtifactTreeFolderDict]:
+        """Return the 4 browse folders with entries grouped by logical folder.
+
+        Always includes all 4 browse folders (requirements, test_cases, test_scripts,
+        reports) even when empty — the 3 required ones per AC1 and reports to match
+        shipped behavior.  Entries are ordered newest-first by ``updated_at``.
+        Creator/updater display names are resolved in ONE batch query (no N+1).
+        Never creates objects in storage — projection only.
+        """
+        # Fetch all project artifacts ordered newest-first. Review P4 fix: add Artifact.id
+        # as a deterministic tiebreaker so artifacts sharing an updated_at (batch agent
+        # output) keep a stable order across refreshes — otherwise paginated rows shuffle
+        # between pages on each /tree fetch.
+        all_artifacts = list(
+            self.db.execute(
+                select(Artifact)
+                .where(Artifact.project_id == project_id)
+                .order_by(Artifact.updated_at.desc(), Artifact.id.desc())
+            )
+            .scalars()
+            .all()
+        )
+
+        # Batch-resolve user display names (one query, no N+1, no empty IN())
+        user_ids: set[UUID] = set()
+        for artifact in all_artifacts:
+            if artifact.created_by_user_id is not None:
+                user_ids.add(artifact.created_by_user_id)
+            if artifact.updated_by_user_id is not None:
+                user_ids.add(artifact.updated_by_user_id)
+
+        name_map: dict[UUID, str] = {}
+        if user_ids:
+            rows = self.db.execute(
+                select(User.id, User.display_name).where(User.id.in_(user_ids))
+            ).all()
+            name_map = {row.id: row.display_name for row in rows}
+
+        # Bucket artifacts into their browse folders
+        browse_order = ["requirements", "test_cases", "test_scripts", "reports"]
+        required_browse = frozenset(REQUIRED_ARTIFACT_FOLDERS)
+        buckets: dict[str, list[ArtifactTreeEntryDict]] = {f: [] for f in browse_order}
+
+        for artifact in all_artifacts:
+            browse_folder = folder_for_kind(artifact.kind, artifact.name)
+            entry: ArtifactTreeEntryDict = {
+                "id": artifact.id,
+                "project_id": artifact.project_id,
+                "agent_run_id": artifact.agent_run_id,
+                "kind": artifact.kind,
+                "name": artifact.name,
+                "current_version": artifact.current_version,
+                "created_at": artifact.created_at,
+                "updated_at": artifact.updated_at,
+                "created_by_user_id": artifact.created_by_user_id,
+                "updated_by_user_id": artifact.updated_by_user_id,
+                "thread_id": artifact.thread_id,
+                "created_by_display": (
+                    name_map.get(artifact.created_by_user_id)
+                    if artifact.created_by_user_id is not None
+                    else None
+                ),
+                "updated_by_display": (
+                    name_map.get(artifact.updated_by_user_id)
+                    if artifact.updated_by_user_id is not None
+                    else None
+                ),
+                "source_type": artifact.source_type,
+                "source_url": artifact.source_url,
+                "warnings": artifact.warnings,
+                "title": artifact.title,
+                "parent_source_id": artifact.parent_source_id,
+            }
+            buckets[browse_folder].append(entry)
+
+        # Build the ordered folder list (requirements, test_cases, test_scripts, reports)
+        folders: list[ArtifactTreeFolderDict] = []
+        for folder_name in browse_order:
+            entries = buckets[folder_name]
+            is_required = folder_name in required_browse
+            prefix: str | None = f"projects/{project_id}/{folder_name}/" if is_required else None
+            folders.append(
+                {
+                    "name": folder_name,
+                    "prefix": prefix,
+                    "required": is_required,
+                    "is_empty": len(entries) == 0,
+                    "entries": entries,
+                }
+            )
+
+        return folders
 
     def _validate_kind(self, kind: str) -> None:
         if kind not in ARTIFACT_KINDS:

@@ -107,7 +107,7 @@ From Story 7.6 (Membership Removal Access Enforcement) and 7.5 (History & Resume
 ### Latest Tech Information
 
 - Frontend: React 18+, TypeScript, Vite, Vitest + Testing Library (unit), Playwright (e2e), Tailwind utility classes inline. Node deprecation warning `DEP0205 module.register()` from Playwright tooling is benign noise, not a failure.
-- Backend: Python 3.12+, FastAPI session-cookie/JWT auth; `/auth/login`, `/auth/me`, `/auth/status` return secret-free profiles including `role`.
+- Backend: Python 3.14+, FastAPI session-cookie/JWT auth; `/auth/login`, `/auth/me`, `/auth/status` return secret-free profiles including `role`.
 
 ### References
 

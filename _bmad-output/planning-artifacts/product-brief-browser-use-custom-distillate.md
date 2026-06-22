@@ -37,7 +37,7 @@ purpose: "Token-efficient context for downstream PRD creation"
 
 ## Technical Context
 
-- **Runtime**: Python 3.12+, uv package manager
+- **Runtime**: Python 3.14+, uv package manager
 - **Core deps**: browser-use>=0.12.5, langchain-anthropic>=1.3.1, python-dotenv>=1.2.1
 - **PoC LLM**: Claude Sonnet 4.6 via Anthropic API (Enterprise license)
 - **MCP server**: Internal, already deployed — reads from on-prem Confluence

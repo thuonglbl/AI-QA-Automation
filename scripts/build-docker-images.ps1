@@ -82,15 +82,26 @@ try {
         $password = Get-RequiredEnv "ARTIFACTORY_PASSWORD"
 
         $password | docker login $imagePrefix --username $username --password-stdin
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "docker login to $imagePrefix failed (exit $LASTEXITCODE). Check ARTIFACTORY_USERNAME/ARTIFACTORY_PASSWORD in $EnvFile. Continuing with any cached credentials; the push will fail if none are valid."
+        }
     }
 
-    docker build --file Dockerfile.backend --build-arg PYTHON_VERSION=$pythonVersion --build-arg UV_VERSION=$uvVersion --tag $backendImage .
+    # Native docker exit codes do NOT trigger $ErrorActionPreference='Stop', so check them
+    # explicitly. Without this a failed build silently falls through to `docker push`, which
+    # then pushes a STALE local image of the same tag from a previous build.
+    docker build --file Dockerfile.backend --build-arg PYTHON_VERSION=$pythonVersion --build-arg UV_VERSION=$uvVersion --build-arg NODE_VERSION=$nodeVersion --tag $backendImage .
+    if ($LASTEXITCODE -ne 0) { throw "Backend image build failed (exit $LASTEXITCODE) - not pushing." }
+
     docker build --file frontend/Dockerfile --build-arg NODE_VERSION=$nodeVersion --build-arg NGINX_VERSION=$nginxVersion --tag $frontendImage ./frontend
+    if ($LASTEXITCODE -ne 0) { throw "Frontend image build failed (exit $LASTEXITCODE) - not pushing." }
 
     if ($Push) {
         Write-Host "Pushing images to Artifactory" -ForegroundColor Cyan
         docker push $backendImage
+        if ($LASTEXITCODE -ne 0) { throw "Push of $backendImage failed (exit $LASTEXITCODE)." }
         docker push $frontendImage
+        if ($LASTEXITCODE -ne 0) { throw "Push of $frontendImage failed (exit $LASTEXITCODE)." }
     }
     else {
         Write-Host "Build complete. Re-run with -Push to push images." -ForegroundColor Yellow

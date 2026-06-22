@@ -18,7 +18,7 @@ from ai_qa.threads.service import ThreadAccessDeniedError, ThreadService
 
 
 @pytest.fixture
-def db_session() -> Generator[Session, None, None]:
+def db_session() -> Generator[Session]:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -145,10 +145,10 @@ def test_add_message_success(db_session: Session, user: User) -> None:
     db_session.add(thread)
     db_session.commit()
 
-    message = service.add_message(thread.id, role="user", content="Hello world")
+    message = service.add_message(thread.id, sender="user", content="Hello world")
     assert message.id is not None
     assert message.thread_id == thread.id
-    assert message.role == "user"
+    assert message.sender == "user"
     assert message.content == "Hello world"
 
 
@@ -159,8 +159,8 @@ def test_get_thread_messages(db_session: Session, user: User) -> None:
     db_session.add(thread)
     db_session.commit()
 
-    service.add_message(thread.id, role="user", content="First")
-    service.add_message(thread.id, role="agent", content="Second")
+    service.add_message(thread.id, sender="user", content="First")
+    service.add_message(thread.id, sender="agent", content="Second")
 
     messages = service.get_thread_messages(thread.id)
     assert len(messages) == 2
@@ -228,7 +228,7 @@ def test_get_thread_details_success(db_session: Session, user: User) -> None:
     db_session.add(thread)
     db_session.commit()
 
-    service.add_message(thread.id, role="user", content="Hello")
+    service.add_message(thread.id, sender="user", content="Hello")
     service.create_agent_run(thread.id, status="running")
 
     db_session.commit()

@@ -21,6 +21,7 @@ from ai_qa.ai_connection.providers.base import (
 from ai_qa.ai_connection.providers.openai_compatible import (
     AnthropicAdapter,
     BrowserUseAdapter,
+    ClaudeSSOAdapter,
     GeminiAdapter,
     OnPremisesAdapter,
     OpenAIAdapter,
@@ -33,6 +34,7 @@ from ai_qa.exceptions import ConfigError
 # shared instance per provider is safe.
 _PROVIDER_ADAPTERS: dict[str, ProviderAdapter] = {
     "claude": AnthropicAdapter(),
+    "claude-sso": ClaudeSSOAdapter(),
     "openai": OpenAIAdapter(),
     "gemini": GeminiAdapter(),
     "on-premises": OnPremisesAdapter(),
@@ -44,6 +46,7 @@ _PROVIDER_ADAPTERS: dict[str, ProviderAdapter] = {
 # distinct providers with independent base URLs.
 _PROVIDER_BASE_URL_SETTINGS: dict[str, str] = {
     "claude": "claude_api_base_url",
+    "claude-sso": "claude_api_base_url",
     "openai": "openai_api_base_url",
     "gemini": "gemini_api_base_url",
     "on-premises": "on_premises_api_base_url",

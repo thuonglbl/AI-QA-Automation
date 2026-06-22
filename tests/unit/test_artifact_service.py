@@ -15,6 +15,7 @@ from ai_qa.artifacts.storage import (
     LocalArtifactStorage,
     S3ArtifactStorage,
     build_artifact_key,
+    folder_for_kind,
     sanitize_artifact_name,
 )
 from ai_qa.db.base import Base
@@ -246,6 +247,13 @@ class RecordingStorage:
         self.deleted.append(storage_path)
         self.contents.pop(storage_path, None)
 
+    def delete_prefix(self, prefix: str) -> None:
+        """Remove all stored objects whose key starts with prefix."""
+        to_remove = [k for k in self.contents if k.startswith(prefix)]
+        for k in to_remove:
+            self.deleted.append(k)
+            del self.contents[k]
+
 
 def test_artifact_service_cleans_file_when_commit_fails(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
@@ -331,6 +339,76 @@ def test_artifact_service_create_version_is_project_scoped(
     assert updated is None
 
 
+def test_artifact_service_delete_artifact_cascades_and_cleans_storage(
+    db_session: Session, tmp_path: Path
+) -> None:
+    project = _create_project(db_session)
+    storage = RecordingStorage()
+    service = ArtifactService(db_session, storage)
+
+    artifact = service.save_artifact(
+        project_id=project.id,
+        owner_user_id=None,
+        kind="markdown",
+        name="to_delete.md",
+        content="v1",
+    )
+    service.create_version(
+        project_id=project.id,
+        artifact_id=artifact.id,
+        created_by_user_id=None,
+        content="v2",
+    )
+
+    # Verify metadata and storage pre-delete
+    storage_paths = list(storage.contents.keys())
+    assert len(storage_paths) == 2
+
+    # Delete the artifact
+    deleted = service.delete_artifact(project_id=project.id, artifact_id=artifact.id)
+    assert deleted is True
+
+    # Verify metadata cascade
+    assert service.get_artifact(project_id=project.id, artifact_id=artifact.id) is None
+    versions = (
+        db_session.execute(
+            select(ArtifactVersion).where(ArtifactVersion.artifact_id == artifact.id)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(versions) == 0
+
+    # Verify storage cleanup
+    assert len(storage.contents) == 0
+    for path in storage_paths:
+        assert path in storage.deleted
+
+
+def test_artifact_service_delete_artifact_is_project_scoped(
+    db_session: Session, tmp_path: Path
+) -> None:
+    project = _create_project(db_session)
+    other_project = Project(name="Other")
+    db_session.add(other_project)
+    db_session.commit()
+    service = ArtifactService(db_session, LocalArtifactStorage(tmp_path))
+
+    artifact = service.save_artifact(
+        project_id=project.id,
+        owner_user_id=None,
+        kind="markdown",
+        name="scoped.md",
+        content="v1",
+    )
+
+    deleted = service.delete_artifact(project_id=other_project.id, artifact_id=artifact.id)
+    assert deleted is False
+
+    # Still exists in original project
+    assert service.get_artifact(project_id=project.id, artifact_id=artifact.id) is not None
+
+
 # ---------------------------------------------------------------------------
 # NEW TESTS — Task 5.2 additions
 # ---------------------------------------------------------------------------
@@ -349,6 +427,10 @@ _EXPECTED_FOLDERS = {
     "mermaid": "artifacts",
     "report": "artifacts",
     "screenshot": "artifacts",
+    # Story 14.3 execution kinds — storage catch-all is "artifacts/".
+    "trace": "artifacts",
+    "log": "artifacts",
+    "execution_screenshot": "artifacts",
 }
 
 
@@ -530,3 +612,316 @@ def test_artifact_service_rejects_thread_from_different_project(
             content="bad",
             thread_id=other_thread.id,
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 5.2 — folder_for_kind + list_artifact_tree tests
+# ---------------------------------------------------------------------------
+
+
+# --- folder_for_kind exhaustive coverage ---
+
+
+def test_folder_for_kind_covers_every_artifact_kind() -> None:
+    """folder_for_kind returns a non-empty string for every registered kind."""
+    valid_folders = {"requirements", "test_cases", "test_scripts", "reports"}
+    for kind in ARTIFACT_KINDS:
+        result = folder_for_kind(kind)
+        assert result in valid_folders, f"Unexpected folder '{result}' for kind '{kind}'"
+
+
+def test_folder_for_kind_named_kind_mapping() -> None:
+    """Spot-check the canonical named-kind → browse-folder assignments."""
+    assert folder_for_kind("requirements") == "requirements"
+    assert folder_for_kind("raw_html") == "requirements"
+    # Page images/screenshots are raw companions of a requirement → requirements folder.
+    assert folder_for_kind("image") == "requirements"
+    assert folder_for_kind("screenshot") == "requirements"
+    assert folder_for_kind("testcase") == "test_cases"
+    assert folder_for_kind("testscript") == "test_scripts"
+    assert folder_for_kind("playwright_script") == "test_scripts"
+
+
+def test_folder_for_kind_requirement_metadata_sidecar_routes_to_requirements() -> None:
+    """The requirement metadata sidecar is kind=configuration but belongs with its
+    requirement, routed by name; other configuration (e.g. mary_selected_id) stays in reports."""
+    assert folder_for_kind("configuration", "1234/requirement.metadata.json") == "requirements"
+    assert folder_for_kind("configuration", "mary_selected_id.json") == "reports"
+    assert folder_for_kind("configuration") == "reports"
+
+
+def test_folder_for_kind_catch_all_is_reports() -> None:
+    """Kinds not in named groups route to the 'reports' catch-all."""
+    for kind in ("report", "markdown", "mermaid", "configuration"):
+        assert folder_for_kind(kind) == "reports", f"Expected 'reports' for kind '{kind}'"
+
+
+def test_folder_for_kind_execution_kinds_route_to_reports() -> None:
+    """Story 14.3: execution outputs browse under 'reports'."""
+    for kind in ("trace", "log", "execution_screenshot"):
+        assert folder_for_kind(kind) == "reports", f"Expected 'reports' for kind '{kind}'"
+
+
+def test_execution_kinds_are_registered() -> None:
+    """Story 14.3: the new execution kinds are accepted by ARTIFACT_KINDS."""
+    assert {"trace", "log", "execution_screenshot"} <= ARTIFACT_KINDS
+
+
+def test_folder_for_kind_unknown_kind_returns_reports() -> None:
+    """Unknown / future kinds are routed to 'reports' by the catch-all."""
+    assert folder_for_kind("unknown_future_kind") == "reports"
+
+
+def test_folder_for_kind_agrees_with_build_artifact_key_on_named_kinds() -> None:
+    """Task 1.2 agreement check: browse folder name must appear in the storage key
+    for the 5 named kinds (requirements, raw_html, testcase, testscript, playwright_script).
+    This verifies Task 1.2 — they diverge intentionally on the catch-all,
+    so only check the named ones.
+    """
+    named_agreement = {
+        "requirements": "requirements",
+        "raw_html": "requirements",
+        "testcase": "test_cases",
+        "testscript": "test_scripts",
+        "playwright_script": "test_scripts",
+    }
+    pid = uuid4()
+    aid = uuid4()
+    for kind, expected_browse_folder in named_agreement.items():
+        storage_key = build_artifact_key(
+            project_id=pid, artifact_id=aid, version=1, kind=kind, safe_name="f.bin"
+        )
+        browse_folder = folder_for_kind(kind)
+        assert browse_folder == expected_browse_folder, f"kind={kind}: browse={browse_folder}"
+        # storage key must contain the same browse folder prefix (just the first segment)
+        browse_top = expected_browse_folder.split("/")[0]  # e.g. "requirements" or "test_cases"
+        assert browse_top in storage_key, (
+            f"Storage key '{storage_key}' does not contain browse segment '{browse_top}'"
+        )
+
+
+# --- list_artifact_tree unit tests ---
+
+
+def _make_user(session: Session, *, email: str, display_name: str) -> User:
+    u = User(
+        email=email,
+        display_name=display_name,
+        password_hash="hash",
+        role="standard",
+        is_active=True,
+    )
+    session.add(u)
+    session.commit()
+    return u
+
+
+def test_list_artifact_tree_empty_project_returns_four_folders(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Empty project returns all 4 browse folders; the 3 required ones are marked required=True."""
+    project = _create_project(db_session)
+    service = ArtifactService(db_session, LocalArtifactStorage(tmp_path))
+
+    folders = service.list_artifact_tree(project_id=project.id)
+
+    folder_names = [f["name"] for f in folders]
+    assert folder_names == ["requirements", "test_cases", "test_scripts", "reports"]
+
+    for folder in folders:
+        assert folder["is_empty"] is True
+        assert folder["entries"] == []
+
+    required_names = {f["name"] for f in folders if f["required"]}
+    assert required_names == {"requirements", "test_cases", "test_scripts"}
+
+    # Reports is NOT required by the story (catch-all bucket only)
+    reports = next(f for f in folders if f["name"] == "reports")
+    assert reports["required"] is False
+
+
+def test_list_artifact_tree_groups_artifacts_correctly(db_session: Session, tmp_path: Path) -> None:
+    """Artifacts land in the correct browse folder by kind."""
+    project = _create_project(db_session)
+    service = ArtifactService(db_session, LocalArtifactStorage(tmp_path))
+
+    # requirements bucket
+    service.save_artifact(
+        project_id=project.id, owner_user_id=None, kind="requirements", name="req.md", content="r"
+    )
+    service.save_artifact(
+        project_id=project.id, owner_user_id=None, kind="raw_html", name="page.html", content="<h>"
+    )
+    # test_cases bucket
+    service.save_artifact(
+        project_id=project.id, owner_user_id=None, kind="testcase", name="tc.json", content="{}"
+    )
+    # test_scripts bucket
+    service.save_artifact(
+        project_id=project.id,
+        owner_user_id=None,
+        kind="playwright_script",
+        name="pw.ts",
+        content="t",
+    )
+    # page image is a raw companion of a requirement → requirements bucket
+    service.save_artifact(
+        project_id=project.id, owner_user_id=None, kind="image", name="img.png", content="..."
+    )
+    # reports (catch-all) bucket
+    service.save_artifact(
+        project_id=project.id, owner_user_id=None, kind="report", name="rep.md", content="rep"
+    )
+
+    folders = service.list_artifact_tree(project_id=project.id)
+    folder_map = {f["name"]: f for f in folders}
+
+    req_names = {e["name"] for e in folder_map["requirements"]["entries"]}
+    assert req_names == {"req.md", "page.html", "img.png"}
+
+    tc_names = {e["name"] for e in folder_map["test_cases"]["entries"]}
+    assert tc_names == {"tc.json"}
+
+    ts_names = {e["name"] for e in folder_map["test_scripts"]["entries"]}
+    assert ts_names == {"pw.ts"}
+
+    report_names = {e["name"] for e in folder_map["reports"]["entries"]}
+    assert report_names == {"rep.md"}
+
+    # is_empty flags match actual content
+    assert folder_map["requirements"]["is_empty"] is False
+    assert folder_map["test_cases"]["is_empty"] is False
+    assert folder_map["test_scripts"]["is_empty"] is False
+    assert folder_map["reports"]["is_empty"] is False
+
+
+def test_save_artifact_persists_title_and_parent_and_surfaces_in_tree(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """title + parent_source_id round-trip through save_artifact and the browse tree
+    so the frontend can show friendly names and build a Confluence-like hierarchy."""
+    project = _create_project(db_session)
+    service = ArtifactService(db_session, LocalArtifactStorage(tmp_path))
+
+    root = service.save_artifact(
+        project_id=project.id,
+        owner_user_id=None,
+        kind="requirements",
+        name="100/requirement.md",
+        content="# Root",
+        title="Personal Travel Plan",
+        parent_source_id=None,
+    )
+    child = service.save_artifact(
+        project_id=project.id,
+        owner_user_id=None,
+        kind="requirements",
+        name="101/requirement.md",
+        content="# Child",
+        title="US01 - Create journey",
+        parent_source_id="100",
+    )
+
+    assert root.title == "Personal Travel Plan"
+    assert root.parent_source_id is None
+    assert child.title == "US01 - Create journey"
+    assert child.parent_source_id == "100"
+
+    folders = {f["name"]: f for f in service.list_artifact_tree(project_id=project.id)}
+    by_name = {e["name"]: e for e in folders["requirements"]["entries"]}
+    assert by_name["100/requirement.md"]["title"] == "Personal Travel Plan"
+    assert by_name["100/requirement.md"]["parent_source_id"] is None
+    assert by_name["101/requirement.md"]["title"] == "US01 - Create journey"
+    assert by_name["101/requirement.md"]["parent_source_id"] == "100"
+
+
+def test_list_artifact_tree_resolves_display_names(db_session: Session, tmp_path: Path) -> None:
+    """Entries carry resolved creator/updater display names — not UUIDs."""
+    project = _create_project(db_session)
+    creator = _make_user(db_session, email="creator@x.com", display_name="Alice Creator")
+    editor = _make_user(db_session, email="editor@x.com", display_name="Bob Editor")
+    service = ArtifactService(db_session, LocalArtifactStorage(tmp_path))
+
+    # Save with creator
+    artifact = service.save_artifact(
+        project_id=project.id,
+        owner_user_id=creator.id,
+        kind="requirements",
+        name="owned.md",
+        content="v1",
+    )
+    # Create version with editor (sets updated_by_user_id)
+    service.create_version(
+        project_id=project.id,
+        artifact_id=artifact.id,
+        created_by_user_id=editor.id,
+        content="v2",
+    )
+
+    folders = service.list_artifact_tree(project_id=project.id)
+    req_folder = next(f for f in folders if f["name"] == "requirements")
+    entry = req_folder["entries"][0]
+
+    assert entry["created_by_display"] == "Alice Creator"
+    assert entry["updated_by_display"] == "Bob Editor"
+    # PII discipline: no email in the entry
+    assert "creator@x.com" not in str(entry)
+    assert "editor@x.com" not in str(entry)
+
+
+def test_list_artifact_tree_handles_null_creator(db_session: Session, tmp_path: Path) -> None:
+    """Artifact with created_by_user_id=None returns created_by_display=None without crashing."""
+    project = _create_project(db_session)
+    service = ArtifactService(db_session, LocalArtifactStorage(tmp_path))
+
+    service.save_artifact(
+        project_id=project.id,
+        owner_user_id=None,
+        kind="requirements",
+        name="anon.md",
+        content="anon",
+    )
+
+    folders = service.list_artifact_tree(project_id=project.id)
+    req_folder = next(f for f in folders if f["name"] == "requirements")
+    entry = req_folder["entries"][0]
+
+    assert entry["created_by_display"] is None
+    assert entry["updated_by_display"] is None
+
+
+def test_list_artifact_tree_is_cross_project_scoped(db_session: Session, tmp_path: Path) -> None:
+    """Artifacts from project B never appear in project A's tree."""
+    project_a = _create_project(db_session)
+    project_b = Project(name="Project B")
+    db_session.add(project_b)
+    db_session.commit()
+
+    service = ArtifactService(db_session, LocalArtifactStorage(tmp_path))
+
+    service.save_artifact(
+        project_id=project_a.id,
+        owner_user_id=None,
+        kind="requirements",
+        name="a_req.md",
+        content="a",
+    )
+    service.save_artifact(
+        project_id=project_b.id,
+        owner_user_id=None,
+        kind="requirements",
+        name="b_req.md",
+        content="b",
+    )
+
+    folders_a = service.list_artifact_tree(project_id=project_a.id)
+    req_folder_a = next(f for f in folders_a if f["name"] == "requirements")
+    names_a = {e["name"] for e in req_folder_a["entries"]}
+
+    assert names_a == {"a_req.md"}, "project B artifact leaked into project A's tree"
+
+    folders_b = service.list_artifact_tree(project_id=project_b.id)
+    req_folder_b = next(f for f in folders_b if f["name"] == "requirements")
+    names_b = {e["name"] for e in req_folder_b["entries"]}
+
+    assert names_b == {"b_req.md"}, "project A artifact leaked into project B's tree"

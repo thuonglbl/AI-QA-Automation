@@ -237,8 +237,8 @@ index 3252a6d..1f2583b 100644
      "resolution_mode": "formal_requirements",
      "confidence": "high",
      "sources": [
--      "_bmad-output\\planning-artifacts\\epics.md",
--      "_bmad-output\\planning-artifacts\\prd.md"
+-      "c:\\Users\\thuong\\source\\repos\\ai-qa-automation\\_bmad-output\\planning-artifacts\\epics.md",
+-      "c:\\Users\\thuong\\source\\repos\\ai-qa-automation\\_bmad-output\\planning-artifacts\\prd.md"
 +      "_bmad-output/implementation-artifacts/8-6-admin-e2e-test-execution.md"
      ],
      "external_pointer_status": "not_used",
@@ -306,7 +306,7 @@ index 3252a6d..1f2583b 100644
 -  ],
 +  "recommendations": [],
    "links": {
--    "trace_report_path": "_bmad-output\\test-artifacts\\traceability-matrix.md",
+-    "trace_report_path": "c:\\Users\\thuong\\source\\repos\\ai-qa-automation\\_bmad-output\\test-artifacts\\traceability-matrix.md",
 +    "trace_report_path": "_bmad-output/test-artifacts/traceability-matrix.md",
      "trace_report_url": "",
      "artifact_url": "",
@@ -340,7 +340,7 @@ index 84a68c1..c8ea94b 100644
    "overall_status": "MET",
    "critical_open": 0,
    "links": {
--    "trace_report_path": "_bmad-output\\test-artifacts\\traceability-matrix.md",
+-    "trace_report_path": "c:\\Users\\thuong\\source\\repos\\ai-qa-automation\\_bmad-output\\test-artifacts\\traceability-matrix.md",
 +    "trace_report_path": "_bmad-output/test-artifacts/traceability-matrix.md",
      "trace_report_url": "",
      "artifact_url": "",
@@ -814,7 +814,7 @@ index 5496540..3cdae7b 100644
 -oracleSources: ['{project-root}/_bmad-output/planning-artifacts/epics.md', '{project-root}/_bmad-output/planning-artifacts/prd.md']
 +oracleSources: ['_bmad-output/implementation-artifacts/8-6-admin-e2e-test-execution.md']
  externalPointerStatus: 'not_used'
--tempCoverageMatrixPath: 'scratch\tea-trace-coverage-matrix.json'
+-tempCoverageMatrixPath: 'c:\Users\thuong\source\repos\ai-qa-automation\scratch\tea-trace-coverage-matrix.json'
  ---
  
 -# Traceability Matrix & Coverage Analysis

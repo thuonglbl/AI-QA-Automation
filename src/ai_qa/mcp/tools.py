@@ -9,7 +9,8 @@ This module provides:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -99,7 +100,7 @@ class CachedTool:
     """Internal cache entry for a tool."""
 
     tool: Tool
-    cached_at: float = field(default_factory=time.time)
+    cached_at: float
 
 
 class ToolCache:
@@ -108,13 +109,16 @@ class ToolCache:
     Provides TTL-based caching to avoid repeated tool discovery calls.
     """
 
-    def __init__(self, ttl_seconds: float = 300.0) -> None:
+    def __init__(self, ttl_seconds: float = 300.0, clock: Callable[[], float] = time.time) -> None:
         """Initialize cache.
 
         Args:
             ttl_seconds: Time-to-live for cached entries (default 5 minutes)
+            clock: Callable returning the current time as a float (default time.time).
+                   Inject a fake clock in tests for deterministic TTL behaviour.
         """
         self._ttl = ttl_seconds
+        self._clock = clock
         self._cache: dict[str, CachedTool] = {}
 
     def get(self, name: str) -> Tool | None:
@@ -130,7 +134,7 @@ class ToolCache:
             return None
 
         cached = self._cache[name]
-        if time.time() - cached.cached_at > self._ttl:
+        if self._clock() - cached.cached_at > self._ttl:
             del self._cache[name]
             return None
 
@@ -142,7 +146,7 @@ class ToolCache:
         Args:
             tool: Tool to cache
         """
-        self._cache[tool.name] = CachedTool(tool=tool)
+        self._cache[tool.name] = CachedTool(tool=tool, cached_at=self._clock())
 
     def set_many(self, tools: list[Tool]) -> None:
         """Cache multiple tools."""
@@ -159,7 +163,7 @@ class ToolCache:
 
     def invalidate_expired(self) -> int:
         """Remove expired entries, return count of removed items."""
-        now = time.time()
+        now = self._clock()
         expired = [
             name for name, cached in self._cache.items() if now - cached.cached_at > self._ttl
         ]

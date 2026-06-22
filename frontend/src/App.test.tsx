@@ -463,7 +463,7 @@ describe("Bob confirm parent URL popup", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByText(/Browser Use Cloud/i));
     fireEvent.change(
-      screen.getByPlaceholderText("Enter your Browser Use API key..."),
+      screen.getByPlaceholderText(/personal API key/i),
       {
         target: { value: "test-key" },
       },
@@ -501,12 +501,12 @@ describe("Bob confirm parent URL popup", () => {
     // Verify popup appears with correct suggested URL
     expect(
       await screen.findByText(
-        /I found the below link contains all requirements/i,
+        /I found the link below with all the requirements/i,
       ),
     ).toBeInTheDocument();
 
     const input = screen.getByPlaceholderText(
-      "Enter the correct page URL...",
+      /Enter a parent page URL, or leave blank to skip/i,
     ) as HTMLInputElement;
     expect(input.value).toBe(
       "https://test.atlassian.net/wiki/spaces/TEST/pages/123/Requirements",
@@ -537,6 +537,128 @@ describe("Bob confirm parent URL popup", () => {
     expect((sent.data as Record<string, unknown>).confirmed_page_name).toBe(
       "https://test.atlassian.net/wiki/spaces/TEST/pages/999/New",
     );
+  });
+
+  it("sends a skip action when the parent link is left blank", async () => {
+    mockFetchForUser([project]);
+    websocketMock.isConnectedOverride = true;
+
+    const { rerender } = renderApp();
+
+    expect(
+      await screen.findByText(/Which AI provider would you like to use/i),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/Browser Use Cloud/i));
+    fireEvent.change(screen.getByPlaceholderText(/personal API key/i), {
+      target: { value: "test-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    pipelineStateMock.currentStep = 2;
+    pipelineStateMock.status = "review_request";
+    websocketMock.messageQueue = [
+      ...websocketMock.messageQueue,
+      {
+        id: "msg-skip-1",
+        sender: "agent",
+        agentName: "Bob",
+        metadata: {
+          is_confirm_parent: true,
+          suggested_page:
+            "https://test.atlassian.net/wiki/spaces/TEST/pages/123/Requirements",
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    rerender(
+      <AuthProvider>
+        <ProjectProvider>
+          <App />
+        </ProjectProvider>
+      </AuthProvider>,
+    );
+
+    // With a suggested page present, the button still reads OK. Clear the field
+    // so it becomes a Skip action, then click it.
+    const input = (await screen.findByPlaceholderText(
+      /Enter a parent page URL, or leave blank to skip/i,
+    )) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+
+    await waitFor(() => {
+      const last = websocketMock.sentMessages[
+        websocketMock.sentMessages.length - 1
+      ] as Record<string, unknown>;
+      expect(last?.type).toBe("approve");
+    });
+    const sent = websocketMock.sentMessages[
+      websocketMock.sentMessages.length - 1
+    ] as Record<string, unknown>;
+    expect(sent.step).toBe(2);
+    expect((sent.data as Record<string, unknown>).action).toBe("skip");
+    expect((sent.data as Record<string, unknown>).confirmed_page_name).toBeUndefined();
+  });
+});
+
+describe("provider selection persists a restorable, secret-free marker", () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+    vi.restoreAllMocks();
+    websocketMock.projectIds = [];
+    websocketMock.threadIds = [];
+    websocketMock.sentMessages = [];
+    websocketMock.messageQueue = [];
+    websocketMock.messages = [];
+    websocketMock.isLoaded = true;
+    websocketMock.isConnectedOverride = true;
+    pipelineStateMock.currentStep = 1;
+    pipelineStateMock.status = "idle";
+    pipelineStateMock.messages = [];
+    pipelineStateMock.isLoaded = true;
+    // Fresh spy so we can assert exactly what was persisted this test.
+    pipelineStateMock.addUserMessage = vi.fn();
+    threadMock.existing = [];
+    threadMock.created = [];
+    threadMock.postedProjectIds = [];
+    threadMock.postCount = 0;
+  });
+
+  it("records a provider_selection marker (id + name, no credentials) on select", async () => {
+    mockFetchForUser([project]);
+
+    renderApp();
+
+    expect(
+      await screen.findByText(/Which AI provider would you like to use/i),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/Browser Use Cloud/i));
+    fireEvent.change(screen.getByPlaceholderText(/personal API key/i), {
+      target: { value: "super-secret-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => {
+      expect(pipelineStateMock.addUserMessage).toHaveBeenCalledWith(
+        expect.stringContaining("Browser Use Cloud"),
+        "info",
+        expect.objectContaining({
+          type: "provider_selection",
+          providerId: "browser-use-cloud",
+          providerName: "Browser Use Cloud",
+        }),
+      );
+    });
+
+    // The marker must never carry the credentials (no secret leakage into history).
+    const markerCall = pipelineStateMock.addUserMessage.mock.calls.find(
+      (c: unknown[]) =>
+        (c[2] as { type?: string } | undefined)?.type === "provider_selection",
+    );
+    expect(markerCall?.[2]).not.toHaveProperty("credentials");
+    expect(JSON.stringify(markerCall)).not.toContain("super-secret-key");
   });
 });
 

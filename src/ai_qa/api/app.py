@@ -17,10 +17,14 @@ from ai_qa.agents import AliceAgent
 from ai_qa.api.admin import router as admin_router
 from ai_qa.api.artifacts import router as artifacts_router
 from ai_qa.api.auth import AuthMiddleware, get_auth_router
+from ai_qa.api.claude_sso import router as claude_sso_router
+from ai_qa.api.executions import router as executions_router
 from ai_qa.api.projects import router as projects_router
+from ai_qa.api.projects_admin import router as projects_admin_router
 from ai_qa.api.routes import register_agent
 from ai_qa.api.routes import router as api_router
 from ai_qa.api.secrets import router as secrets_router
+from ai_qa.api.sessions import router as sessions_router
 from ai_qa.api.threads import router as threads_router
 from ai_qa.api.websocket import websocket_endpoint
 from ai_qa.config import AppSettings
@@ -42,7 +46,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         settings = AppSettings()
 
     @asynccontextmanager
-    async def lifespan(app_inst: FastAPI) -> AsyncGenerator[None, None]:
+    async def lifespan(app_inst: FastAPI) -> AsyncGenerator[None]:
         # Ensure SeaweedFS bucket exists
         try:
             import boto3
@@ -71,6 +75,33 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             import logging
 
             logging.warning(f"Failed to initialize SeaweedFS bucket on startup: {e}")
+
+        # Recover work orphaned by a previous process that died mid-run (uvicorn
+        # --reload restart, crash, OOM, kill): in-flight pipeline tasks are killed by
+        # process death with no exception, leaving threads stuck "processing" (endless
+        # UI spinner) and agent_runs "running". Reset them so the UI can recover.
+        # Resilient like the SeaweedFS init above — a failure must never block startup.
+        try:
+            import logging
+
+            from ai_qa.db.session import create_session_factory
+            from ai_qa.threads.service import ThreadService
+
+            session = create_session_factory(settings)()
+            try:
+                threads_reset, runs_reset = ThreadService(session).reconcile_interrupted_work()
+                if threads_reset or runs_reset:
+                    logging.getLogger(__name__).info(
+                        "Startup reconciliation: reset %d interrupted thread(s) and %d run(s)",
+                        threads_reset,
+                        runs_reset,
+                    )
+            finally:
+                session.close()
+        except Exception as e:
+            import logging
+
+            logging.warning(f"Failed to reconcile interrupted runs on startup: {e}")
         yield
 
     app = FastAPI(
@@ -113,10 +144,14 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     # REST API routes (protected by auth middleware)
     app.include_router(api_router, prefix="/api")
     app.include_router(projects_router, prefix="/api")
+    app.include_router(projects_admin_router, prefix="/api")
+    app.include_router(sessions_router, prefix="/api")
+    app.include_router(executions_router, prefix="/api")
     app.include_router(artifacts_router, prefix="/api")
     app.include_router(admin_router, prefix="/api")
     app.include_router(threads_router, prefix="/api")
     app.include_router(secrets_router, prefix="/api")
+    app.include_router(claude_sso_router, prefix="/api")
 
     # WebSocket endpoint (protected by auth middleware)
     app.add_api_websocket_route("/ws", websocket_endpoint)
@@ -128,11 +163,12 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     # Register agents as templates
     # Per-user instances are created on-demand in routes.py via _get_agent_for_user
-    from ai_qa.agents import BobAgent, MaryAgent, SarahAgent
+    from ai_qa.agents import BobAgent, JackAgent, MaryAgent, SarahAgent
 
     register_agent(AliceAgent())
     register_agent(BobAgent())
     register_agent(MaryAgent())
     register_agent(SarahAgent())
+    register_agent(JackAgent())
 
     return app

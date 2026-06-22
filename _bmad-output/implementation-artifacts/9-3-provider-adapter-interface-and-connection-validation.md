@@ -193,7 +193,7 @@ resolve_base_url(settings, provider_id) -> str   # reads AppSettings only
 
 ### Latest Tech Information
 
-- **No new dependencies.** Uses already-pinned `httpx` (async client, `verify`, `follow_redirects`, `timeout`), `pydantic`/`pydantic-settings>=2.4` (BaseModel + `ConfigDict`), `langchain`/`langchain-openai` (only if an adapter chooses a langchain-based probe — prefer a direct httpx call for a lightweight validation). Python 3.12+, `uv`, `ruff` (target py312, line-length 100), `mypy strict`.
+- **No new dependencies.** Uses already-pinned `httpx` (async client, `verify`, `follow_redirects`, `timeout`), `pydantic`/`pydantic-settings>=2.4` (BaseModel + `ConfigDict`), `langchain`/`langchain-openai` (only if an adapter chooses a langchain-based probe — prefer a direct httpx call for a lightweight validation). Python 3.14+, `uv`, `ruff` (target py314, line-length 100), `mypy strict`.
 - httpx async error taxonomy to map in `validate_connection`: `httpx.ConnectError`/`httpx.ConnectTimeout`/`httpx.ReadTimeout` → `unreachable`; a `Response` with `401/403` → `auth`; `>=500` or unexpected `4xx`/non-JSON → `provider_error`. Catch `httpx.HTTPError` broadly for the network family; never let the raw exception text reach `ConnectionResult.message`.
 - OpenAI-compatible model listing remains `GET {base_url}/v1/models` (Bearer auth). Anthropic uses `x-api-key` + `anthropic-version` headers (no Bearer); keep that provider-specific detail inside the Claude adapter, not in shared code.
 

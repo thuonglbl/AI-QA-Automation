@@ -13,6 +13,7 @@ from ai_qa.secrets import (
     PROVIDER_SECRET_TYPE_MAP,
     SECRET_TYPE_BROWSER_USE,
     SECRET_TYPE_CLAUDE,
+    SECRET_TYPE_CLAUDE_SSO,
     SECRET_TYPE_GEMINI,
     SECRET_TYPE_MCP,
     SECRET_TYPE_ON_PREMISES,
@@ -24,6 +25,8 @@ from ai_qa.secrets import (
 _ALIAS_EXPECTATIONS = [
     ("claude", SECRET_TYPE_CLAUDE),
     ("anthropic", SECRET_TYPE_CLAUDE),
+    ("claude-sso", SECRET_TYPE_CLAUDE_SSO),
+    ("claude_sso", SECRET_TYPE_CLAUDE_SSO),
     ("openai", SECRET_TYPE_OPENAI),
     ("gemini", SECRET_TYPE_GEMINI),
     ("google", SECRET_TYPE_GEMINI),
@@ -49,6 +52,7 @@ class TestCanonicalConstants:
         """Every canonical type must be the target of at least one alias."""
         canonical = {
             SECRET_TYPE_CLAUDE,
+            SECRET_TYPE_CLAUDE_SSO,
             SECRET_TYPE_OPENAI,
             SECRET_TYPE_GEMINI,
             SECRET_TYPE_BROWSER_USE,

@@ -5,6 +5,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { MermaidDiagram } from "@/components/artifacts/MermaidDiagram";
 
 interface ReviewContentProps {
   content: string;
@@ -35,6 +36,11 @@ export function ReviewContent({ content, className }: ReviewContentProps) {
       ...props
     }: CodeComponentProps) => {
       const match = /language-(\w+)/.exec(codeClassName || "");
+      // D1 (Story 10-3): Additive Mermaid branch — render diagram instead of highlighted text.
+      // All other languages keep the existing Prism path unchanged.
+      if (!inline && match && match[1] === "mermaid") {
+        return <MermaidDiagram chart={String(children).replace(/\n$/, "")} />;
+      }
       return !inline && match ? (
         <SyntaxHighlighter
           {...props}

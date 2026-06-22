@@ -336,3 +336,48 @@ async def test_no_llm_calls_made(mock_adapter: MagicMock, test_page: ConfluenceP
         parser = ContentParser(mock_adapter)
         await parser.parse(test_page)
         mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Story 11.3 — RequirementFormatter.convert_markdown (no image re-fetch)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_convert_markdown_calls_format_story_without_image_refetch() -> None:
+    """Task 6.6: convert_markdown feeds markdown to _format_story; no httpx client opened."""
+    from datetime import UTC, datetime
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from ai_qa.ai_connection.client import LLMClient
+    from ai_qa.pipelines.requirement_formatter import RequirementFormatter
+
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_response = MagicMock()
+    mock_response.content = "# Formatted Story"
+    mock_llm._chat_model = MagicMock()
+    mock_llm._chat_model.ainvoke = AsyncMock(return_value=mock_response)
+
+    formatter = RequirementFormatter(mock_llm)
+
+    page = ConfluencePage(
+        page_id="p1",
+        title="My Page",
+        content="<p>Original HTML — must NOT be re-parsed</p>",
+        space_key="TEST",
+        url="https://confluence.example.com/p1",
+        retrieved_at=datetime.now(UTC),
+        labels=[],
+    )
+    clean_md = "# My Page\n\n| Col A | Col B |\n| --- | --- |\n| 1 | 2 |"
+
+    with patch("httpx.AsyncClient") as mock_httpx:
+        result = await formatter.convert_markdown(page, clean_md)
+
+    # No httpx client was instantiated — images must not be re-fetched
+    mock_httpx.assert_not_called()
+
+    # The LLM was invoked exactly once (via _format_story)
+    mock_llm._chat_model.ainvoke.assert_called_once()
+
+    assert result == "# Formatted Story"

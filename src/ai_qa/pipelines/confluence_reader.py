@@ -22,6 +22,67 @@ from ai_qa.pipelines.models import ConfluencePage, PageSummary
 DEFAULT_PAGE_LIMIT = 100
 DEFAULT_MAX_CONCURRENT_REQUESTS = 5
 
+
+def _extract_parent_id(page_data: dict[str, Any], fallback_root_id: str | None) -> str | None:
+    """Best-effort immediate-parent page id from a Confluence search result.
+
+    Tries the ``ancestors`` chain (its last entry is the immediate parent — only
+    present when the search was expanded with ``ancestors``), then ``parentId`` /
+    ``parent.id``. Falls back to *fallback_root_id* so a page whose parent can't
+    be resolved still nests under the extraction root rather than floating at the
+    top level. Returns None only when there is no fallback (i.e. the root itself).
+    """
+    ancestors = page_data.get("ancestors")
+    if isinstance(ancestors, list) and ancestors:
+        last = ancestors[-1]
+        if isinstance(last, dict):
+            pid = str(last.get("id") or "")
+            if pid:
+                return pid
+    parent_id = page_data.get("parentId") or page_data.get("parent_id")
+    if parent_id:
+        return str(parent_id)
+    parent = page_data.get("parent")
+    if isinstance(parent, dict):
+        pid = str(parent.get("id") or "")
+        if pid:
+            return pid
+    return fallback_root_id
+
+
+def _resolve_page_url(base_url: str | None, page_data: Any, page_id: str) -> str:
+    """Resolve a usable Confluence page URL without double-appending ``/pages/{id}``.
+
+    Prefers the server's own link (top-level ``url`` or ``_links.webui``). Otherwise
+    builds ``{site_root}/pages/{id}`` from the **site root** (scheme://host) derived
+    from the configured base URL — never from the raw base, which may itself already
+    be a full page URL (``.../pages/{id}/Title``). Deriving the site root is what
+    prevents the duplicated ``/pages/{id}`` segment.
+    """
+    if isinstance(page_data, dict):
+        direct = page_data.get("url")
+        if direct:
+            return str(direct)
+        links = page_data.get("_links")
+        webui = ""
+        if isinstance(links, dict):
+            webui = str(links.get("webui") or links.get("tinyui") or "")
+    else:
+        webui = ""
+
+    site_root = ""
+    if base_url:
+        parsed = urlparse(base_url if "://" in base_url else f"https://{base_url}")
+        if parsed.scheme and parsed.netloc:
+            site_root = f"{parsed.scheme}://{parsed.netloc}"
+
+    if webui:
+        return f"{site_root}{webui}" if site_root and webui.startswith("/") else webui
+    if site_root:
+        return f"{site_root}/pages/{page_id}"
+    return ""
+
+
 # Compiled regex patterns for URL parsing
 _CLOUD_PAGE_ID_RE = re.compile(r"/wiki/spaces/[^/]+/pages/(\d+)")
 _VIEWPAGE_ID_RE = re.compile(r"/pages/viewpage\.action.*pageId=(\d+)")
@@ -240,12 +301,15 @@ class ConfluenceReader:
         ...     print(page.title)
     """
 
-    # Expected MCP tools for Confluence operations
+    # Required MCP tools for Confluence operations. Only the tools the extraction
+    # flow actually invokes are listed — get_page (read_page / read_page_by_id) and
+    # search (children / descendants / parent-page lookups). get_page_by_title and
+    # get_space were never called by any method, yet the real MCP server does not
+    # expose them, so requiring them made check_tool_availability falsely block
+    # extraction even though the needed tools (get_page, search) were present.
     CONFLUENCE_TOOLS = [
         "confluence_get_page",  # Get single page by ID
-        "confluence_get_page_by_title",  # Get page by title
-        "confluence_search",  # Search pages
-        "confluence_get_space",  # Get space details
+        "confluence_search",  # Search pages / children / descendants / parent lookup
     ]
 
     def __init__(
@@ -279,6 +343,19 @@ class ConfluenceReader:
     def _get_tool_name(self, base_name: str) -> str:
         """Get the full tool name including any configured prefix."""
         return f"{self._tool_prefix}{base_name}"
+
+    async def check_tool_availability(self) -> list[str]:
+        """Return names of required Confluence tools absent from the MCP server.
+
+        Returns:
+            List of missing tool names; empty list means all tools are present.
+
+        Raises:
+            MCPConnectionError: If list_tools() cannot reach the MCP server.
+            MCPAuthenticationError: If authentication with the MCP server fails.
+        """
+        prefixed = [self._get_tool_name(t) for t in self.CONFLUENCE_TOOLS]
+        return await self._mcp_client.check_required_tools(prefixed)
 
     async def read_page(self, page_url: str) -> StageResult:
         """Read a single Confluence page.
@@ -334,7 +411,9 @@ class ConfluenceReader:
             tool_result = await self._mcp_client.call_tool(
                 self._get_tool_name("confluence_get_page"),
                 {
-                    "page_id": page_id,
+                    # The internal MCP server expects the camelCase "pageId" parameter;
+                    # snake_case "page_id" is rejected ("Unknown parameter: page_id").
+                    "pageId": page_id,
                     "format": "view",
                     "userPrompt": "User initiated a story creation workflow from a Confluence page link.",
                     "llmReasoning": "Need to extract the content of the provided Confluence page to fulfill the user's request.",
@@ -501,7 +580,9 @@ class ConfluenceReader:
             tool_result = await self._mcp_client.call_tool(
                 self._get_tool_name("confluence_get_page"),
                 {
-                    "page_id": page_id,
+                    # The internal MCP server expects the camelCase "pageId" parameter;
+                    # snake_case "page_id" is rejected ("Unknown parameter: page_id").
+                    "pageId": page_id,
                     "format": "view",
                     "userPrompt": "User initiated a story creation workflow from a Confluence page link.",
                     "llmReasoning": "Need to extract the content of the provided Confluence page to fulfill the user's request.",
@@ -580,12 +661,7 @@ class ConfluenceReader:
                 title=_safe_get(page_data, "title", "Untitled"),
                 content=content,
                 space_key=space_key,
-                url=_safe_get(page_data, "url", "")
-                or (
-                    f"{self._confluence_base_url}/pages/{page_id}"
-                    if self._confluence_base_url
-                    else ""
-                ),
+                url=_resolve_page_url(self._confluence_base_url, page_data, page_id),
                 retrieved_at=datetime.now(UTC),
                 author=_safe_get(_safe_get(page_data, "author", {}), "displayName")
                 if isinstance(_safe_get(page_data, "author"), dict)
@@ -657,6 +733,10 @@ class ConfluenceReader:
                 {
                     "cql": cql,
                     "limit": 50,
+                    # NOTE: do NOT pass an "expand" param — the MCP confluence_search
+                    # tool rejects unknown params ("Unknown parameter: expand") and
+                    # fails the whole search. Parent ids are read from whatever the
+                    # response already includes (ancestors/parentId), else the root.
                     "userPrompt": "User initiated a story creation workflow that requires reading all children pages of a Confluence page.",
                     "llmReasoning": "Need to search for child pages to recursively process all documentation linked to the parent page.",
                 },
@@ -702,7 +782,13 @@ class ConfluenceReader:
                     if self._confluence_base_url and child_id
                     else ""
                 )
-                summaries.append(PageSummary(page_id=child_id, title=title, url=url))
+                # The search is rooted at page_id; default each result's parent to
+                # that root so even un-expandable servers yield a clean root→children
+                # tree, while ancestors (when present) give the true deeper parent.
+                parent_id = _extract_parent_id(child, page_id)
+                summaries.append(
+                    PageSummary(page_id=child_id, title=title, url=url, parent_id=parent_id)
+                )
 
             return StageResult(
                 success=True,
@@ -997,6 +1083,9 @@ class ConfluenceReader:
                     "cql": f"space = {space_key} AND type = page AND ancestor IN ({parent_id})",
                     "limit": DEFAULT_PAGE_LIMIT,
                     "start": desc_start,
+                    # NOTE: no "expand" param — confluence_search rejects unknown
+                    # params and would fail the search. Parent ids come from the
+                    # response when present, else fall back to the root.
                 },
             )
 
@@ -1037,11 +1126,17 @@ class ConfluenceReader:
             if page_url and self._confluence_base_url:
                 page_url = f"{self._confluence_base_url}{page_url}"
 
+            # The root (the searched parent) has no parent in this tree; every other
+            # page falls back to the root when its own parent can't be resolved.
+            summary_parent = (
+                None if page_id == parent_id else _extract_parent_id(page_data, parent_id)
+            )
             summary = PageSummary(
                 page_id=page_id,
                 title=page_data.get("title", "Untitled"),
                 url=page_url,
                 last_modified=None,
+                parent_id=summary_parent,
             )
             summaries.append(summary)
 

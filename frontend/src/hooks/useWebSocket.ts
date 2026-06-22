@@ -155,8 +155,16 @@ export function useWebSocket(params: {
             return;
           }
 
-          // Handle AgentMessage type
-          if (data.sender && data.content && data.timestamp) {
+          // Handle AgentMessage type. Most AgentMessages carry non-empty content,
+          // but some are pure-metadata carriers sent with content="" (e.g. Alice's
+          // provider_options panel renders entirely from metadata). Keep those when
+          // they carry a metadata.type, so the chat can still read their timestamp
+          // (the empty-content chat-render filter in App still hides the bubble).
+          if (
+            data.sender &&
+            data.timestamp &&
+            (data.content || data.metadata?.type)
+          ) {
             const agentMsg = data as AgentMessage;
             setLastMessage(agentMsg);
             setMessageQueue((prev) => [...prev, agentMsg]);

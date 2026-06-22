@@ -6,7 +6,7 @@ Models for pipeline stage inputs and outputs.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -38,6 +38,55 @@ class ConfluencePage(BaseModel):
     author: str | None = Field(default=None, description="Page author")
     version: int | None = Field(default=None, description="Page version number")
     labels: list[str] = Field(default_factory=list, description="List of page labels/tags")
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def validate_retrieved_at_timezone(cls, v: datetime) -> datetime:
+        """Ensure retrieved_at is timezone-aware."""
+        if v.tzinfo is None:
+            raise ValueError("retrieved_at must be timezone-aware")
+        return v
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return self.model_dump(mode="json")
+
+
+class JiraIssue(BaseModel):
+    """Represents a retrieved Jira issue.
+
+    Attributes:
+        issue_key: Issue key (e.g. "PROJ-123")
+        summary: Issue summary/title
+        description: Issue description body
+        acceptance_criteria: Acceptance criteria text (from description or custom field)
+        status: Issue status name
+        labels: List of issue labels
+        project_key: Jira project key
+        url: Direct URL to the issue in Jira
+        retrieved_at: ISO 8601 timestamp when issue was retrieved
+        issue_type: Issue type name (e.g. "Story", "Bug")
+        reporter: Display name of reporter
+        assignee: Display name of assignee
+    """
+
+    issue_key: str = Field(description="Jira issue key (e.g. 'PROJ-123')")
+    summary: str = Field(description="Issue summary/title")
+    description: str | None = Field(default=None, description="Issue description body")
+    acceptance_criteria: str | None = Field(default=None, description="Acceptance criteria text")
+    status: str | None = Field(default=None, description="Issue status name")
+    labels: list[str] = Field(default_factory=list, description="List of issue labels")
+    project_key: str = Field(description="Jira project key")
+    url: str = Field(description="Direct URL to the issue in Jira")
+    retrieved_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="ISO 8601 timestamp when issue was retrieved",
+    )
+    issue_type: str | None = Field(default=None, description="Issue type name")
+    reporter: str | None = Field(default=None, description="Display name of reporter")
+    assignee: str | None = Field(default=None, description="Display name of assignee")
 
     model_config = ConfigDict(validate_assignment=True)
 
@@ -97,6 +146,31 @@ class ParsedContent(BaseModel):
         return self.model_dump(mode="json")
 
 
+QualityCategory = Literal[
+    "unsupported_content",
+    "missing_expected_results",
+    "missing_preconditions",
+    "vague_language",
+    "ambiguous_ui_reference",
+    "insufficient_content",
+]
+
+
+class QualityIssue(BaseModel):
+    """A single detected quality issue on a source requirement page."""
+
+    category: QualityCategory
+    location: str
+    message: str
+    impact: str
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return self.model_dump(mode="json")
+
+
 class PageSummary(BaseModel):
     """Summary for page listing operations.
 
@@ -113,6 +187,9 @@ class PageSummary(BaseModel):
     title: str = Field(description="Page title")
     url: str = Field(description="Full page URL")
     last_modified: datetime | None = Field(default=None, description="When page was last modified")
+    parent_id: str | None = Field(
+        default=None, description="Immediate parent page id (for hierarchy), None for the root"
+    )
 
     model_config = ConfigDict(validate_assignment=True)
 

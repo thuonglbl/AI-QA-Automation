@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -73,7 +74,7 @@ class TestBrowserAgentNavigation:
         """Test successful navigation."""
         agent = BrowserAgent(chrome_path=mock_chrome_path, timeout=30)
         await agent.navigate("https://example.com")
-        agent.agent.navigate.assert_called_once_with("https://example.com")
+        cast(MagicMock, agent.agent).navigate.assert_called_once_with("https://example.com")
 
     @pytest.mark.asyncio
     async def test_navigate_timeout(self, mock_chrome_path: str, mock_browser_use_agent):

@@ -1,7 +1,30 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { ProviderSelector } from "../ProviderSelector";
 import type { ProviderOption } from "@/types/provider";
+import { AuthContext } from "@/contexts/AuthContext";
+import type { AuthUser } from "@/lib/auth";
+
+/** Render under an AuthContext with a fixed timezone so MessageTime formats deterministically. */
+function renderWithTz(tz: string, ui: ReactNode) {
+  const user: AuthUser = { email: "t@e.vn", name: "T", timezone: tz };
+  return render(
+    <AuthContext.Provider
+      value={{
+        isAuthenticated: true,
+        user,
+        isLoading: false,
+        error: null,
+        logout: async () => {},
+        refresh: async () => {},
+        setAuthStatus: () => {},
+      }}
+    >
+      {ui}
+    </AuthContext.Provider>,
+  );
+}
 
 const mockProviders: ProviderOption[] = [
   {
@@ -49,8 +72,10 @@ describe("ProviderSelector", () => {
     // Click on Claude provider
     fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
 
-    // Should show credential form
-    expect(screen.getByPlaceholderText(/Enter API Key/i)).toBeInTheDocument();
+    // Personal providers prompt for a personal API key.
+    expect(
+      screen.getByPlaceholderText(/personal API key/i),
+    ).toBeInTheDocument();
   });
 
   it("shows credential fields for on-premises provider", () => {
@@ -59,31 +84,129 @@ describe("ProviderSelector", () => {
     // Click on On-Premises provider
     fireEvent.click(screen.getByText(/On-Premises LLM/));
 
-    // Should show API key field
-    expect(screen.getByPlaceholderText(/Enter API Key/i)).toBeInTheDocument();
+    // On-Premises prompts for the company API key.
+    expect(
+      screen.getByPlaceholderText(/company API key/i),
+    ).toBeInTheDocument();
   });
 
-  it("shows 'key on file' hint when api_key_configured is true (Task 10 — no pre-fill)", () => {
-    const onPremDefaults = {
-      api_key_configured: true,
-    };
+  it("renders a Login SSO button (not credential inputs) for an SSO provider", () => {
+    const ssoProviders: ProviderOption[] = [
+      {
+        id: "claude-sso",
+        name: "Anthropic / Claude (SSO)",
+        description: "Cloud · Enterprise SSO login",
+        qualityRank: 2,
+        securityLevel: "enterprise",
+        authMethod: "sso",
+        credentialFields: [],
+      },
+    ];
+    render(<ProviderSelector options={ssoProviders} onSelect={vi.fn()} />);
 
+    fireEvent.click(screen.getByTestId("provider-card-claude-sso"));
+
+    expect(screen.getByTestId("sso-login-button")).toBeInTheDocument();
+    expect(screen.getByTestId("sso-login-button")).toHaveTextContent(/Login SSO/i);
+    // SSO providers must NOT show the api-key text input.
+    expect(
+      screen.queryByTestId("credential-input-api_key"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("never pre-fills the on-prem api_key value when the form is shown (Task 10)", () => {
+    // No configuredProviders → on-prem shows the form instead of auto-connecting.
     render(
       <ProviderSelector
         options={mockProviders}
-        onPremDefaults={onPremDefaults}
+        onPremDefaults={{ api_key_configured: true }}
         onSelect={vi.fn()}
       />,
     );
 
-    // Click on On-Premises provider
     fireEvent.click(screen.getByText(/On-Premises LLM/));
 
-    // Should show "Key on file" placeholder, NOT pre-fill the value
+    // Company-key prompt, and the value is NEVER pre-filled.
     const apiKeyInput = screen.getByPlaceholderText(
-      /Key on file/i,
+      /company API key/i,
     ) as HTMLInputElement;
     expect(apiKeyInput.value).toBe("");
+  });
+
+  it("auto-connects (no prompt) when a key is already on file", () => {
+    const onSelect = vi.fn();
+    render(
+      <ProviderSelector
+        options={mockProviders}
+        onSelect={onSelect}
+        configuredProviders={["claude"]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
+
+    // Clicking immediately connects with the stored key (blank credentials) — no
+    // typing, no Start click. (The parent then swaps in the read-only view.)
+    expect(onSelect).toHaveBeenCalledWith("claude", {});
+  });
+
+  it("does NOT auto-connect a provider with no key on file (shows the prompt)", () => {
+    const onSelect = vi.fn();
+    render(
+      <ProviderSelector
+        options={mockProviders}
+        onSelect={onSelect}
+        configuredProviders={["on-premises"]}
+      />,
+    );
+
+    // Claude has no key on file → prompt shown, onSelect not called on click.
+    fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByTestId("credential-input-api_key")).toBeInTheDocument();
+  });
+
+  it("re-prompts with the invalid-key placeholder when a stored key failed", () => {
+    const onSelect = vi.fn();
+    render(
+      <ProviderSelector
+        options={mockProviders}
+        onSelect={onSelect}
+        configuredProviders={["claude"]}
+        invalidProvider="claude"
+      />,
+    );
+
+    // The failed provider is auto-selected and shows the input (no auto-connect),
+    // with the "invalid key" placeholder.
+    expect(
+      screen.getByPlaceholderText(/invalid.*Please input a new one/i),
+    ).toBeInTheDocument();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("clears the stale key on a repeat failure of the same provider", () => {
+    const props = {
+      options: mockProviders,
+      onSelect: vi.fn(),
+      configuredProviders: ["claude"],
+      invalidProvider: "claude",
+    };
+    const { rerender } = render(<ProviderSelector {...props} invalidAttempt={1} />);
+
+    // User retypes a (still wrong) key.
+    const input = screen.getByPlaceholderText(
+      /invalid.*Please input a new one/i,
+    ) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "still-bad-key" } });
+    expect(input.value).toBe("still-bad-key");
+
+    // Same provider fails again → bumped attempt re-clears the input even though
+    // invalidProvider is unchanged.
+    rerender(<ProviderSelector {...props} invalidAttempt={2} />);
+    expect(
+      (screen.getByPlaceholderText(/invalid/i) as HTMLInputElement).value,
+    ).toBe("");
   });
 
   it("validates required fields before submitting", async () => {
@@ -115,7 +238,7 @@ describe("ProviderSelector", () => {
     fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
 
     // Enter API key
-    const apiKeyInput = screen.getByPlaceholderText(/Enter API Key/i);
+    const apiKeyInput = screen.getByPlaceholderText(/personal API key/i);
     fireEvent.change(apiKeyInput, { target: { value: "my-api-key-12345" } });
 
     // Click start
@@ -204,7 +327,7 @@ describe("ProviderSelector", () => {
 
     // Click Claude
     fireEvent.click(claudeCard);
-    expect(screen.getByPlaceholderText(/Enter API Key/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/personal API key/i)).toBeInTheDocument();
   });
 
   it("allows clicking provider when enabledProviders is undefined (backward compat)", () => {
@@ -223,7 +346,7 @@ describe("ProviderSelector", () => {
     fireEvent.click(claudeCard);
 
     // Credential form should appear
-    expect(screen.getByPlaceholderText(/Enter API Key/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/personal API key/i)).toBeInTheDocument();
   });
 
   it("applies disabled styling when both disabled prop and enabledProviders restrict", () => {
@@ -298,5 +421,58 @@ describe("ProviderSelector", () => {
     // Browser Use should be enabled
     const browserCard = screen.getByText(/Browser Use/).closest("div.border");
     expect(browserCard).not.toHaveClass("opacity-40");
+  });
+
+  it("renders the Alice prompt time from messageTimestamp (user timezone)", () => {
+    renderWithTz(
+      "UTC",
+      <ProviderSelector
+        options={mockProviders}
+        onSelect={vi.fn()}
+        messageTimestamp="2026-04-16T10:00:00Z"
+      />,
+    );
+
+    // No selection yet → only the Alice prompt card is shown, so its time is unique.
+    const aliceTime = screen.getByText("10:00:00");
+    expect(aliceTime).toBeInTheDocument();
+    expect(aliceTime).toHaveAttribute("title");
+  });
+
+  it('renders the submitted-selection time beside the "You" header', () => {
+    renderWithTz(
+      "UTC",
+      <ProviderSelector
+        options={mockProviders}
+        onSelect={vi.fn()}
+        submittedSelection={{
+          providerId: "claude",
+          providerName: "Claude (Anthropic)",
+          credentials: { api_key: "secret" },
+        }}
+        selectionTimestamp="2026-04-16T10:05:00Z"
+      />,
+    );
+
+    const youTime = screen.getByText("10:05:00");
+    expect(youTime).toBeInTheDocument();
+    expect(youTime).toHaveAttribute("title");
+  });
+
+  it("falls back to a client time on the Alice and You labels when no timestamp is provided", () => {
+    // Every sender-labeled bubble must always show an hh:mm:ss; with no backing
+    // timestamp, MessageTime's fallbackToNow stamps a frozen client time instead of
+    // rendering nothing. After picking a provider, both the Alice prompt and the
+    // "You" credential card show a time.
+    renderWithTz(
+      "UTC",
+      <ProviderSelector options={mockProviders} onSelect={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
+
+    expect(screen.getByText("You")).toBeInTheDocument();
+    const times = screen.getAllByText(/^\d{2}:\d{2}:\d{2}$/);
+    expect(times.length).toBe(2);
   });
 });

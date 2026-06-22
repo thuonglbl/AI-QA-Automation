@@ -294,7 +294,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettin
 - `uv sync` works correctly; use it after modifying `pyproject.toml`
 - `uvx ruff check .` must pass after implementation — run before marking done
 - mypy strict mode is configured but `uv add --dev mypy` not yet run (will be in Story 1.5)
-- pyproject.toml uses Hatchling, Ruff (py312, line-length 100), mypy (strict)
+- pyproject.toml uses Hatchling, Ruff (py314, line-length 100), mypy (strict)
 
 ---
 

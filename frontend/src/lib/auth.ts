@@ -9,6 +9,8 @@ export interface AuthUser {
   familyName?: string;
   role?: string;
   is_active?: boolean;
+  /** IANA timezone (set by admin at user creation); used to format message times. */
+  timezone?: string;
 }
 
 export interface AuthStatus {
@@ -21,6 +23,7 @@ interface AuthStatusResponse {
   email?: string;
   name?: string;
   role?: string;
+  timezone?: string;
 }
 
 interface AuthProfileResponse {
@@ -33,6 +36,7 @@ interface AuthProfileResponse {
   family_name?: string;
   role?: string;
   is_active?: boolean;
+  timezone?: string;
 }
 
 export function normalizeUser(
@@ -49,6 +53,7 @@ export function normalizeUser(
     familyName: "family_name" in data ? data.family_name : undefined,
     role: data.role,
     is_active: "is_active" in data ? data.is_active : undefined,
+    timezone: data.timezone,
   };
 }
 

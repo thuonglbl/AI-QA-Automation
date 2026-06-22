@@ -37,7 +37,7 @@ class DummyAgent(BaseAgent):
 
 
 @pytest.fixture
-def dummy_agent() -> Generator[DummyAgent, None, None]:
+def dummy_agent() -> Generator[DummyAgent]:
     agent = DummyAgent(step_number=1)
     original_agents = dict(_active_agents)
     register_agent(agent)

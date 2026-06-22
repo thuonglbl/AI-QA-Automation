@@ -44,7 +44,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/",
         "/assets",
         "/vite.svg",
-        "/api/admin/tests/e2e/report/view",
     }
 
     def __init__(self, app: ASGIApp, settings: AppSettings):

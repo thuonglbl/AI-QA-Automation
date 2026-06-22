@@ -18,7 +18,7 @@ Contract invariants:
 
 import abc
 from collections.abc import Mapping
-from typing import ClassVar, Literal, cast
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,6 +29,10 @@ from pydantic import BaseModel, ConfigDict, Field
 #   "provider_error"-> other non-2xx / malformed response
 #   "config"        -> missing/invalid base URL (e.g. empty on-prem URL)
 ErrorCategory = Literal["auth", "unreachable", "provider_error", "config", "none"]
+
+# Typed default so the Pydantic field default is an ``ErrorCategory`` (Literal),
+# not a bare ``str`` — keeps both mypy (no redundant cast) and Pyrefly happy.
+_DEFAULT_ERROR_CATEGORY: ErrorCategory = "none"
 
 
 class ConnectionResult(BaseModel):
@@ -47,7 +51,7 @@ class ConnectionResult(BaseModel):
         description="Actionable, secret-free, stack-trace-free guidance for the user"
     )
     error_category: ErrorCategory = Field(
-        default=cast(ErrorCategory, "none"), description="Machine-readable failure category"
+        default=_DEFAULT_ERROR_CATEGORY, description="Machine-readable failure category"
     )
 
     model_config = ConfigDict(validate_assignment=True)

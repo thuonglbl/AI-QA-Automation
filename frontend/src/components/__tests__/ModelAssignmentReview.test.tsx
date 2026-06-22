@@ -91,6 +91,34 @@ describe("ModelAssignmentReview", () => {
     expect(onApprove).toHaveBeenCalled();
   });
 
+  it("sends the user's per-agent override to onApprove", () => {
+    const onApprove = vi.fn();
+    render(
+      <ModelAssignmentReview
+        provider="On-Premises"
+        endpoint="https://ai.local"
+        assignments={mockAssignments}
+        availableModels={[
+          { id: "claude-3-opus-20240229", name: "Opus" },
+          { id: "inference-glm-51-754b", name: "GLM 5.1" },
+        ]}
+        onApprove={onApprove}
+      />,
+    );
+
+    // Re-select Bob's model from the dropdown, then approve.
+    fireEvent.change(screen.getByLabelText("Model for Bob"), {
+      target: { value: "inference-glm-51-754b" },
+    });
+    fireEvent.click(screen.getByText(/OK/));
+
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    const sent = onApprove.mock.calls[0]![0] as Record<string, string>;
+    // Bob reflects the override; agents left untouched keep their assigned model.
+    expect(sent.bob).toBe("inference-glm-51-754b");
+    expect(sent.mary).toBe("claude-3-sonnet-20240229");
+  });
+
   it("disables buttons when disabled prop is true", () => {
     render(
       <ModelAssignmentReview

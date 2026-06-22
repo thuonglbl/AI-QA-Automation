@@ -19,6 +19,12 @@ export interface PipelineStateSelectors {
   processingMessage?: string;
   error?: string;
   isLoaded: boolean;
+  /**
+   * The threadId whose messages are currently in state, set only after that
+   * thread's load completes. Lets consumers restore per-thread UI exactly once
+   * without racing the stale `isLoaded` flag during a thread switch.
+   */
+  loadedThreadId: string | null;
 }
 
 export interface PipelineStateActions {
@@ -54,16 +60,29 @@ async function loadConversationFromAPI(params: {
       };
       const currentAgent = stepToAgent[data.current_step || 1] || "Alice";
       
-      // Map basic messages. Note: frontend-specific metadata might be lost
-      // if not stored in the new Message model.
-      const messages = (data.messages || []).map((m: any) => ({
-        id: m.id,
-        sender: m.role === "user" ? "user" : "agent",
-        agentName: m.role !== "user" ? currentAgent : undefined,
-        content: m.content,
-        timestamp: m.created_at || new Date().toISOString(),
-        messageType: "text",
-      }));
+      // Map persisted messages from the thread detail payload. The backend
+      // returns MessageResponse rows (sender / agent_name / content /
+      // message_type / message_metadata / created_at) — read those real fields.
+      // Preserving message_metadata is load-bearing: the chat render filter hides
+      // UI-carrier messages (thinking_trace / model_assignments) by metadata, so
+      // dropping it makes them leak through as raw-text "extra" bubbles.
+      const messages = (data.messages || []).map((m: any) => {
+        const sender: AgentMessage["sender"] =
+          m.sender === "user"
+            ? "user"
+            : m.sender === "system"
+              ? "system"
+              : "agent";
+        return {
+          id: m.id,
+          sender,
+          agentName: sender === "agent" ? m.agent_name || currentAgent : undefined,
+          content: m.content,
+          timestamp: m.created_at || new Date().toISOString(),
+          messageType: m.message_type || "text",
+          metadata: m.message_metadata ?? undefined,
+        };
+      });
 
       // Find the latest agent run to populate processing state if any
       const latestRun = data.agent_runs?.length > 0 
@@ -193,6 +212,7 @@ export function usePipelineState(params: {
   const { projectId, threadId, onThreadDenied } = params;
   const [state, setState] = useState<PipelineState>(initialState);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [loadedThreadId, setLoadedThreadId] = useState<string | null>(null);
   // Keep the latest handler in a ref so the load effect doesn't re-run (and
   // re-fetch) whenever the caller passes a new callback identity.
   const onThreadDeniedRef = useRef(onThreadDenied);
@@ -203,7 +223,13 @@ export function usePipelineState(params: {
     let cancelled = false;
 
     async function load() {
+      // Reset to a clean slate before fetching so the previous thread's messages
+      // and "loaded" signal can never bleed into the new thread during the async
+      // load (cross-conversation isolation).
       setIsLoaded(false);
+      setLoadedThreadId(null);
+      setState((prev) => ({ ...prev, messages: [] }));
+
       if (!projectId && !threadId) {
         setIsLoaded(true);
         return;
@@ -261,6 +287,9 @@ export function usePipelineState(params: {
           messages: filteredMessages,
         }));
       }
+      // Signal that THIS thread's messages are now in state, so consumers can
+      // restore per-thread UI exactly once (race-free vs. the switch transition).
+      setLoadedThreadId(threadId ?? null);
       setIsLoaded(true);
     }
 
@@ -391,6 +420,7 @@ export function usePipelineState(params: {
     processingMessage: state.processingMessage,
     error: state.error,
     isLoaded,
+    loadedThreadId,
     updateFromMessage,
     addUserMessage,
     reset,

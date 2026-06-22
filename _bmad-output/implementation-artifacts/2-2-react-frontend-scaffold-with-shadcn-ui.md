@@ -12,7 +12,7 @@
 ## User Story
 
 **As a** R&D engineer,
-**I want** a React 18+ frontend scaffolded with Vite, TypeScript, Tailwind CSS, and Shadcn/ui,
+**I want** a React 19+ frontend scaffolded with Vite, TypeScript, Tailwind CSS, and Shadcn/ui,
 **So that** the conversational chat UI has a solid foundation with the correct design system.
 
 ---
@@ -53,7 +53,7 @@ Story 2.1 establishes the FastAPI backend with:
 ### What This Story Establishes
 
 This story creates the **frontend foundation** for the conversational chat UI:
-1. Vite + React 18 + TypeScript scaffold in `frontend/` directory
+1. Vite + React 19 + TypeScript scaffold in `frontend/` directory
 2. Tailwind CSS configured with "Professional Calm" design system
 3. Shadcn/ui initialized with required primitive components
 4. TypeScript types for pipeline state management

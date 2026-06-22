@@ -389,6 +389,8 @@ class TestGetLLMConfigSecretLookup:
             config = agent.get_llm_config()
         assert config.api_key == "stored-claude-key"
         # Looked up with the canonical secret_type for the provider.
+        assert agent.project_context is not None
+        assert agent.project_context.artifact_service is not None
         m.assert_called_once_with(agent.project_context.artifact_service.db, 1, "claude")
 
     def test_falls_back_to_env_when_no_stored_secret(self, monkeypatch: Any) -> None:
@@ -403,6 +405,8 @@ class TestGetLLMConfigSecretLookup:
         with patch("ai_qa.secrets.service.get_user_secret", return_value="stored-openai-key") as m:
             config = agent.get_llm_config()
         assert config.api_key == "stored-openai-key"
+        assert agent.project_context is not None
+        assert agent.project_context.artifact_service is not None
         m.assert_called_once_with(agent.project_context.artifact_service.db, 1, "openai")
 
     def test_no_context_uses_env_fallback_without_db_lookup(self, monkeypatch: Any) -> None:

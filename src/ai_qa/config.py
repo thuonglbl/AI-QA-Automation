@@ -1,6 +1,8 @@
 # Standard library
 import hashlib
+import re
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote_plus, urlsplit, urlunsplit
 
 # Third-party
@@ -15,6 +17,31 @@ from pydantic_settings import (
 
 # Project root resolved at import time relative to this file (not CWD)
 _PROJECT_ROOT = Path(__file__).parents[2]
+
+# Execution run policy (Story 14.2). Typed constant so the Literal default is not
+# inferred as plain `str` (Pyrefly bad-assignment / mypy).
+RunPolicy = Literal["continue", "stop_on_first_failure"]
+_DEFAULT_RUN_POLICY: RunPolicy = "continue"
+
+
+def validate_execution_output_prefix(value: str) -> str:
+    """Validate a logical execution-output prefix (Story 14.3, AC2 fail-fast).
+
+    Rejects empty/whitespace, absolute paths, Windows drive-letter/UNC prefixes,
+    and any ``..`` traversal segment. Cross-platform (POSIX + Windows). Used by both
+    the ``AppSettings`` field validator (startup) and the adapter runtime guard.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("execution_output_prefix must not be empty.")
+    normalized = cleaned.replace("\\", "/")
+    if normalized.startswith("/"):
+        raise ValueError("execution_output_prefix must be a relative path, not absolute.")
+    if re.match(r"^[A-Za-z]:", cleaned) or normalized.startswith("//"):
+        raise ValueError("execution_output_prefix must not be a drive-letter or UNC path.")
+    if any(segment == ".." for segment in normalized.split("/")):
+        raise ValueError("execution_output_prefix must not contain '..' path traversal.")
+    return cleaned
 
 
 def get_user_workspace_dir(user_email: str) -> Path:
@@ -92,6 +119,61 @@ class AppSettings(BaseSettings):
     )
     on_premises_api_base_url: str = Field(default="", description="On-Premises API base URL")
 
+    # --- Model sync (admin "Sync models and benchmarks") ---
+    # Server-side provider keys used ONLY by the admin model-discovery sync. They map
+    # from the TEST_<PROVIDER>_KEY env vars (case-insensitive). Resolved at runtime,
+    # never returned to the frontend or logged.
+    test_claude_key: str = Field(default="", description="Server key for Claude model discovery")
+    test_openai_key: str = Field(default="", description="Server key for OpenAI model discovery")
+    test_gemini_key: str = Field(default="", description="Server key for Gemini model discovery")
+    test_on_premises_key: str = Field(
+        default="", description="Server key for on-premises model discovery"
+    )
+    test_browser_use_key: str = Field(
+        default="", description="Server key for Browser Use Cloud model discovery"
+    )
+    # llm-stats.com Data API — structured benchmark scores per model (free Bearer key,
+    # no usage limits, updated within hours of model release). Empty key => the benchmark
+    # half of the sync is skipped (model discovery still runs).
+    llm_stats_api_key: str = Field(
+        default="", description="llm-stats.com Data API Bearer key (ze_…)"
+    )
+    llm_stats_api_base_url: str = Field(
+        default="https://api.llm-stats.com/stats/v1",
+        description="llm-stats.com Data API base URL",
+    )
+
+    # --- Claude SSO (enterprise OAuth login) ---
+    # When ``claude_sso_authorize_url`` is empty, the backend serves a built-in
+    # mock IdP login page (dev/E2E). When set, it points at the real OAuth
+    # authorization endpoint (e.g. Anthropic Team-plan SSO), which federates to
+    # the company IdP. The token obtained from the flow is stored as the per-user
+    # ``claude_sso`` secret; it is never returned to the frontend.
+    claude_sso_authorize_url: str = Field(
+        default="", description="OAuth authorize URL ('' = use built-in mock IdP page)"
+    )
+    claude_sso_token_url: str = Field(
+        default="", description="OAuth token-exchange URL (real-OAuth mode only)"
+    )
+    claude_sso_client_id: str = Field(
+        default="", description="OAuth client id (real-OAuth mode only)"
+    )
+    claude_sso_redirect_uri: str = Field(
+        default="", description="OAuth redirect URI ('' = backend /api/auth/claude-sso/callback)"
+    )
+    claude_sso_enterprise_api_key: str = Field(
+        default="",
+        description=(
+            "Server-side Claude Enterprise license key used for actual model calls "
+            "after a successful SSO login in mock/demo mode. Deployment config, not a "
+            "per-user secret. Never logged or returned to the frontend."
+        ),
+    )
+    claude_sso_allowed_email_domain: str = Field(
+        default="",
+        description="If set, the mock IdP only accepts emails on this domain.",
+    )
+
     # --- MCP (FR14) ---
     mcp_server_url: str = Field(
         default="", description="MCP server URL for Confluence/Jira integration"
@@ -131,8 +213,65 @@ class AppSettings(BaseSettings):
     max_script_length: int = Field(
         default=10000, ge=1000, le=50000, description="Maximum characters per generated script"
     )
+
+    # --- Test Execution (Jack, Story 14.2) ---
+    execution_timeout: int = Field(
+        default=120,
+        ge=10,
+        le=1800,
+        description="Per-script execution timeout in seconds (pytest --timeout-equivalent)",
+    )
+    execution_wall_clock_timeout: int = Field(
+        default=900,
+        ge=30,
+        le=7200,
+        description="Hard wall-clock cap (seconds) for the whole execution subprocess",
+    )
+    run_policy: RunPolicy = Field(
+        default=_DEFAULT_RUN_POLICY,
+        description=(
+            "Execution run policy: 'continue' runs every selected script even on failure; "
+            "'stop_on_first_failure' stops at the first failing test (-x)."
+        ),
+    )
+
+    # --- Execution Output (Jack, Story 14.3) ---
+    execution_output_prefix: str = Field(
+        default="runs",
+        description=(
+            "Logical name prefix for persisted execution outputs; artifacts are named "
+            "'{prefix}/{run_id}/{file}'. Relative path only (validated at startup)."
+        ),
+    )
+    execution_capture_screenshots: bool = Field(
+        default=True, description="Persist execution screenshots through the artifact service"
+    )
+    execution_capture_traces: bool = Field(
+        default=True, description="Persist execution Playwright traces through the artifact service"
+    )
+    execution_capture_logs: bool = Field(
+        default=True, description="Persist the execution run log through the artifact service"
+    )
+    execution_overwrite_reports: bool = Field(
+        default=False,
+        description="Allow overwriting an existing run's persisted outputs (AC3 explicit switch)",
+    )
+
+    @field_validator("execution_output_prefix")
+    @classmethod
+    def _validate_execution_output_prefix(cls, value: str) -> str:
+        """Fail fast on a malformed execution-output prefix (Story 14.3 AC2)."""
+        return validate_execution_output_prefix(value)
+
     confidence_threshold: float = Field(
         default=0.7, ge=0.0, le=1.0, description="Threshold to flag low confidence generations"
+    )
+    script_unsafe_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional/override disallowed patterns for generated scripts (FR21). "
+            "When non-empty, replaces DEFAULT_UNSAFE_SCRIPT_PATTERNS entirely."
+        ),
     )
 
     # --- PostgreSQL Persistence (Story 12-1) ---

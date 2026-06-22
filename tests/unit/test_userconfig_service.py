@@ -94,7 +94,9 @@ class TestSaveProviderConfig:
             )
         ).all()
         assert len(rows) == 1
-        assert rows[0].ai_provider_config["provider"] == "openai"
+        config = rows[0].ai_provider_config
+        assert config is not None
+        assert config["provider"] == "openai"
 
     def test_different_projects_stored_independently(self, db: Session) -> None:
         user = _make_user(db)

@@ -1,12 +1,13 @@
 """API tests for admin E2E test execution endpoints."""
 
+import asyncio
 import subprocess
 import zipfile
 from collections.abc import Generator
 from io import BytesIO
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -15,6 +16,7 @@ from sqlalchemy import Table, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from ai_qa.api import admin as admin_mod
 from ai_qa.api.app import create_app
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.session import SessionManager
@@ -98,7 +100,19 @@ def _auth_headers(client: TestClient, user: User) -> dict[str, str]:
 
 
 class TestRunE2ETestsEndpoint:
-    """Tests for POST /api/admin/tests/e2e."""
+    """Tests for the async E2E run endpoints (POST /tests/e2e + GET /tests/e2e/status)."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_e2e_state(self) -> Generator[None]:
+        """The run state is a module-level singleton — reset it around each test."""
+        admin_mod._e2e_state.status = "idle"
+        admin_mod._e2e_state.exit_code = None
+        admin_mod._e2e_state.passed = None
+        admin_mod._e2e_state.report_available = False
+        admin_mod._e2e_state.stdout = ""
+        admin_mod._e2e_state.stderr = ""
+        admin_mod._e2e_task = None
+        yield
 
     def test_standard_user_cannot_trigger_e2e_tests(self, admin_client: TestClient) -> None:
         """Non-admin users must be rejected with 403."""
@@ -119,77 +133,56 @@ class TestRunE2ETestsEndpoint:
         assert response.status_code == 401
         assert response.json()["detail"] == "Not authenticated"
 
-    def test_admin_triggers_e2e_tests_with_passed_result(
+    def test_admin_post_starts_background_run(
         self, admin_client: TestClient, tmp_path: Path
     ) -> None:
-        """Admin can trigger tests and receives structured JSON result when tests pass."""
+        """A valid POST returns 202 + status 'running' and schedules the background run."""
         admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
-
-        # Create a fake playwright-report/index.html so report_available is True
-        report_dir = tmp_path / "playwright-report"
-        report_dir.mkdir()
-        (report_dir / "index.html").write_text("<html>Report</html>")
-
-        mock_result = MagicMock(spec=subprocess.CompletedProcess)
-        mock_result.returncode = 0
-        mock_result.stdout = b"5 passed"
-        mock_result.stderr = b""
 
         with (
             patch("ai_qa.api.admin._FRONTEND_DIR", tmp_path),
             patch("ai_qa.api.admin.shutil.which", return_value="npx"),
-            patch("ai_qa.api.admin.subprocess.run", return_value=mock_result) as mock_run,
+            patch("ai_qa.api.admin._run_e2e_background", new_callable=AsyncMock) as mock_bg,
         ):
             response = admin_client.post(
                 "/api/admin/tests/e2e",
                 headers=_auth_headers(admin_client, admin),
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         data = response.json()
-        assert data["exit_code"] == 0, data
-        assert data["passed"] is True
-        assert data["report_available"] is True
-        assert "5 passed" in data["stdout"]
-        assert data["stderr"] == ""
+        assert data["status"] == "running"
+        assert data["exit_code"] is None
+        assert data["passed"] is None
+        mock_bg.assert_called_once()
 
-        # Verify subprocess was called with correct arguments
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args
-        assert "--headed" in call_args.args[0]
-        assert call_args.kwargs.get("timeout") == 900
-
-    def test_admin_triggers_e2e_tests_with_failed_result(
+    def test_post_is_noop_while_a_run_is_in_progress(
         self, admin_client: TestClient, tmp_path: Path
     ) -> None:
-        """When tests fail, endpoint returns passed=False with non-zero exit code."""
+        """A second POST during a run returns the running state without starting another."""
         admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
-
-        mock_result = MagicMock(spec=subprocess.CompletedProcess)
-        mock_result.returncode = 1
-        mock_result.stdout = b"2 passed, 1 failed"
-        mock_result.stderr = b"Error: assertion failed"
+        admin_mod._e2e_state.status = "running"
+        # A genuinely live task must exist for the run to be considered in progress.
+        live_task = MagicMock()
+        live_task.done.return_value = False
+        admin_mod._e2e_task = live_task
 
         with (
             patch("ai_qa.api.admin._FRONTEND_DIR", tmp_path),
             patch("ai_qa.api.admin.shutil.which", return_value="npx"),
-            patch("ai_qa.api.admin.subprocess.run", return_value=mock_result),
+            patch("ai_qa.api.admin._run_e2e_background", new_callable=AsyncMock) as mock_bg,
         ):
             response = admin_client.post(
                 "/api/admin/tests/e2e",
                 headers=_auth_headers(admin_client, admin),
             )
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["exit_code"] == 1
-        assert data["passed"] is False
-        assert data["report_available"] is False  # no report dir created
+        assert response.status_code == 202
+        assert response.json()["status"] == "running"
+        mock_bg.assert_not_called()
 
-    def test_e2e_endpoint_returns_500_when_npx_not_found(
-        self, admin_client: TestClient, tmp_path: Path
-    ) -> None:
-        """Returns 500 when npx is not available in PATH."""
+    def test_post_reports_missing_npx(self, admin_client: TestClient, tmp_path: Path) -> None:
+        """When npx is missing the POST completes immediately with an error message."""
         admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
 
         with (
@@ -201,35 +194,14 @@ class TestRunE2ETestsEndpoint:
                 headers=_auth_headers(admin_client, admin),
             )
 
-        assert response.status_code == 200
-        assert "npx not found" in response.json()["stderr"]
+        data = response.json()
+        assert data["status"] == "completed"
+        assert "npx not found" in data["stderr"]
 
-    def test_e2e_endpoint_returns_504_on_timeout(
+    def test_post_reports_missing_frontend_dir(
         self, admin_client: TestClient, tmp_path: Path
     ) -> None:
-        """Returns 504 when subprocess times out."""
-        admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
-
-        with (
-            patch("ai_qa.api.admin._FRONTEND_DIR", tmp_path),
-            patch("ai_qa.api.admin.shutil.which", return_value="npx"),
-            patch(
-                "ai_qa.api.admin.subprocess.run",
-                side_effect=subprocess.TimeoutExpired(cmd="npx", timeout=900),
-            ),
-        ):
-            response = admin_client.post(
-                "/api/admin/tests/e2e",
-                headers=_auth_headers(admin_client, admin),
-            )
-
-        assert response.status_code == 200
-        assert "timed out" in response.json()["stderr"]
-
-    def test_e2e_endpoint_returns_500_when_frontend_dir_missing(
-        self, admin_client: TestClient, tmp_path: Path
-    ) -> None:
-        """Returns 500 when the frontend directory does not exist."""
+        """When the frontend dir is absent the POST completes immediately with an error."""
         admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
         non_existent_path = tmp_path / "does_not_exist"
 
@@ -239,31 +211,146 @@ class TestRunE2ETestsEndpoint:
                 headers=_auth_headers(admin_client, admin),
             )
 
-        assert response.status_code == 200
-        assert "Frontend directory not found" in response.json()["stderr"]
+        data = response.json()
+        assert data["status"] == "completed"
+        assert "Frontend directory not found" in data["stderr"]
 
-    def test_slow_motion_env_var_is_set(self, admin_client: TestClient, tmp_path: Path) -> None:
-        """Verify PLAYWRIGHT_SLOW_MO env var is passed to the subprocess."""
+    def test_status_returns_current_state(self, admin_client: TestClient) -> None:
+        """The status endpoint reports the (reset) idle state for an admin."""
         admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
+
+        response = admin_client.get(
+            "/api/admin/tests/e2e/status",
+            headers=_auth_headers(admin_client, admin),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "idle"
+
+    def test_standard_user_cannot_read_status(self, admin_client: TestClient) -> None:
+        """Non-admin users must be rejected with 403 from the status endpoint."""
+        standard = _create_user(admin_client, "standard@example.com", STANDARD_ROLE)
+
+        response = admin_client.get(
+            "/api/admin/tests/e2e/status",
+            headers=_auth_headers(admin_client, standard),
+        )
+
+        assert response.status_code == 403
+
+    def test_unauthenticated_cannot_read_status(self, admin_client: TestClient) -> None:
+        """Unauthenticated requests must be rejected with 401 from the status endpoint."""
+        response = admin_client.get("/api/admin/tests/e2e/status")
+
+        assert response.status_code == 401
+
+    def test_build_command_local_mode_is_headed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Local mode: headed + slow motion, reuses running servers, never forces CI."""
+        monkeypatch.delenv("E2E_SERVER_MODE", raising=False)
+        monkeypatch.delenv("E2E_HEADED", raising=False)
+        monkeypatch.delenv("CI", raising=False)
+
+        cmd, env = admin_mod._build_e2e_command_and_env("npx")
+
+        assert "--headed" in cmd
+        assert env["PLAYWRIGHT_SLOW_MO"] == "500"
+        # E2E_DISABLE_WEBSERVER stops Playwright booting its own backend/Vite; CI is
+        # never injected (CI=1 used to disable reuseExistingServer → the local
+        # "port 8000 already used" failure).
+        assert env["E2E_DISABLE_WEBSERVER"] == "1"
+        assert "CI" not in env
+
+    def test_build_command_headless_when_e2e_headed_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """E2E_HEADED=0 drops --headed and zeroes slow motion."""
+        monkeypatch.delenv("E2E_SERVER_MODE", raising=False)
+        monkeypatch.setenv("E2E_HEADED", "0")
+
+        cmd, env = admin_mod._build_e2e_command_and_env("npx")
+
+        assert "--headed" not in cmd
+        assert env["PLAYWRIGHT_SLOW_MO"] == "0"
+
+    def test_build_command_server_mode_container_flags(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Server mode → headless, sandbox disabled, TLS errors ignored, no own servers."""
+        monkeypatch.setenv("E2E_SERVER_MODE", "1")
+        monkeypatch.delenv("E2E_NO_SANDBOX", raising=False)
+        monkeypatch.delenv("PLAYWRIGHT_IGNORE_HTTPS_ERRORS", raising=False)
+
+        cmd, env = admin_mod._build_e2e_command_and_env("npx")
+
+        assert "--headed" not in cmd
+        assert env["E2E_DISABLE_WEBSERVER"] == "1"
+        assert env["E2E_NO_SANDBOX"] == "1"
+        assert env["PLAYWRIGHT_IGNORE_HTTPS_ERRORS"] == "1"
+        assert env["PLAYWRIGHT_SLOW_MO"] == "0"
+
+    def test_build_command_forwards_base_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A BASE_URL in the backend env reaches the Playwright subprocess env."""
+        monkeypatch.setenv("BASE_URL", "https://ai-qa.dev")
+
+        _, env = admin_mod._build_e2e_command_and_env("npx")
+
+        assert env["BASE_URL"] == "https://ai-qa.dev"
+
+    def test_background_run_records_pass(self, tmp_path: Path) -> None:
+        """A zero exit code records passed=True and detects the HTML report."""
+        report_dir = tmp_path / "playwright-report"
+        report_dir.mkdir()
+        (report_dir / "index.html").write_text("<html>Report</html>")
 
         mock_result = MagicMock(spec=subprocess.CompletedProcess)
         mock_result.returncode = 0
-        mock_result.stdout = b""
+        mock_result.stdout = b"5 passed"
         mock_result.stderr = b""
 
         with (
             patch("ai_qa.api.admin._FRONTEND_DIR", tmp_path),
-            patch("ai_qa.api.admin.shutil.which", return_value="npx"),
-            patch("ai_qa.api.admin.subprocess.run", return_value=mock_result) as mock_run,
+            patch("ai_qa.api.admin.subprocess.run", return_value=mock_result),
         ):
-            admin_client.post(
-                "/api/admin/tests/e2e",
-                headers=_auth_headers(admin_client, admin),
-            )
+            asyncio.run(admin_mod._run_e2e_background(["npx"], {"X": "1"}))
 
-        call_kwargs = mock_run.call_args.kwargs
-        assert "PLAYWRIGHT_SLOW_MO" in call_kwargs["env"]
-        assert call_kwargs["env"]["PLAYWRIGHT_SLOW_MO"] == "500"
+        assert admin_mod._e2e_state.status == "completed"
+        assert admin_mod._e2e_state.passed is True
+        assert admin_mod._e2e_state.exit_code == 0
+        assert admin_mod._e2e_state.report_available is True
+        assert "5 passed" in admin_mod._e2e_state.stdout
+
+    def test_background_run_records_failure(self, tmp_path: Path) -> None:
+        """A non-zero exit code records passed=False; with no report dir it is unavailable."""
+        mock_result = MagicMock(spec=subprocess.CompletedProcess)
+        mock_result.returncode = 1
+        mock_result.stdout = b"2 passed, 1 failed"
+        mock_result.stderr = b"AssertionError"
+
+        with (
+            patch("ai_qa.api.admin._FRONTEND_DIR", tmp_path),
+            patch("ai_qa.api.admin.subprocess.run", return_value=mock_result),
+        ):
+            asyncio.run(admin_mod._run_e2e_background(["npx"], {"X": "1"}))
+
+        assert admin_mod._e2e_state.status == "completed"
+        assert admin_mod._e2e_state.passed is False
+        assert admin_mod._e2e_state.exit_code == 1
+        assert admin_mod._e2e_state.report_available is False
+
+    def test_background_run_records_timeout(self, tmp_path: Path) -> None:
+        """A subprocess timeout records a completed run with a timeout message."""
+        with (
+            patch("ai_qa.api.admin._FRONTEND_DIR", tmp_path),
+            patch(
+                "ai_qa.api.admin.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="npx", timeout=900),
+            ),
+        ):
+            asyncio.run(admin_mod._run_e2e_background(["npx"], {"X": "1"}))
+
+        assert admin_mod._e2e_state.status == "completed"
+        assert admin_mod._e2e_state.passed is False
+        assert "timed out" in admin_mod._e2e_state.stderr
 
 
 class TestDownloadE2EReportEndpoint:

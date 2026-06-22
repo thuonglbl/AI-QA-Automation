@@ -22,11 +22,66 @@ from ai_qa.pipelines.vision_locator import LocatorResult, VisionLocator
 from ai_qa.prompts.script_generation import (
     SCRIPT_GENERATION_PROMPT,
     SCRIPT_GENERATION_SYSTEM_PROMPT,
+    TRACE_TO_PLAYWRIGHT_PROMPT,
+    TRACE_TO_PLAYWRIGHT_SYSTEM_PROMPT,
     VISION_ASSISTED_SCRIPT_GENERATION_PROMPT,
     VISION_SCRIPT_GENERATION_SYSTEM_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
+
+# 13.3 — module-level compiled patterns for brittle-selector and step-attribution detection
+_STEP_COMMENT_RE = re.compile(r"^\s*#\s*Step\s+(\d+)\b", re.IGNORECASE)
+_XPATH_LOCATOR_RE = re.compile(r'\.locator\(\s*["\']xpath=')
+_CSS_LOCATOR_RE = re.compile(r'\.locator\(\s*["\'](?!xpath=)[^"\']+["\']')
+
+# 13.4 — module-level compiled patterns for credential/secret and auth detection
+# Matches .fill/.type/.press_sequentially with a non-empty string literal
+_CRED_FILL_LITERAL_RE = re.compile(
+    r'\.(fill|type|press_sequentially)\s*\(\s*["\']([^"\']+)["\']',
+)
+# Credential-like keywords used to identify credential context (locator text, step comment).
+# AC1/AC3 enumerate "usernames" alongside passwords/tokens, so username/user/login/email
+# tokens are included — a literal filled into a username-named locator is flagged for review.
+_CRED_KEYWORD_RE = re.compile(
+    r"\b(?:password|passwd|pwd|secret|token|otp|credential|api_key|auth"
+    r"|username|user|login|email)\b",
+    re.IGNORECASE,
+)
+# Secret-named variable assignment with a non-empty string literal
+_SECRET_VAR_ASSIGN_RE = re.compile(
+    r"\b(password|passwd|pwd|token|api_key|secret|cookie|bearer|session)"
+    r"\s*=\s*[\"']([^\"']+)[\"']",
+    re.IGNORECASE,
+)
+# add_cookies( call — always a credential-injection risk
+_ADD_COOKIES_RE = re.compile(r"\.add_cookies\s*\(")
+# Inline storage_state dict (allowed: storage_state="path" string; forbidden: storage_state={...})
+_INLINE_STORAGE_STATE_DICT_RE = re.compile(r"\bstorage_state\s*=\s*\{")
+# Authorization header with a literal Bearer/Basic token value
+_AUTH_BEARER_LITERAL_RE = re.compile(
+    r'["\']Authorization["\']\s*[,:]\s*["\'](?:Bearer|Basic)\s+[^"\']+["\']',
+    re.IGNORECASE,
+)
+# URL with embedded credentials (scheme://user:pass@host)
+_CREDS_IN_URL_RE = re.compile(
+    r"[a-z][a-z0-9+\-.]*://[^\s\"'@/]+:[^\s\"'@/]+@",
+    re.IGNORECASE,
+)
+# Approved env-read patterns (not flagged even when appearing on lines with secret var names)
+_ENV_READ_RE = re.compile(r"\bos\.environ\b|\bos\.getenv\b")
+# SSO/session-setup REVIEW marker already emitted by the LLM (suppresses duplicate auth warning)
+_SSO_REVIEW_MARKER_RE = re.compile(r"#\s*REVIEW:.*?SSO", re.IGNORECASE)
+# Auth-action keywords (login, sign-in, authenticate, …) for the auth-likely signal
+_AUTH_KEYWORD_RE = re.compile(
+    r"\b(?:login|log[-\s]?in|sign[-\s]?in|authenticate|logout|credentials?)\b",
+    re.IGNORECASE,
+)
+# Auth-state keywords in preconditions ("User is authenticated / logged in / signed in")
+_AUTH_PRECOND_RE = re.compile(
+    r"\b(?:authenticated|logged[-\s]?in|signed[-\s]?in)\b",
+    re.IGNORECASE,
+)
 
 
 class ScriptGenerator:
@@ -42,6 +97,9 @@ class ScriptGenerator:
         llm_config: LLMConfig | None = None,
         config: AppSettings | None = None,
         vision_locator: VisionLocator | None = None,
+        explore_llm: Any = None,
+        chrome_path: str = "",
+        cdp_url: str = "",
     ) -> None:
         """Initialize the script generator.
 
@@ -50,6 +108,11 @@ class ScriptGenerator:
             llm_config: Optional LLM configuration. If None, loads from agents.json.
             config: Optional AppSettings for script generation configuration.
             vision_locator: Optional VisionLocator for vision-assisted generation.
+            explore_llm: Optional ``browser_use.llm`` chat model (from
+                ``build_browser_use_llm``) used to DRIVE the real app and capture a
+                verified trace. When set together with ``chrome_path``, generation
+                prefers the trace path (real selectors) over LLM-invention.
+            chrome_path: Path to the user's Chrome executable for live exploration.
         """
         self.output_base_dir = output_base_dir
         self._llm_config = llm_config
@@ -60,17 +123,26 @@ class ScriptGenerator:
             if config
             else vision_locator is not None
         )
+        self._explore_llm = explore_llm
+        self._chrome_path = chrome_path
+        self._cdp_url = cdp_url
+        # browser-use-driven generation requires a driving LLM + a browser source
+        # (a Chrome executable to launch, or a CDP URL to connect to a running one).
+        self._explore_enabled = explore_llm is not None and (bool(chrome_path) or bool(cdp_url))
 
     async def generate(
         self,
         test_cases: list[TestCase],
         target_url: str | None = None,
+        feedback: str | None = None,
     ) -> StageResult:
         """Generate Playwright scripts from test cases.
 
         Args:
             test_cases: List of structured test cases to convert to scripts.
             target_url: Optional target application URL for vision-assisted generation.
+            feedback: Optional reviewer rejection feedback (AC2 — 13.7) injected into the
+                      regeneration prompt so the revised script reflects the correction.
 
         Returns:
             StageResult with list of generated script paths on success.
@@ -91,7 +163,9 @@ class ScriptGenerator:
 
         for test_case in test_cases:
             try:
-                result = await self._generate_single_script(test_case, target_url)
+                result = await self._generate_single_script(
+                    test_case, target_url, feedback=feedback
+                )
                 if result["success"]:
                     generated_scripts.append(result)
                     total_confidence += result.get("confidence", 0.5)
@@ -134,16 +208,62 @@ class ScriptGenerator:
         self,
         test_case: TestCase,
         target_url: str | None = None,
+        feedback: str | None = None,
     ) -> dict[str, Any]:
         """Generate a single Playwright script from a test case.
 
         Args:
             test_case: The test case to convert to a script.
             target_url: Optional target URL for vision-assisted generation.
+            feedback: Optional reviewer rejection feedback (AC2 — 13.7) appended to the
+                      prompt so the revision reflects the correction. Sanitized to 2000 chars.
 
         Returns:
             Dictionary with script generation result including file path and confidence.
         """
+        # PREFERRED: drive the real app with browser-use → verified trace → translate
+        # to deterministic Playwright (real selectors, no invention). Gated on a
+        # driving LLM + Chrome + target URL; ANY failure falls through to the
+        # existing vision / LLM-only generation below.
+        if self._explore_enabled and target_url:
+            try:
+                from ai_qa.browser.explorer import explore_test_case
+                from ai_qa.browser.trace import extract_trace
+
+                history = await explore_test_case(
+                    test_case,
+                    target_url,
+                    llm=self._explore_llm,
+                    chrome_path=self._chrome_path,
+                    cdp_url=self._cdp_url,
+                    use_vision=self._vision_enabled,
+                )
+                if history is not None:
+                    trace = extract_trace(history)
+                    if trace:
+                        script_content = await self._call_llm_with_trace(
+                            test_case, trace, feedback=feedback
+                        )
+                        logger.info(
+                            "Generated script for '%s' from a verified browser-use "
+                            "trace (%d steps)",
+                            test_case.title,
+                            len(trace),
+                        )
+                        return self._postprocess_script(script_content, test_case, [])
+            except ScriptGenerationError as e:
+                logger.warning(
+                    "Trace translation failed for '%s': %s — falling back to LLM generation",
+                    test_case.title,
+                    e,
+                )
+            except Exception as e:  # noqa: BLE001 — degrade to fallback on any error
+                logger.warning(
+                    "browser-use exploration error for '%s': %s — falling back",
+                    test_case.title,
+                    e,
+                )
+
         locator_results: list[LocatorResult] = []
 
         # Try vision-assisted generation if enabled and URL provided
@@ -182,36 +302,13 @@ class ScriptGenerator:
         try:
             # Generate script via LLM (with or without vision context)
             if locator_results:
-                script_content = await self._call_llm_with_vision(test_case, locator_results)
+                script_content = await self._call_llm_with_vision(
+                    test_case, locator_results, feedback=feedback
+                )
             else:
-                script_content = await self._call_llm(test_case)
+                script_content = await self._call_llm(test_case, feedback=feedback)
 
-            if not script_content or not script_content.strip():
-                return {
-                    "success": False,
-                    "error": "LLM returned empty script",
-                    "test_case_title": test_case.title,
-                }
-
-            # Validate script length
-            max_length = getattr(self._config, "max_script_length", 10000)
-            if len(script_content) > max_length:
-                return {
-                    "success": False,
-                    "error": f"Generated script exceeds max length ({len(script_content)} > {max_length})",
-                    "test_case_title": test_case.title,
-                }
-
-            # Calculate confidence based on script quality indicators and vision results
-            confidence = self._calculate_confidence(script_content, test_case, locator_results)
-
-            return {
-                "success": True,
-                "script_content": script_content,
-                "test_case_title": test_case.title,
-                "confidence": confidence,
-                "warnings": [],
-            }
+            return self._postprocess_script(script_content, test_case, locator_results)
 
         except ScriptGenerationError as e:
             logger.error(f"Script generation error for '{test_case.title}': {e}")
@@ -228,16 +325,59 @@ class ScriptGenerator:
                 "test_case_title": test_case.title,
             }
 
+    def _postprocess_script(
+        self,
+        script_content: str,
+        test_case: TestCase,
+        locator_results: list[LocatorResult],
+    ) -> dict[str, Any]:
+        """Validate, score, and warning-scan a generated script (shared by the
+        trace, vision, and LLM-only paths so all get identical downstream handling).
+        """
+        if not script_content or not script_content.strip():
+            return {
+                "success": False,
+                "error": "LLM returned empty script",
+                "test_case_title": test_case.title,
+            }
+
+        max_length = getattr(self._config, "max_script_length", 10000)
+        if len(script_content) > max_length:
+            return {
+                "success": False,
+                "error": (
+                    f"Generated script exceeds max length ({len(script_content)} > {max_length})"
+                ),
+                "test_case_title": test_case.title,
+            }
+
+        confidence = self._calculate_confidence(script_content, test_case, locator_results)
+        all_warnings: list[str] = (
+            self._extract_review_warnings(script_content)
+            + self._detect_brittle_selectors(script_content)
+            + self._detect_assertion_gaps(script_content, test_case)
+            + self._detect_hardcoded_secrets(script_content)
+            + self._detect_auth_setup_needed(script_content, test_case)
+        )
+        return {
+            "success": True,
+            "script_content": script_content,
+            "test_case_title": test_case.title,
+            "confidence": confidence,
+            "warnings": all_warnings,
+        }
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         reraise=True,
     )
-    async def _call_llm(self, test_case: TestCase) -> str:
+    async def _call_llm(self, test_case: TestCase, feedback: str | None = None) -> str:
         """Call LLM to generate a Playwright script from a test case.
 
         Args:
             test_case: The test case to convert.
+            feedback: Optional reviewer feedback (AC2 — 13.7) appended to the prompt.
 
         Returns:
             Generated Python script content.
@@ -249,8 +389,16 @@ class ScriptGenerator:
             llm_client = self._get_llm_client()
 
             # Format the prompt with test case data
-            test_case_json = test_case.model_dump_json(indent=2)
-            prompt = SCRIPT_GENERATION_PROMPT.format(test_case=test_case_json)
+            test_case_md = test_case.to_markdown()
+            prompt = SCRIPT_GENERATION_PROMPT.format(test_case=test_case_md)
+            # AC2 (13.7): inject reviewer feedback so regenerated script reflects the correction.
+            if feedback and feedback.strip():
+                sanitized = feedback.strip()[:2000]
+                prompt += (
+                    "\n\n---\nReviewer feedback to address in this revision:\n"
+                    + sanitized
+                    + "\n---"
+                )
 
             # Create messages for LLM
             from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -296,6 +444,78 @@ class ScriptGenerator:
             logger.error(f"LLM call failed: {e}")
             raise ScriptGenerationError(f"LLM generation failed: {e}") from e
 
+    async def _call_llm_with_trace(
+        self,
+        test_case: TestCase,
+        trace: list[dict[str, Any]],
+        feedback: str | None = None,
+    ) -> str:
+        """Translate a VERIFIED browser-use action trace into a Playwright script.
+
+        The trace was captured by driving the real app, so its selectors are real
+        (not invented). The LLM's job is translation, not invention. Mirrors
+        :meth:`_call_llm` so the same downstream validators/confidence apply.
+
+        Args:
+            test_case: The test case the trace was explored for.
+            trace: Structured ``[{action, params, element}]`` from ``extract_trace``.
+            feedback: Optional reviewer feedback appended to the prompt (13.7).
+
+        Returns:
+            Generated Python script content.
+
+        Raises:
+            ScriptGenerationError: If the LLM call fails or returns empty.
+        """
+        from ai_qa.browser.trace import format_trace_for_prompt
+
+        try:
+            llm_client = self._get_llm_client()
+            test_case_md = test_case.to_markdown()
+            prompt = TRACE_TO_PLAYWRIGHT_PROMPT.format(
+                test_case=test_case_md,
+                trace=format_trace_for_prompt(trace),
+            )
+            if feedback and feedback.strip():
+                sanitized = feedback.strip()[:2000]
+                prompt += (
+                    "\n\n---\nReviewer feedback to address in this revision:\n"
+                    + sanitized
+                    + "\n---"
+                )
+
+            from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+
+            messages: list[BaseMessage] = [
+                SystemMessage(content=TRACE_TO_PLAYWRIGHT_SYSTEM_PROMPT),
+                HumanMessage(content=prompt),
+            ]
+            timeout = getattr(self._config, "script_generation_timeout", 120)
+            response = llm_client.invoke(messages, timeout=timeout)
+
+            script_content = response.content
+            if isinstance(script_content, list):
+                parts: list[str] = []
+                for item in script_content:
+                    if isinstance(item, str):
+                        parts.append(item)
+                    elif isinstance(item, dict):
+                        text = item.get("text")
+                        parts.append(text if isinstance(text, str) else str(text))
+                    else:
+                        parts.append(str(item))
+                script_content = "\n".join(parts)
+
+            if not isinstance(script_content, str) or not script_content.strip():
+                raise ScriptGenerationError("LLM returned empty response")
+            return script_content.strip()
+
+        except Exception as e:
+            if isinstance(e, ScriptGenerationError):
+                raise
+            logger.error(f"Trace-to-Playwright LLM call failed: {e}")
+            raise ScriptGenerationError(f"Trace translation failed: {e}") from e
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
@@ -305,12 +525,14 @@ class ScriptGenerator:
         self,
         test_case: TestCase,
         locator_results: list[LocatorResult],
+        feedback: str | None = None,
     ) -> str:
         """Call LLM to generate a Playwright script with vision context.
 
         Args:
             test_case: The test case to convert.
             locator_results: Vision analysis results with identified locators.
+            feedback: Optional reviewer feedback (AC2 — 13.7) appended to the prompt.
 
         Returns:
             Generated Python script content.
@@ -322,15 +544,23 @@ class ScriptGenerator:
             llm_client = self._get_llm_client()
 
             # Format the prompt with test case and vision data
-            test_case_json = test_case.model_dump_json(indent=2)
+            test_case_md = test_case.to_markdown()
             locator_info = self._format_locator_info(locator_results)
             vision_context = "Vision-assisted analysis was performed on the target application."
 
             prompt = VISION_ASSISTED_SCRIPT_GENERATION_PROMPT.format(
-                test_case=test_case_json,
+                test_case=test_case_md,
                 vision_context=vision_context,
                 locator_info=locator_info,
             )
+            # AC2 (13.7): inject reviewer feedback so regenerated script reflects the correction.
+            if feedback and feedback.strip():
+                sanitized = feedback.strip()[:2000]
+                prompt += (
+                    "\n\n---\nReviewer feedback to address in this revision:\n"
+                    + sanitized
+                    + "\n---"
+                )
 
             # Create messages for LLM
             from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -433,6 +663,228 @@ class ScriptGenerator:
         )
         return LLMClient(llm_config)
 
+    _MARKER_RE = re.compile(r"^\s*#\s*(TODO|REVIEW)\b[:\s]*(.*)", re.IGNORECASE)
+
+    def _extract_review_warnings(self, script_content: str) -> list[str]:
+        """Scan generated script for TODO/REVIEW markers and return them as warnings.
+
+        Args:
+            script_content: The generated Python script text.
+
+        Returns:
+            List of warning strings extracted from marker comments.
+        """
+        warnings: list[str] = []
+        for line in script_content.splitlines():
+            m = self._MARKER_RE.match(line)
+            if m:
+                tag = m.group(1).upper()
+                text = m.group(2).strip()
+                warnings.append(f"{tag}: {text}" if text else tag)
+        return warnings
+
+    def _detect_brittle_selectors(self, script_content: str) -> list[str]:
+        """Detect brittle selectors (XPath, raw CSS) in the generated script.
+
+        Flags each occurrence with step attribution for AC1/AC3 (13.3).
+        Deterministic complement to the LLM's own # REVIEW: markers.
+
+        Args:
+            script_content: The generated Python script text.
+
+        Returns:
+            List of warning strings, one per brittle-selector occurrence.
+        """
+        warnings: list[str] = []
+        current_step: int | None = None
+
+        for line in script_content.splitlines():
+            step_m = _STEP_COMMENT_RE.match(line)
+            if step_m:
+                current_step = int(step_m.group(1))
+                continue
+
+            step_ref = f" (Step {current_step})" if current_step is not None else ""
+            suffix = " — prefer get_by_test_id/get_by_role/get_by_label/get_by_text"
+
+            for m in _XPATH_LOCATOR_RE.finditer(line):
+                snippet = m.group(0)[:60]
+                warnings.append(f"Brittle selector{step_ref}: {snippet}{suffix}")
+
+            for m in _CSS_LOCATOR_RE.finditer(line):
+                snippet = m.group(0)[:60]
+                warnings.append(f"Brittle selector{step_ref}: {snippet}{suffix}")
+
+        return warnings
+
+    def _detect_assertion_gaps(self, script_content: str, test_case: TestCase) -> list[str]:
+        """Detect when fewer expect() assertions than declared expected results were generated.
+
+        Aggregate AC2 gap warning; per-result detail comes from LLM # REVIEW markers (13.3).
+
+        Args:
+            script_content: The generated Python script text.
+            test_case: Source test case (for expected_results count).
+
+        Returns:
+            List with one gap warning string when coverage is insufficient, else empty.
+        """
+        expected_count = len(test_case.expected_results)
+        if expected_count == 0:
+            return []
+        expect_count = script_content.count("expect(")
+        if expect_count < expected_count:
+            return [
+                f"Assertion gap: only {expect_count} of {expected_count} expected result(s) "
+                f"mapped to expect() assertions — review for missing/ambiguous assertions"
+            ]
+        return []
+
+    def _detect_hardcoded_secrets(self, script_content: str) -> list[str]:
+        """Detect hardcoded credential/secret literals in a generated script (13.4 AC1/AC3).
+
+        Deterministic complement to the prompt's no-hardcode-credentials instruction.
+        Walks line by line with step attribution from the nearest # Step N: comment.
+        Literal values are redacted in the warning text so the warning itself never leaks secrets.
+
+        Args:
+            script_content: The generated Python script text.
+
+        Returns:
+            List of warning strings, one per occurrence.
+        """
+        warnings: list[str] = []
+        current_step: int | None = None
+        current_step_text: str = ""
+
+        for line in script_content.splitlines():
+            step_m = _STEP_COMMENT_RE.match(line)
+            if step_m:
+                current_step = int(step_m.group(1))
+                current_step_text = line[step_m.end() :].lstrip(":").strip()
+                continue
+
+            step_ref = f" (Step {current_step})" if current_step is not None else ""
+
+            # 1. .fill/.type/.press_sequentially with a literal on a credential-named target
+            fill_m = _CRED_FILL_LITERAL_RE.search(line)
+            if fill_m and fill_m.group(2):
+                method = fill_m.group(1)
+                # Check if the locator prefix or the step comment names a credential field
+                prefix = line[: fill_m.start()]
+                if _CRED_KEYWORD_RE.search(prefix) or _CRED_KEYWORD_RE.search(current_step_text):
+                    warnings.append(
+                        f"Credential/secret literal{step_ref}: .{method}('<redacted>') — "
+                        "never hardcode credentials; reuse the authenticated SSO session"
+                    )
+
+            # 2. Secret-named variable assignment with a string literal
+            for var_m in _SECRET_VAR_ASSIGN_RE.finditer(line):
+                if _ENV_READ_RE.search(line):
+                    continue
+                var_name = var_m.group(1)
+                warnings.append(
+                    f"Credential/secret literal{step_ref}: {var_name} = '<redacted>' — "
+                    "never hardcode credentials; reuse the authenticated SSO session"
+                )
+
+            # 3. add_cookies() call — always a credential-injection risk
+            if _ADD_COOKIES_RE.search(line):
+                warnings.append(
+                    f"Credential/secret literal{step_ref}: add_cookies(<redacted>) — "
+                    "never inject cookies with literal values; use a pre-authenticated session"
+                )
+
+            # 4. Inline storage_state dict (string path is allowed; inline dict is not)
+            if _INLINE_STORAGE_STATE_DICT_RE.search(line):
+                warnings.append(
+                    f"Credential/secret literal{step_ref}: storage_state={{<redacted>}} — "
+                    "use a storage_state file path (string) supplied at execution time, not an inline dict"
+                )
+
+            # 5. Authorization header with a literal Bearer/Basic value
+            if _AUTH_BEARER_LITERAL_RE.search(line):
+                warnings.append(
+                    f"Credential/secret literal{step_ref}: Authorization='<redacted>' — "
+                    "never hardcode auth header values; reuse the authenticated SSO session"
+                )
+
+            # 6. URL with embedded credentials (scheme://user:pass@host)
+            for url_m in _CREDS_IN_URL_RE.finditer(line):
+                url_str = url_m.group(0)
+                sep = "://"
+                sep_idx = url_str.find(sep)
+                scheme = url_str[: sep_idx + len(sep)] if sep_idx >= 0 else ""
+                at_idx = url_str.rfind("@")
+                host_part = url_str[at_idx + 1 :] if at_idx >= 0 else ""
+                snippet = f"{scheme}<user>:<redacted>@{host_part}"[:60]
+                warnings.append(
+                    f"Credential/secret literal{step_ref}: URL with embedded credentials "
+                    f"({snippet}) — never embed credentials in URLs"
+                )
+
+        return warnings
+
+    def _detect_auth_setup_needed(self, script_content: str, test_case: TestCase) -> list[str]:
+        """Detect when a script targets an authenticated area but carries no SSO-setup marker (13.4 AC2).
+
+        Computes an auth-likely signal deterministically from the test case and script.
+        If auth-likely and the LLM has NOT already emitted the SSO-setup # REVIEW: marker,
+        emits one advisory warning identifying the required session setup.
+
+        Args:
+            script_content: The generated Python script text.
+            test_case: The source test case (checked for auth keywords and preconditions).
+
+        Returns:
+            List with one warning string when SSO setup is required and not yet marked, else empty.
+        """
+        auth_likely = False
+
+        # Signal 1: auth-action keywords in title or step actions/targets
+        text_to_check = test_case.title
+        for step in test_case.steps:
+            text_to_check += f" {step.action}"
+            if step.target:
+                text_to_check += f" {step.target}"
+        if _AUTH_KEYWORD_RE.search(text_to_check):
+            auth_likely = True
+
+        # Signal 2: "authenticated" / "logged in" / "signed in" in preconditions
+        if not auth_likely:
+            for precondition in test_case.preconditions:
+                if _AUTH_PRECOND_RE.search(precondition):
+                    auth_likely = True
+                    break
+
+        # Signal 3: password-field interaction in the script (locator or step comment + fill/type)
+        if not auth_likely:
+            current_step_text = ""
+            for line in script_content.splitlines():
+                step_m = _STEP_COMMENT_RE.match(line)
+                if step_m:
+                    current_step_text = line[step_m.end() :].lstrip(":").strip()
+                    continue
+                has_fill = bool(re.search(r"\.(fill|type|press_sequentially)\s*\(", line))
+                if has_fill and (
+                    _CRED_KEYWORD_RE.search(line) or _CRED_KEYWORD_RE.search(current_step_text)
+                ):
+                    auth_likely = True
+                    break
+
+        if not auth_likely:
+            return []
+
+        # Suppress if the LLM already emitted an SSO-setup REVIEW marker (AC2 is already satisfied)
+        if _SSO_REVIEW_MARKER_RE.search(script_content):
+            return []
+
+        return [
+            "SSO/session setup required: this test targets an authenticated area — "
+            "run it against a pre-authenticated browser context (existing SSO session); "
+            "no login automation or credentials are included"
+        ]
+
     def _generate_filename(self, title: str) -> str:
         """Generate Python test filename from test case title.
 
@@ -466,22 +918,36 @@ class ScriptGenerator:
         return f"test_{safe}.py"
 
     def _generate_script_header(self, test_case: TestCase) -> str:
-        """Generate script header with metadata comments.
+        """Generate script header with durable source traceability.
+
+        Links back to the originating test case by title and source requirement
+        (when available from Story 12.2 fields), not a stale workspace path.
 
         Args:
             test_case: The source test case.
 
         Returns:
-            Header string with metadata.
+            Header string with metadata and imports.
         """
         timestamp = datetime.now(UTC).isoformat()
         model = getattr(self._config, "script_generation_model", "sonnet")
 
-        # Safely get filename for header
-        source_filename = getattr(test_case, "filename", None) or "unknown"
+        # Build durable source traceability lines (graceful degradation on pre-12.2 TestCase)
+        source_req_name: str | None = getattr(test_case, "source_requirement_name", None)
+        source_url: str | None = getattr(test_case, "source_url", None)
+
+        source_lines = []
+        if source_req_name:
+            source_lines.append(f"Source requirement: {source_req_name}")
+        if source_url:
+            source_lines.append(f"Source URL: {source_url}")
+
+        source_block = "\n".join(source_lines)
+        if source_block:
+            source_block = f"\n{source_block}"
+
         header = f'''"""
-Generated Playwright test script for: {test_case.title}
-Source: workspace/testcases/{source_filename}.json
+Generated Playwright test script for: {test_case.title}{source_block}
 Generated: {timestamp}
 Model: {model}
 """

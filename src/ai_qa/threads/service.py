@@ -1,13 +1,21 @@
 """Service for managing threads."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from ai_qa.api.auth.session import UserSession
 from ai_qa.threads.models import AgentRun, Message, Thread
 from ai_qa.threads.schemas import ThreadCreate, ThreadUpdate
+
+if TYPE_CHECKING:
+    # Imported only for type-checking to avoid a runtime import cycle:
+    # ai_qa.api.auth.session -> ai_qa.api.__init__ (builds the app) ->
+    # ai_qa.api.routes -> back to this module. UserSession is used solely as a
+    # type annotation here, so deferring it costs nothing at runtime.
+    from ai_qa.api.auth.session import UserSession
 
 
 class ThreadAccessDeniedError(Exception):
@@ -252,6 +260,62 @@ class ThreadService:
         self.db.commit()
         self.db.refresh(run)
         return run
+
+    def reconcile_interrupted_work(self) -> tuple[int, int]:
+        """Reset work orphaned by a previous process that died mid-run.
+
+        A worker restart (uvicorn ``--reload``), crash, OOM, or kill terminates
+        in-flight asyncio pipeline tasks by *process death* — no Python exception
+        runs, so the ``except`` handlers never fire and the DB is left with threads
+        stuck at ``status="processing"`` (an endless UI spinner) and agent_runs at
+        ``status="running"``. Called once per worker boot from the FastAPI
+        ``lifespan`` so the UI can recover. Idempotent — only rows currently
+        ``processing`` / ``running`` are touched.
+
+        Status string literals mirror ``ai_qa.agents.base.AgentState`` (imported as
+        literals to avoid an agents→threads import cycle).
+
+        Assumes a SINGLE app worker (the deployment model: Dockerfile.backend runs one
+        uvicorn process; local dev uses ``--reload``, whose reloader fully terminates the
+        old worker before the new one boots). Under ``--workers N`` or multiple replicas
+        sharing one DB this would reset another live worker's in-flight rows — a
+        per-worker lease/heartbeat would be needed first (see deferred-work.md).
+
+        Returns ``(threads_reset, runs_reset)``.
+        """
+        from sqlalchemy import select
+
+        # Agent runs left mid-flight → "interrupted". Updated independently of the
+        # thread reset below (NOT via update_agent_run, which would cascade
+        # run.status onto thread.status and clobber the "start" we want).
+        running_runs = list(
+            self.db.execute(select(AgentRun).where(AgentRun.status == "running")).scalars().all()
+        )
+        for run in running_runs:
+            run.status = "interrupted"
+
+        # Threads stuck "processing" → "start": a fully-supported, re-runnable state
+        # the frontend renders as the agent's intake form (the retry affordance). A
+        # persisted system message explains why the run vanished.
+        stuck_threads = list(
+            self.db.execute(select(Thread).where(Thread.status == "processing")).scalars().all()
+        )
+        for thread in stuck_threads:
+            thread.status = "start"
+            self.db.add(
+                Message(
+                    thread_id=thread.id,
+                    sender="system",
+                    content=(
+                        "⚠ The previous run was interrupted because the server "
+                        "restarted. Please start this step again."
+                    ),
+                    message_type="warning",
+                )
+            )
+
+        self.db.commit()
+        return len(stuck_threads), len(running_runs)
 
     def get_user_threads(self, user_id: UUID, *, is_admin: bool = False) -> list[Thread]:
         """Get non-archived threads for a user, scoped to current project access.

@@ -295,7 +295,7 @@ Do **not** implement in Story 12.1:
 
 **From architecture.md:**
 
-- Backend is Python 3.12+ with FastAPI and `src/` layout.
+- Backend is Python 3.14+ with FastAPI and `src/` layout.
 - Pydantic Settings is the established configuration approach.
 - Tests are top-level `tests/` with pytest/pytest-asyncio/pytest-cov.
 - Data sovereignty and `.env` secret handling are non-negotiable.

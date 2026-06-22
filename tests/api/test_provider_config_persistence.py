@@ -374,7 +374,7 @@ def test_secret_deletion_removes_configuration(
 # --- Story 9.7: Real AC1/AC2/AC3 provider-config coverage ---
 
 
-def _create_project(client: TestClient) -> "Project":
+def _create_project(client: TestClient) -> Project:
     session_gen = _session_from_override(client)
     session = next(session_gen)
     try:
@@ -388,7 +388,7 @@ def _create_project(client: TestClient) -> "Project":
         session_gen.close()
 
 
-def _create_membership(client: TestClient, user: "User", project: "Project") -> None:
+def _create_membership(client: TestClient, user: User, project: Project) -> None:
     session_gen = _session_from_override(client)
     session = next(session_gen)
     try:
@@ -399,7 +399,7 @@ def _create_membership(client: TestClient, user: "User", project: "Project") -> 
         session_gen.close()
 
 
-def _create_thread(client: TestClient, user: "User", project: "Project") -> "Thread":
+def _create_thread(client: TestClient, user: User, project: Project) -> Thread:
     session_gen = _session_from_override(client)
     session = next(session_gen)
     try:
@@ -414,7 +414,7 @@ def _create_thread(client: TestClient, user: "User", project: "Project") -> "Thr
 
 
 def _save_config_via_service(
-    client: TestClient, user: "User", project: "Project", provider: str
+    client: TestClient, user: User, project: Project, provider: str
 ) -> None:
     session_gen = _session_from_override(client)
     session = next(session_gen)
@@ -441,7 +441,7 @@ def _save_config_via_service(
         session_gen.close()
 
 
-def _read_config_via_service(client: TestClient, user: "User", project: "Project") -> "dict | None":
+def _read_config_via_service(client: TestClient, user: User, project: Project) -> dict | None:
     session_gen = _session_from_override(client)
     session = next(session_gen)
     try:

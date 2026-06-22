@@ -1,5 +1,7 @@
 """Pydantic schemas for Threads."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -55,8 +57,8 @@ class MessageResponse(MessageBase):
 
 
 class ThreadDetailsResponse(ThreadResponse):
-    messages: list["MessageResponse"]
-    agent_runs: list["AgentRunResponse"]
+    messages: list[MessageResponse]
+    agent_runs: list[AgentRunResponse]
 
 
 class AgentRunBase(BaseModel):

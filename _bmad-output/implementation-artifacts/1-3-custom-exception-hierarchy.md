@@ -335,7 +335,7 @@ from ai_qa.exceptions import ConfigError  # or whichever exception needed
 ### Story 1.2 Learnings (directly applicable)
 
 - **Dev tooling:** `uv run pytest tests/ -v` runs all tests; `uvx ruff check src/ tests/` for linting
-- **Python 3.12 union syntax:** Use `str | None` not `Optional[str]` (per Ruff py312 target)
+- **Python 3.14 union syntax:** Use `str | None` not `Optional[str]` (per Ruff py314 target)
 - **Import order enforced by Ruff:** stdlib → third-party → local (isort rules)
 - **mypy strict mode:** All functions need type hints; `None` return must be explicit `-> None`
 - **str_strip_whitespace:** Config has this enabled — relevant if you ever process config values, but not needed in exceptions.py
@@ -399,7 +399,7 @@ No issues encountered. Implementation straightforward per spec.
 - Updated `src/ai_qa/__main__.py`: replaced `raise ValueError(...)` with `raise ConfigError(...)` with split message/details
 - Created `tests/test_exceptions.py` with 10 tests covering inheritance, constructor, raise/catch, and repr behavior
 - All 10 new tests pass; all 5 existing `test_config.py` tests continue to pass (no regressions)
-- `uvx ruff check src/ tests/` — no issues; Python 3.12 union syntax (`str | None`) used correctly
+- `uvx ruff check src/ tests/` — no issues; Python 3.14 union syntax (`str | None`) used correctly
 - `exceptions.py` has zero local imports, satisfying the module dependency rule
 - Code review completed: Acceptance Auditor confirmed all 5 ACs met, all 8 technical requirements satisfied
 - Review patch applied: added `test_config_error_usage_pattern()` to validate real-world usage from `__main__.py`

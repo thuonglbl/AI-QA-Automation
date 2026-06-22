@@ -213,17 +213,26 @@ class TestToolCache:
         assert result is None
 
     def test_cache_ttl_expiration(self):
-        """Expired entries return None."""
+        """Expired entries return None; non-expired entries are returned."""
         from ai_qa.mcp.tools import ToolCache
 
-        cache = ToolCache(ttl_seconds=0.001)  # Very short TTL
+        # Inject a controllable fake clock so no real-time sleep is needed.
+        fake_time: list[float] = [1000.0]
+
+        def fake_clock() -> float:
+            return fake_time[0]
+
+        cache = ToolCache(ttl_seconds=10.0, clock=fake_clock)
         tool = Tool(name="expiring", description="Test")
 
         cache.set(tool)
-        import time
 
-        time.sleep(0.002)  # Wait for expiration
+        # Before expiry: tool should be returned.
+        fake_time[0] = 1005.0  # 5 s elapsed — still within the 10 s TTL
+        assert cache.get("expiring") is not None
 
+        # After expiry: tool should be evicted.
+        fake_time[0] = 1011.0  # 11 s elapsed — past the 10 s TTL
         result = cache.get("expiring")
         assert result is None
 

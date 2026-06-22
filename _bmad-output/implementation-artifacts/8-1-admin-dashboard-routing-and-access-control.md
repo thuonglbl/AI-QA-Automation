@@ -100,7 +100,7 @@ From 7-7 (Workspace Shell Routing) and 6-8 (Admin Routing Bugfix):
 
 ### Latest Tech Information
 
-- Backend: Python 3.12+, FastAPI with `BaseHTTPMiddleware` auth + `Depends(require_admin)` RBAC, session-cookie/JWT (`SessionManager`). 401 vs 403 split is deliberate: middleware = unauthenticated (401), route dependency = authenticated-but-forbidden (403).
+- Backend: Python 3.14+, FastAPI with `BaseHTTPMiddleware` auth + `Depends(require_admin)` RBAC, session-cookie/JWT (`SessionManager`). 401 vs 403 split is deliberate: middleware = unauthenticated (401), route dependency = authenticated-but-forbidden (403).
 - Frontend: React 18 + TypeScript + Vite, no router (render-switch SPA), Vitest + Testing Library (unit), Playwright (e2e).
 
 ### References

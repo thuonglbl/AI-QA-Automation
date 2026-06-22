@@ -8,6 +8,8 @@ Models:
   - AgentMessage: Agent-to-frontend communication (sender, content, timestamp, message_type)
 """
 
+from __future__ import annotations
+
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -62,7 +64,7 @@ class StageResult(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     @model_validator(mode="after")
-    def validate_success_errors_consistency(self) -> "StageResult":
+    def validate_success_errors_consistency(self) -> StageResult:
         """Ensure consistency: if success=True, errors must be empty."""
         if self.success is True and self.errors:
             raise ValueError("success=True but errors list is not empty — inconsistent state")
@@ -238,6 +240,8 @@ class AliceConfiguration(BaseModel):
 # Test Case Models (Epic 4)
 # =============================================================================
 
+ConfidenceLevel = Literal["high", "medium", "low"]
+
 
 class TestCaseStep(BaseModel):
     __test__ = False  # Prevent pytest from collecting this as a test class
@@ -268,21 +272,76 @@ class TestCase(BaseModel):
 
     Attributes:
         title: Test case title (kebab-case filename derived from this)
+        objective: What this test case verifies (one sentence)
         preconditions: List of conditions that must be met before test execution
-        steps: Ordered list of test steps with action-target pairs
+        test_data: Consolidated test data values used by the case (distinct from per-step data)
+        steps: Ordered list of test steps with plain-language action-target pairs
         expected_results: List of expected outcomes after test execution
-        automation_hints: Optional hints for automation (selectors, test IDs)
+        automation_hints: Optional hints for automation timing/wait (never invented selectors)
         tags: Optional categorization tags (e.g., ["smoke", "regression"])
+        source_requirement_id: Artifact id of the originating requirement
+        source_requirement_name: Artifact name of the originating requirement
+        source_url: Source URL of the originating requirement (may be empty for Confluence)
+        feature_area: Feature/area grouping label derived from the requirement
+        warnings: Ambiguity/quality warnings (e.g. ambiguous UI targets preserved instead of invented)
+        confidence: Per-case confidence score (0.0–1.0); None until scored
+        confidence_level: Banded confidence level (high/medium/low); None until scored
+        confidence_rationale: Human-readable factors behind the score (structural gaps, warnings)
+        approved_by: User (email/id) who approved this test case
+        approved_at: ISO-8601 timestamp of approval
     """
 
     title: str = Field(description="Test case title")
+    objective: str = Field(default="", description="What this test case verifies (one sentence)")
     preconditions: list[str] = Field(default_factory=list, description="Pre-execution conditions")
+    test_data: list[str] = Field(
+        default_factory=list, description="Consolidated test data values used by the case"
+    )
     steps: list[TestCaseStep] = Field(default_factory=list, description="Ordered test steps")
     expected_results: list[str] = Field(default_factory=list, description="Expected outcomes")
     automation_hints: list[str] = Field(
-        default_factory=list, description="Automation selectors/hints"
+        default_factory=list, description="Automation timing/wait hints (never invented selectors)"
     )
     tags: list[str] = Field(default_factory=list, description="Categorization tags")
+    source_requirement_id: str | None = Field(
+        default=None, description="Artifact id of the originating requirement"
+    )
+    source_requirement_name: str | None = Field(
+        default=None, description="Artifact name of the originating requirement"
+    )
+    source_url: str | None = Field(
+        default=None,
+        description="Source URL of the originating requirement (may be empty for Confluence)",
+    )
+    feature_area: str | None = Field(
+        default=None, description="Feature/area grouping label from the requirement"
+    )
+    role: str | None = Field(
+        default=None,
+        description=(
+            "App-under-test role this test runs as (one of the project's app_roles, e.g. "
+            "'Admin'/'User'). Drives per-role sub-foldering and the role-grouped Sarah→Jack "
+            "hand-off. None when the requirement does not specify a role."
+        ),
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Ambiguity/quality warnings preserved during generation",
+    )
+    confidence: float | None = Field(
+        default=None, ge=0.0, le=1.0, description="Per-case confidence score (0.0-1.0)"
+    )
+    confidence_level: ConfidenceLevel | None = Field(
+        default=None, description="Banded confidence: high/medium/low"
+    )
+    confidence_rationale: list[str] = Field(
+        default_factory=list,
+        description="Human-readable factors behind the score (structural gaps, generation warnings, source warnings)",
+    )
+    approved_by: str | None = Field(
+        default=None, description="User (email/id) who approved this test case"
+    )
+    approved_at: str | None = Field(default=None, description="ISO-8601 timestamp of approval")
 
     model_config = ConfigDict(validate_assignment=True)
 
@@ -294,3 +353,154 @@ class TestCase(BaseModel):
         # Convert to lowercase, replace non-alphanumeric with hyphens
         kebab = re.sub(r"[^a-z0-9]+", "-", self.title.lower())
         return kebab.strip("-")
+
+    def to_markdown(self) -> str:
+        """Render the test case as clean, LLM-friendly Markdown.
+
+        This is the single persisted representation (Mary writes it to the Test Cases
+        folder) AND the natural-language form fed to the script-generation LLM — the
+        whole pipeline is natural-language, so the test case is never serialized to JSON.
+        ``from_markdown`` is the inverse (round-trips the fields below). Review-only
+        framing (confidence score/rationale) is deliberately omitted.
+        """
+        lines: list[str] = [f"# {self.title}", ""]
+        if self.role:
+            lines += ["## Role", "", self.role, ""]
+        if self.objective:
+            lines += ["## Objective", "", self.objective, ""]
+        if self.source_requirement_name:
+            source_ref = self.source_requirement_name
+            if self.source_url:
+                source_ref = f"[{source_ref}]({self.source_url})"
+            lines += ["## Source Requirement", "", source_ref, ""]
+        if self.preconditions:
+            lines += ["## Preconditions", ""]
+            lines += [f"{i}. {precond}" for i, precond in enumerate(self.preconditions, start=1)]
+            lines += [""]
+        if self.test_data:
+            lines += ["## Test Data", ""]
+            lines += [f"- {item}" for item in self.test_data]
+            lines += [""]
+        if self.steps:
+            lines += ["## Steps", ""]
+            for step in self.steps:
+                line = f"{step.number}. {step.action} _(target: {step.target})_"
+                if step.data:
+                    line += f" — Data: {step.data}"
+                lines.append(line)
+            lines += [""]
+        if self.expected_results:
+            lines += ["## Expected Results", ""]
+            lines += [f"{i}. {result}" for i, result in enumerate(self.expected_results, start=1)]
+            lines += [""]
+        if self.automation_hints:
+            lines += ["## Automation Hints", ""]
+            lines += [f"- {hint}" for hint in self.automation_hints]
+            lines += [""]
+        if self.tags:
+            lines += ["## Tags", "", ", ".join(self.tags), ""]
+        if self.warnings:
+            lines += ["## Warnings", ""]
+            lines += [f"- {warning}" for warning in self.warnings]
+            lines += [""]
+        return "\n".join(lines).rstrip() + "\n"
+
+    @classmethod
+    def from_markdown(cls, markdown: str) -> TestCase:
+        """Reconstruct a ``TestCase`` from the Markdown produced by ``to_markdown``.
+
+        Best-effort inverse: the Markdown body is the source of truth, and downstream
+        consumers (Sarah's review panel, the assertion-gap / SSO heuristics, filenames)
+        read the parsed fields. Fields not present in the Markdown (confidence, approval
+        stamps, internal ids) stay at their defaults — they are review-time metadata that
+        does not need to survive into script generation.
+        """
+        import re
+
+        title = ""
+        sections: dict[str, list[str]] = {}
+        current: str | None = None
+        for raw in markdown.splitlines():
+            heading = re.match(r"^##\s+(.*)$", raw)
+            if heading:
+                # Normalise the section key: lowercase, strip a leading warning glyph.
+                current = heading.group(1).strip().lstrip("⚠").strip().lower()
+                sections[current] = []
+                continue
+            top = re.match(r"^#\s+(.*)$", raw)
+            if top and not title:
+                title = top.group(1).strip()
+                current = None
+                continue
+            if current is not None:
+                sections[current].append(raw)
+
+        def _text(key: str) -> str:
+            return "\n".join(sections.get(key, [])).strip()
+
+        def _bullets(key: str) -> list[str]:
+            out: list[str] = []
+            for line in sections.get(key, []):
+                item = re.sub(r"^\s*[-*]\s+", "", line).strip()
+                if item:
+                    out.append(item)
+            return out
+
+        def _numbered(key: str) -> list[str]:
+            out: list[str] = []
+            for line in sections.get(key, []):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                out.append(re.sub(r"^\d+\.\s*", "", stripped).strip())
+            return out
+
+        # Source requirement: parse a "[name](url)" link, else plain text.
+        source_name: str | None = None
+        source_url: str | None = None
+        src = _text("source requirement")
+        if src:
+            link = re.match(r"^\[(.*?)\]\((.*?)\)$", src)
+            if link:
+                source_name, source_url = link.group(1), link.group(2)
+            else:
+                source_name = src
+
+        steps: list[TestCaseStep] = []
+        step_re = re.compile(r"^(\d+)\.\s*(.*?)\s*_\(target:\s*(.*?)\)_(?:\s*—\s*Data:\s*(.*))?$")
+        for line in sections.get("steps", []):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            match = step_re.match(stripped)
+            if match:
+                steps.append(
+                    TestCaseStep(
+                        number=int(match.group(1)),
+                        action=match.group(2).strip(),
+                        target=match.group(3).strip(),
+                        data=(match.group(4).strip() if match.group(4) else None),
+                    )
+                )
+            else:
+                # Fallback: keep the prose as the action so nothing is dropped.
+                action = re.sub(r"^\d+\.\s*", "", stripped).strip()
+                steps.append(TestCaseStep(number=len(steps) + 1, action=action, target=""))
+
+        tags_text = _text("tags")
+        tags = [t.strip() for t in tags_text.split(",") if t.strip()] if tags_text else []
+
+        return cls(
+            title=title,
+            role=_text("role") or None,
+            objective=_text("objective"),
+            preconditions=_numbered("preconditions"),
+            test_data=_bullets("test data"),
+            steps=steps,
+            expected_results=_numbered("expected results"),
+            automation_hints=_bullets("automation hints"),
+            tags=tags,
+            source_requirement_name=source_name,
+            source_url=source_url,
+            warnings=_bullets("warnings"),
+        )

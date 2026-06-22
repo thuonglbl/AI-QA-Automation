@@ -1,5 +1,7 @@
 """SQLAlchemy ORM models for the Threads domain."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -32,11 +34,11 @@ class Thread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     provider_base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     current_agent: Mapped[str] = mapped_column(String(50), nullable=False, default="Alice")
 
-    messages: Mapped[list["Message"]] = relationship(
+    messages: Mapped[list[Message]] = relationship(
         back_populates="thread", cascade="all, delete-orphan", order_by="Message.created_at"
     )
     agent_configs: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    agent_runs: Mapped[list["AgentRun"]] = relationship(
+    agent_runs: Mapped[list[AgentRun]] = relationship(
         back_populates="thread", cascade="all, delete-orphan", order_by="AgentRun.created_at"
     )
 
@@ -72,5 +74,5 @@ class AgentRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     execution_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     thread: Mapped[Thread] = relationship(back_populates="agent_runs")
-    artifacts: Mapped[list["Artifact"]] = relationship(back_populates="agent_run")
-    audit_events: Mapped[list["AuditEvent"]] = relationship(back_populates="agent_run")
+    artifacts: Mapped[list[Artifact]] = relationship(back_populates="agent_run")
+    audit_events: Mapped[list[AuditEvent]] = relationship(back_populates="agent_run")

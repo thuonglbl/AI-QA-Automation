@@ -79,8 +79,8 @@ Because this repository already implemented these concerns under Stories 12.8 an
 
 ### Architecture Compliance
 
-- Backend stack: Python 3.12+, FastAPI, SQLAlchemy ORM, Pydantic models, PostgreSQL/Alembic, pytest.
-- Frontend stack: React 18, TypeScript, Vite, Shadcn/ui primitives, Tailwind CSS, Vitest + React Testing Library.
+- Backend stack: Python 3.14+, FastAPI, SQLAlchemy ORM, Pydantic models, PostgreSQL/Alembic, pytest.
+- Frontend stack: React 19, TypeScript, Vite, Shadcn/ui primitives, Tailwind CSS, Vitest + React Testing Library.
 - Admin API routes belong in `src/ai_qa/api/admin.py` and must stay protected by `require_admin`.
 - Auth/user domain helpers live under `src/ai_qa/auth/`; reuse `normalize_email()`, `get_user_by_email()`, and `hash_password()` rather than duplicating logic.
 - User and project membership persistence uses SQLAlchemy models in `src/ai_qa/db/models.py`.

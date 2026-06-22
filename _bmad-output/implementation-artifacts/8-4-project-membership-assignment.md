@@ -105,7 +105,7 @@ From 8-3 (Admin Project Management), 8-2 (Admin User Management), 8-1 (Admin Rou
 
 ### Latest Tech Information
 
-- Backend: Python 3.12+, FastAPI with `Depends(require_admin)` RBAC; Pydantic v2 with `Literal["member", "owner"]` for `MembershipCreateRequest.role` (a non-`member`/`owner` role yields `422`, covered by [test_admin_assigns_membership_and_duplicate_updates_role](file:///tests/api/test_admin_rbac_api.py#L335-L346)). SQLAlchemy 2.x ORM with `select(...).scalar_one_or_none()` for the assign-or-update branch.
+- Backend: Python 3.14+, FastAPI with `Depends(require_admin)` RBAC; Pydantic v2 with `Literal["member", "owner"]` for `MembershipCreateRequest.role` (a non-`member`/`owner` role yields `422`, covered by [test_admin_assigns_membership_and_duplicate_updates_role](file:///tests/api/test_admin_rbac_api.py#L335-L346)). SQLAlchemy 2.x ORM with `select(...).scalar_one_or_none()` for the assign-or-update branch.
 - Frontend: React 18 + TypeScript + Vite, Vitest + Testing Library (unit), Playwright (e2e). Project list state comes from the `useProject` context (`reloadProjects`); user list from `loadUsers()`; both are re-fetched after assign/remove ([AdminDashboard.tsx L239-L259](file:///frontend/src/components/admin/AdminDashboard.tsx#L239-L259)). Error surfacing goes through `getSafeApiErrorMessage` → red banner via `addError`.
 
 ### References

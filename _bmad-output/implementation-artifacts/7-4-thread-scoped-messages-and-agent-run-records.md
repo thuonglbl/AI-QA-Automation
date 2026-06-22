@@ -77,7 +77,7 @@ From Story 7.3 (New Conversation Thread Creation with Alice Project Selection):
 Recent commits show work on story 8-6 (Admin E2E test execution).
 
 ### Latest Tech Information
-- Python 3.12+
+- Python 3.14+
 - FastAPI, SQLAlchemy/Alembic, PostgreSQL
 
 ### References

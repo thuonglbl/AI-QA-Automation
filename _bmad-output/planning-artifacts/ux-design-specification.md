@@ -369,7 +369,7 @@ A copy-paste component library built on Radix UI primitives with Tailwind CSS st
 
 **Frontend Stack:**
 
-- **React 18+** — UI framework
+- **React 19+** — UI framework
 - **TypeScript** — type safety for AI-generated code (catches errors early)
 - **Tailwind CSS** — utility-first styling, no custom CSS files needed
 - **Shadcn/ui** — component library (Card, Button, Input, Badge, Progress, Dialog)

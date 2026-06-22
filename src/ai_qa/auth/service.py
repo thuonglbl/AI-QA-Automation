@@ -12,6 +12,9 @@ from ai_qa.db.models import User
 
 STANDARD_ROLE = "standard"
 ADMIN_ROLE = "admin"
+# Per-project administrator: a platform-level role (User.role) whose authority is scoped
+# to the projects where the user holds a ProjectMembership(role="project_admin").
+PROJECT_ADMIN_ROLE = "project_admin"
 _MIN_PASSWORD_LENGTH = 8
 _email_adapter = TypeAdapter(EmailStr)
 

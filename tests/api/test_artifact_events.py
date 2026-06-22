@@ -11,8 +11,7 @@ rules #19/#20/#21.
 from collections.abc import Generator
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock, patch
-from uuid import uuid4
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -67,6 +66,12 @@ class ArtifactStorageFake:
     def delete(self, storage_path: str) -> None:
         self.deleted.append(storage_path)
         self.contents.pop(storage_path, None)
+
+    def delete_prefix(self, prefix: str) -> None:
+        keys = [k for k in self.contents if k.startswith(prefix)]
+        for k in keys:
+            self.deleted.append(k)
+            self.contents.pop(k, None)
 
 
 @pytest.fixture
@@ -201,35 +206,25 @@ def _auth_headers(client: TestClient, user: User) -> dict[str, str]:
 
 
 # --- [P0] Story 10.6: Artifact Change Events ---
+# broadcast_artifact_change is lazily imported inside each endpoint function in
+# artifacts.py, so we patch it at its *definition* site (ai_qa.api.websocket)
+# which is where the lazy import resolves to.
+_BROADCAST_PATCH = "ai_qa.api.websocket.broadcast_artifact_change"
 
 
 def test_artifact_change_event_emitted_on_create(
     event_client: TestClient,
 ) -> None:
-    """[P0] AC1: Artifact change event is emitted when an artifact is created.
+    """[P0] AC1: broadcast_artifact_change is called with correct args on artifact create.
 
-    When a new artifact is created, the system must emit an event that
-    can be consumed by WebSocket clients or other event listeners.
+    Patches the function at its definition site (ai_qa.api.websocket) so that
+    the lazy import inside artifacts.py resolves to the mock.
     """
     member = _create_user(event_client, "member@example.com", STANDARD_ROLE)
     project = _create_project(event_client, "Event Project")
     _add_membership(event_client, project, member)
 
-    with patch("ai_qa.api.artifacts.ArtifactService") as mock_service:
-        mock_artifact = MagicMock()
-        mock_artifact.id = uuid4()
-        mock_artifact.project_id = project.id
-        mock_artifact.kind = "markdown"
-        mock_artifact.name = "test.md"
-        mock_artifact.current_version = 1
-        mock_artifact.agent_run_id = None
-        mock_artifact.created_by_user_id = None
-        mock_artifact.updated_by_user_id = None
-        mock_artifact.thread_id = None
-        mock_artifact.created_at = MagicMock()
-        mock_artifact.updated_at = MagicMock()
-        mock_service.return_value.save_artifact.return_value = mock_artifact
-
+    with patch(_BROADCAST_PATCH, new_callable=AsyncMock) as mock_broadcast:
         response = event_client.post(
             f"/api/projects/{project.id}/artifacts",
             headers=_auth_headers(event_client, member),
@@ -241,24 +236,29 @@ def test_artifact_change_event_emitted_on_create(
         )
 
         assert response.status_code == 200
-        # Verify the service was called (event would be emitted in real implementation)
-        mock_service.return_value.save_artifact.assert_called_once()
+        artifact_id = response.json()["id"]
+
+        mock_broadcast.assert_awaited_once()
+        call_kwargs = mock_broadcast.call_args.kwargs
+        assert call_kwargs["project_id"] == str(project.id)
+        assert call_kwargs["artifact_id"] == artifact_id
+        assert call_kwargs["change_type"] == "created"
 
 
 def test_artifact_change_event_emitted_on_update(
     event_client: TestClient,
 ) -> None:
-    """[P0] AC1: Artifact change event is emitted when an artifact is updated.
+    """[P0] AC1: broadcast_artifact_change is called with correct args on artifact update.
 
-    When an artifact version is created, the system must emit an event
-    reflecting the change.
+    Creates a real artifact first (no mock), then patches broadcast for the
+    update call and asserts change_type='updated'.
     """
     member = _create_user(event_client, "member@example.com", STANDARD_ROLE)
     project = _create_project(event_client, "Event Project")
     agent_run = _create_agent_run(event_client, project, member)
     _add_membership(event_client, project, member)
 
-    # Create initial artifact
+    # Create initial artifact (real, no mock)
     created = event_client.post(
         f"/api/projects/{project.id}/artifacts",
         headers=_auth_headers(event_client, member),
@@ -272,22 +272,8 @@ def test_artifact_change_event_emitted_on_update(
     assert created.status_code == 200
     artifact_id = created.json()["id"]
 
-    # Update artifact (create new version)
-    with patch("ai_qa.api.artifacts.ArtifactService") as mock_service:
-        mock_artifact = MagicMock()
-        mock_artifact.id = uuid4()
-        mock_artifact.project_id = project.id
-        mock_artifact.kind = "markdown"
-        mock_artifact.name = "test.md"
-        mock_artifact.current_version = 2
-        mock_artifact.agent_run_id = agent_run.id
-        mock_artifact.created_by_user_id = None
-        mock_artifact.updated_by_user_id = None
-        mock_artifact.thread_id = None
-        mock_artifact.created_at = MagicMock()
-        mock_artifact.updated_at = MagicMock()
-        mock_service.return_value.create_version.return_value = mock_artifact
-
+    # Update artifact — verify broadcast fires with correct args
+    with patch(_BROADCAST_PATCH, new_callable=AsyncMock) as mock_broadcast:
         response = event_client.post(
             f"/api/projects/{project.id}/artifacts/{artifact_id}/versions",
             headers=_auth_headers(event_client, member),
@@ -295,36 +281,102 @@ def test_artifact_change_event_emitted_on_update(
         )
 
         assert response.status_code == 200
-        mock_service.return_value.create_version.assert_called_once()
+        mock_broadcast.assert_awaited_once()
+        call_kwargs = mock_broadcast.call_args.kwargs
+        assert call_kwargs["project_id"] == str(project.id)
+        assert call_kwargs["artifact_id"] == artifact_id
+        assert call_kwargs["change_type"] == "updated"
 
 
 def test_artifact_change_event_emitted_on_delete(
     event_client: TestClient,
 ) -> None:
-    """[P0] AC1: Artifact change event is emitted when an artifact is deleted.
+    """[P0] AC1: broadcast_artifact_change is called with change_type='deleted' on DELETE.
 
-    When an artifact is deleted, the system must emit a deletion event.
-    Note: Current API doesn't have delete endpoint, but the event system
-    must support it when implemented.
+    (a) Creates an artifact via POST, (b) deletes via DELETE endpoint,
+    (c) asserts broadcast was called with change_type='deleted'.
     """
     member = _create_user(event_client, "member@example.com", STANDARD_ROLE)
     project = _create_project(event_client, "Event Project")
     _add_membership(event_client, project, member)
 
-    # Verify the artifact system is set up correctly
-    # (Delete endpoint would be implemented in Story 10.4)
-    response = event_client.get(
+    # Create a real artifact first
+    created = event_client.post(
+        f"/api/projects/{project.id}/artifacts",
+        headers=_auth_headers(event_client, member),
+        json={"kind": "markdown", "name": "to-delete.md", "content": "# Bye"},
+    )
+    assert created.status_code == 200
+    artifact_id = created.json()["id"]
+
+    # Delete the artifact — verify broadcast fires with correct args
+    with patch(_BROADCAST_PATCH, new_callable=AsyncMock) as mock_broadcast:
+        delete_resp = event_client.delete(
+            f"/api/projects/{project.id}/artifacts/{artifact_id}",
+            headers=_auth_headers(event_client, member),
+        )
+        assert delete_resp.status_code == 204
+
+        mock_broadcast.assert_awaited_once()
+        call_kwargs = mock_broadcast.call_args.kwargs
+        assert call_kwargs["project_id"] == str(project.id)
+        assert call_kwargs["artifact_id"] == artifact_id
+        assert call_kwargs["change_type"] == "deleted"
+
+    # Subsequent GET → 404 confirms the artifact was removed
+    assert (
+        event_client.get(
+            f"/api/projects/{project.id}/artifacts/{artifact_id}",
+            headers=_auth_headers(event_client, member),
+        ).status_code
+        == 404
+    )
+
+
+def test_no_broadcast_on_storage_failure(
+    event_client: TestClient,
+) -> None:
+    """[P0] AC2: broadcast_artifact_change is NOT called when storage write fails.
+
+    Sets storage.fail_on_write=True, POSTs a create request (expect 422),
+    then verifies the patched broadcast was not called at all.
+    """
+    member = _create_user(event_client, "member@example.com", STANDARD_ROLE)
+    project = _create_project(event_client, "Event Project")
+    _add_membership(event_client, project, member)
+
+    app = cast(FastAPI, event_client.app)
+    storage: ArtifactStorageFake = app.state.test_artifact_storage
+    storage.fail_on_write = True
+
+    with patch(_BROADCAST_PATCH, new_callable=AsyncMock) as mock_broadcast:
+        response = event_client.post(
+            f"/api/projects/{project.id}/artifacts",
+            headers=_auth_headers(event_client, member),
+            json={
+                "kind": "markdown",
+                "name": "test.md",
+                "content": "# Test",
+            },
+        )
+
+        # Request should fail with 422 (ValueError caught by endpoint)
+        assert response.status_code == 422
+        mock_broadcast.assert_not_awaited()
+
+    # Verify no artifacts were created (second-layer check)
+    list_response = event_client.get(
         f"/api/projects/{project.id}/artifacts",
         headers=_auth_headers(event_client, member),
     )
-    assert response.status_code == 200
-    assert response.json() == []
+    assert list_response.status_code == 200
+    assert list_response.json() == []
 
 
 def test_events_broadcast_only_to_authorized_project_users(
     event_client: TestClient,
 ) -> None:
-    """[P0] AC2: Events are broadcast only to authorized project users.
+    """[P0] AC3: Events are broadcast only to authorized project users.
 
     Users who are not members of the project should not receive
     artifact change events for that project.
@@ -357,10 +409,11 @@ def test_events_broadcast_only_to_authorized_project_users(
 def test_no_event_emitted_on_storage_failure(
     event_client: TestClient,
 ) -> None:
-    """[P0] AC3: No event is emitted when artifact creation fails.
+    """[P0] AC2 (second-layer check): No artifact is created when storage fails.
 
-    If the storage backend fails, the artifact is not created and
-    no change event should be emitted.
+    Kept alongside test_no_broadcast_on_storage_failure for defence-in-depth:
+    this test verifies the DB side (artifact list stays empty), while the other
+    test verifies the broadcast side (mock was not called).
     """
     member = _create_user(event_client, "member@example.com", STANDARD_ROLE)
     project = _create_project(event_client, "Event Project")
@@ -398,16 +451,18 @@ def test_events_not_emitted_for_unauthenticated_requests(
     """[P0] No events are emitted for unauthenticated artifact operations."""
     project = _create_project(event_client, "Event Project")
 
-    response = event_client.post(
-        f"/api/projects/{project.id}/artifacts",
-        json={
-            "kind": "markdown",
-            "name": "test.md",
-            "content": "# Test",
-        },
-    )
+    with patch(_BROADCAST_PATCH, new_callable=AsyncMock) as mock_broadcast:
+        response = event_client.post(
+            f"/api/projects/{project.id}/artifacts",
+            json={
+                "kind": "markdown",
+                "name": "test.md",
+                "content": "# Test",
+            },
+        )
 
-    assert response.status_code == 401
+        assert response.status_code == 401
+        mock_broadcast.assert_not_awaited()
 
 
 def test_events_contain_required_metadata(
@@ -415,29 +470,14 @@ def test_events_contain_required_metadata(
 ) -> None:
     """[P0] Artifact events contain required metadata fields.
 
-    Events must include: artifact_id, project_id, event_type,
-    timestamp, and user_id for proper event handling.
+    Events must include: artifact_id, project_id, change_type, and timestamp.
     """
     member = _create_user(event_client, "member@example.com", STANDARD_ROLE)
     project = _create_project(event_client, "Event Project")
     agent_run = _create_agent_run(event_client, project, member)
     _add_membership(event_client, project, member)
 
-    with patch("ai_qa.api.artifacts.ArtifactService") as mock_service:
-        mock_artifact = MagicMock()
-        mock_artifact.id = uuid4()
-        mock_artifact.project_id = project.id
-        mock_artifact.kind = "markdown"
-        mock_artifact.name = "test.md"
-        mock_artifact.current_version = 1
-        mock_artifact.agent_run_id = agent_run.id
-        mock_artifact.created_by_user_id = None
-        mock_artifact.updated_by_user_id = None
-        mock_artifact.thread_id = None
-        mock_artifact.created_at = MagicMock()
-        mock_artifact.updated_at = MagicMock()
-        mock_service.return_value.save_artifact.return_value = mock_artifact
-
+    with patch(_BROADCAST_PATCH, new_callable=AsyncMock) as mock_broadcast:
         response = event_client.post(
             f"/api/projects/{project.id}/artifacts",
             headers=_auth_headers(event_client, member),
@@ -450,7 +490,11 @@ def test_events_contain_required_metadata(
         )
 
         assert response.status_code == 200
-        # Verify the service was called with proper metadata
-        call_kwargs = mock_service.return_value.save_artifact.call_args
-        assert call_kwargs[1]["project_id"] == project.id
-        assert call_kwargs[1]["owner_user_id"] == member.id
+        artifact_id = response.json()["id"]
+
+        # Verify broadcast was called with all required AC1 fields
+        mock_broadcast.assert_awaited_once()
+        call_kwargs = mock_broadcast.call_args.kwargs
+        assert call_kwargs["project_id"] == str(project.id)
+        assert call_kwargs["artifact_id"] == artifact_id
+        assert call_kwargs["change_type"] == "created"

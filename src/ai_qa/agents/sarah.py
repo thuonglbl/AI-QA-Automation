@@ -7,24 +7,31 @@ approve, reject with feedback, or skip individual scripts.
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ai_qa.agents.base import AgentState, BaseAgent
+from ai_qa.artifacts.storage import role_to_folder
 from ai_qa.browser.agent import BrowserAgent
 from ai_qa.config import AppSettings
 from ai_qa.models import StageResult, TestCase
-from ai_qa.pipelines.artifact_adapter import PipelineArtifactAdapter
+from ai_qa.pipelines.artifact_adapter import PipelineArtifact, PipelineArtifactAdapter
 from ai_qa.pipelines.script_generator import ScriptGenerator
+from ai_qa.pipelines.script_validator import ScriptValidationError, validate_script
 from ai_qa.pipelines.vision_locator import VisionLocator
 
 logger = logging.getLogger(__name__)
 
 
 class GeneratedScript(BaseModel):
-    """Represents a generated script with metadata for review."""
+    """Represents a generated script with metadata for review.
+
+    approved_by/approved_at are stamped on the in-memory model when approved (AC1 — 13.7).
+    Their durable artifact-metadata persistence is Story 13.8.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -34,6 +41,18 @@ class GeneratedScript(BaseModel):
     confidence: float
     approved: bool = False
     error_message: str | None = None  # For failed script generation placeholder
+    warnings: list[str] = Field(default_factory=list)
+    # AC1 (13.7): approval metadata — who approved and when.
+    # Durable artifact-sidecar persistence is 13.8.
+    approved_by: str | None = None
+    approved_at: str | None = None
+    # AC2 (13.8): provenance for the durable side-car.
+    source_test_case_id: str | None = None  # artifact UUID of the source test case
+    validation_status: str | None = None  # "validated" when edited content passed 13.6 gate
+    # C17/C18: the unique artifact name the approved .py was saved under. Set in
+    # handle_approve; the sidecar (C18) derives its name from this stem so script+sidecar
+    # stay 1:1 even when two test cases normalise to the same base filename.
+    saved_file_name: str | None = None
 
 
 class SarahAgent(BaseAgent):
@@ -42,7 +61,7 @@ class SarahAgent(BaseAgent):
     Orchestrates script generation using:
     - ScriptGenerator for LLM-based script creation
     - VisionLocator for accurate selector identification
-    - OutputWriter for file management
+    - PipelineArtifactAdapter for file management
     - WebSocket for real-time review UI
 
     Lifecycle:
@@ -74,9 +93,31 @@ class SarahAgent(BaseAgent):
         self._test_cases: list[TestCase] = []
         self._chrome_path: str | None = None
         self._target_url: str | None = None
+        # CDP URL of a running Chrome to connect to (reuses its live SSO session).
+        # Run-specific (like target_url); reset each fresh run.
+        self._cdp_url: str | None = None
         self._start_input_data: dict[str, Any] = {}  # Store input_data for context preservation
 
-        # Initialize pipeline components
+        # Reviewed-set DONE gate (13.5): tracks indices reviewed (approved OR skipped)
+        self._reviewed_indices: set[int] = set()
+
+        # Input-selection gate state (13.1)
+        self.phase: str = "input_selection"
+        self.candidate_test_cases: list[PipelineArtifact] = []
+        self.confirmed_test_cases: list[TestCase] = []
+        # Dedicated chrome-path re-entry flag (do NOT overload confirmed_test_cases):
+        # set when _begin_generation requested a Chrome path and is awaiting re-start.
+        self._awaiting_inputs: bool = False
+        # AC2 (13.8): source test case artifact IDs, parallel to confirmed_test_cases / _test_cases.
+        # Set in _confirm_inputs; fallback path initialises with [None] * len(_test_cases).
+        self._test_case_source_ids: list[str | None] = []
+
+        # Initialize pipeline components. The LLM config is resolved here only as a
+        # provisional placeholder — the real api_key lives in the user's encrypted
+        # secret store, which is unreachable until set_project_context() attaches the
+        # context (so this returns an empty-key config and does NOT raise). Sarah builds
+        # its ScriptGenerator fresh per generation call, so _ensure_llm_ready() refreshes
+        # self.config against the context before each construction (see below).
         self.config = self.get_llm_config()
 
         self.app_settings = AppSettings()
@@ -84,6 +125,28 @@ class SarahAgent(BaseAgent):
         self._script_generator: ScriptGenerator | None = None
         self._vision_locator: VisionLocator | None = None
         self._browser_agent: BrowserAgent | None = None
+
+    def _ensure_llm_ready(self) -> None:
+        """Re-resolve the LLM config against the attached project context.
+
+        ``__init__`` captured a provisional config with an EMPTY ``api_key`` — the agent
+        is constructed by ``agent_class()`` before ``set_project_context`` runs, so the
+        per-user encrypted secret is unreachable and ``get_llm_config`` returns a
+        placeholder (it does not raise, because there is no context/user yet). Left
+        stale, that empty key surfaces at generation time as a raw provider auth error
+        ("Could not resolve authentication method"). Resolving here — before every
+        ``ScriptGenerator(llm_config=self.config, …)`` construction — uses the
+        context-resolved per-user secret. ``get_llm_config`` raises ``PipelineError``
+        (UX-DR12) when the key is genuinely missing; callers run inside try/except that
+        surface it.
+
+        Unlike Mary, Sarah builds its ``ScriptGenerator`` fresh per generation call (it
+        is not stored long-term), so there is no cached collaborator to re-apply the
+        config to — keeping ``self.config`` fresh before each construction is enough.
+        ``_build_explore_llm`` resolves the credential on its own and is intentionally
+        left to do so (Task 2).
+        """
+        self.config = self.get_llm_config()
 
     # -------------------------------------------------------------------------
     # Chrome Path Persistence
@@ -162,29 +225,37 @@ class SarahAgent(BaseAgent):
             if feedback and self._current_review_index < len(self._generated_scripts):
                 return await self._regenerate_current_script(feedback)
 
-            # Extract Chrome path and target URL from input
+            # Extract Chrome path, target URL, and optional CDP URL from input
             chrome_path = input_data.get("chrome_path", self._chrome_path)
             target_url = input_data.get("target_url", "")
+            cdp_url = (input_data.get("cdp_url") or self._cdp_url or "").strip()
 
             # Store Chrome path if provided
             if chrome_path and chrome_path != self._chrome_path:
                 await self._store_chrome_path(chrome_path)
 
             self._target_url = target_url
+            self._cdp_url = cdp_url or None
 
-            # Load test cases from workspace/testcases/
-            test_cases_result = await self._load_test_cases()
-            if not test_cases_result.success:
-                return test_cases_result
-
-            self._test_cases = test_cases_result.data or []
+            # Use the user-confirmed test cases when the selection gate has run;
+            # otherwise fall back to the full artifact load (back-compat / regeneration).
+            if self.confirmed_test_cases:
+                self._test_cases = self.confirmed_test_cases
+                # _test_case_source_ids was set by _confirm_inputs; keep it as-is
+            else:
+                test_cases_result = await self._load_test_cases()
+                if not test_cases_result.success:
+                    return test_cases_result
+                self._test_cases = test_cases_result.data or []
+                # Fallback path: artifact IDs not available; use None for all
+                self._test_case_source_ids = [None] * len(self._test_cases)
 
             if not self._test_cases:
                 return StageResult(
                     success=True,
                     data=[],
                     errors=[],
-                    warnings=["No test cases found in workspace/testcases/"],
+                    warnings=["No test cases found for this project."],
                     confidence=1.0,
                 )
 
@@ -205,8 +276,40 @@ class SarahAgent(BaseAgent):
                 confidence=0.0,
             )
 
+    @staticmethod
+    def _testcase_base(name: str) -> str:
+        """Strip a single trailing ``.md``/``.json`` extension to get the base name."""
+        for ext in (".md", ".json"):
+            if name.endswith(ext):
+                return name[: -len(ext)]
+        return name
+
+    def _testcases_from_artifact(self, artifact: PipelineArtifact) -> list[TestCase]:
+        """Reconstruct typed ``TestCase`` objects from a test-case artifact.
+
+        Mary stores each test case as natural-language **Markdown** (``{base}.md``) — the
+        same form Sarah feeds to the script-generation LLM. ``TestCase.from_markdown``
+        rebuilds the structured object the review panel / heuristics read. Legacy
+        artifacts stored the JSON object as the body, so try JSON first (back-compat),
+        then parse Markdown. Returns ``[]`` only for genuinely empty content.
+        """
+        try:
+            data = json.loads(artifact.content)
+        except json.JSONDecodeError, ValueError:
+            data = None
+        if data is not None:
+            try:
+                if isinstance(data, list):
+                    return [TestCase(**item) for item in data]
+                return [TestCase(**data)]
+            except TypeError, ValueError:
+                return []
+        if artifact.content and artifact.content.strip():
+            return [TestCase.from_markdown(artifact.content)]
+        return []
+
     async def _load_test_cases(self) -> StageResult:
-        """Load test cases from project artifacts or workspace/testcases/."""
+        """Load test cases from project artifacts via the artifact service."""
         if self.project_context is None:
             raise ValueError("SarahAgent requires an active project context.")
         adapter = PipelineArtifactAdapter(self.project_context)
@@ -223,15 +326,11 @@ class SarahAgent(BaseAgent):
         test_cases: list[TestCase] = []
         errors: list[str] = []
         for artifact in test_case_artifacts:
-            try:
-                data = json.loads(artifact.content)
-                if isinstance(data, list):
-                    for item in data:
-                        test_cases.append(TestCase(**item))
-                else:
-                    test_cases.append(TestCase(**data))
-            except (json.JSONDecodeError, TypeError, ValueError) as e:
-                errors.append(f"Failed to parse {artifact.name}: {e}")
+            parsed = self._testcases_from_artifact(artifact)
+            if parsed:
+                test_cases.extend(parsed)
+            else:
+                errors.append(f"Failed to parse {artifact.name}")
 
         return StageResult(
             success=len(test_cases) > 0,
@@ -270,6 +369,36 @@ class SarahAgent(BaseAgent):
                 message_type="warning",
             )
 
+    def _build_explore_llm(self) -> Any:
+        """Build a browser-use LLM from the thread's configured provider to DRIVE
+        the live exploration (real app → verified trace → deterministic Playwright).
+
+        Reuses the SAME provider/credential/model the rest of the pipeline resolves,
+        so every provider option works. Returns ``None`` when no usable credential
+        is available (Claude/Claude-SSO need a real Anthropic key) — generation then
+        falls back to vision / LLM-only.
+        """
+        try:
+            cfg = self.get_llm_config()
+        except Exception as exc:  # noqa: BLE001 — no credential → no exploration
+            logger.info("No provider credential for browser-use exploration: %s", exc)
+            return None
+        if not getattr(cfg, "api_key", ""):
+            return None
+        try:
+            from ai_qa.browser.llm_factory import build_browser_use_llm
+
+            return build_browser_use_llm(
+                cfg.provider,
+                api_key=cfg.api_key,
+                model=cfg.model_name,
+                base_url=getattr(cfg, "base_url", "") or "",
+                temperature=getattr(cfg, "temperature", 0.0) or 0.0,
+            )
+        except Exception as exc:  # noqa: BLE001 — unknown provider / build error
+            logger.warning("Could not build browser-use LLM for exploration: %s", exc)
+            return None
+
     async def _generate_scripts(self) -> StageResult:
         """Generate Playwright scripts for all test cases.
 
@@ -280,17 +409,29 @@ class SarahAgent(BaseAgent):
         errors: list[str] = []
         warnings: list[str] = []
 
-        # Initialize script generator with vision locator if available
+        # Initialize script generator with vision locator if available, and — when a
+        # Chrome path + driving LLM are available — the browser-use exploration path
+        # (real app → verified trace → deterministic Playwright). Exploration is
+        # gated inside ScriptGenerator and falls back to vision/LLM-only on failure.
         script_generator = ScriptGenerator(
             output_base_dir=Path("/dev/null"),  # output_base_dir no longer used for writing
             llm_config=self.config,
             config=self.app_settings,
             vision_locator=self._vision_locator,
+            explore_llm=self._build_explore_llm(),
+            chrome_path=self._chrome_path or "",
+            cdp_url=self._cdp_url or "",
         )
 
         total = len(self._test_cases)
 
-        for i, test_case in enumerate(self._test_cases, start=1):
+        for idx, test_case in enumerate(self._test_cases):
+            i = idx + 1  # 1-based for display
+            # Look up source artifact ID from parallel list (AC2 / 13.8)
+            source_tc_id: str | None = (
+                self._test_case_source_ids[idx] if idx < len(self._test_case_source_ids) else None
+            )
+
             # Send progress update
             await self.send_message(
                 f"Generating script {i} of {total}...",
@@ -318,11 +459,19 @@ class SarahAgent(BaseAgent):
                     # Generate filename for artifact
                     filename = script_generator._generate_filename(test_case.title)
 
+                    # Coerce warnings to list[str] before assigning (dict value is Any)
+                    raw_warnings = script_data.get("warnings", [])
+                    script_warnings: list[str] = (
+                        [str(w) for w in raw_warnings] if raw_warnings else []
+                    )
+
                     generated_script = GeneratedScript(
                         test_case=test_case,
                         script_content=full_script_content,
                         file_path=filename,
                         confidence=script_data.get("confidence", 0.5),
+                        warnings=script_warnings,
+                        source_test_case_id=source_tc_id,
                     )
                     self._generated_scripts.append(generated_script)
 
@@ -332,11 +481,34 @@ class SarahAgent(BaseAgent):
                     error_msg = f"Failed to generate script for '{test_case.title}'"
                     if result.errors:
                         error_msg += f": {result.errors[0]}"
-                    errors.append(error_msg)
+                    # Recorded as a WARNING, not an error: appending a placeholder below
+                    # makes _generated_scripts non-empty, so this stage is a *degraded
+                    # success* (success=True) and StageResult forbids a non-empty errors
+                    # list then. The per-item failure detail lives on the placeholder.
+                    warnings.append(error_msg)
+                    # AC3/AC4: append a skip-only failure placeholder (mirrors the
+                    # ``except`` branch below) so a single failed test case never
+                    # silently drops and the batch never collapses to an empty Scripts
+                    # folder. error_message makes it skip-only — never approvable (the
+                    # C3 gate at handle_approve enforces this).
+                    self._generated_scripts.append(
+                        GeneratedScript(
+                            test_case=test_case,
+                            script_content=f"# Generation failed: {error_msg}",
+                            file_path="",
+                            confidence=0.0,
+                            approved=False,
+                            error_message=error_msg,
+                            source_test_case_id=source_tc_id,
+                        )
+                    )
 
             except Exception as e:
                 logger.error(f"Error generating script for '{test_case.title}': {e}")
-                errors.append(f"Exception for '{test_case.title}': {e}")
+                # WARNING (not error) for the same reason as the else branch above: the
+                # placeholder makes this a degraded success, and StageResult requires the
+                # errors list be empty when success=True.
+                warnings.append(f"Exception for '{test_case.title}': {e}")
                 # Add placeholder for failed script so index mapping is preserved
                 failed_placeholder = GeneratedScript(
                     test_case=test_case,
@@ -345,11 +517,13 @@ class SarahAgent(BaseAgent):
                     confidence=0.0,
                     approved=False,
                     error_message=str(e),
+                    source_test_case_id=source_tc_id,
                 )
                 self._generated_scripts.append(failed_placeholder)
 
-        # Reset review index
+        # Reset review state
         self._current_review_index = 0
+        self._reviewed_indices = set()
 
         success = len(self._generated_scripts) > 0
         confidence = (
@@ -390,11 +564,20 @@ class SarahAgent(BaseAgent):
 
         current_script = self._generated_scripts[self._current_review_index]
         test_case = current_script.test_case
+        # Carry the source test case artifact ID forward onto the replacement (AC2/13.8):
+        # read it BEFORE the GeneratedScript at this index is overwritten.
+        source_tc_id = current_script.source_test_case_id
 
         await self.send_message(
             f"Regenerating script for '{test_case.title}' with feedback...",
             message_type="info",
         )
+
+        # Refresh the LLM config against the attached context so the regeneration uses
+        # the context-resolved per-user key, not the empty-key placeholder captured at
+        # __init__. Called within process()'s try/except (and the direct-call test
+        # path), so a genuinely missing key surfaces as a failure StageResult.
+        self._ensure_llm_ready()
 
         # For now, re-generate using the same process but with feedback context
         # In a more sophisticated implementation, we'd incorporate feedback into the prompt
@@ -409,8 +592,7 @@ class SarahAgent(BaseAgent):
             result = await script_generator.generate(
                 test_cases=[test_case],
                 target_url=self._target_url,
-                # Note: feedback is not yet supported by ScriptGenerator
-                # Future enhancement: pass feedback for regeneration context
+                feedback=feedback,  # AC2 (13.7): inject reviewer feedback into the prompt
             )
 
             if result.success and result.data:
@@ -419,12 +601,20 @@ class SarahAgent(BaseAgent):
                 full_script_content = header + "\n\n" + script_data.get("script_content", "")
                 filename = script_generator._generate_filename(test_case.title)
 
-                # Replace current script
+                # Coerce warnings to list[str] (dict value is Any)
+                raw_regen_warnings = script_data.get("warnings", [])
+                regen_warnings: list[str] = (
+                    [str(w) for w in raw_regen_warnings] if raw_regen_warnings else []
+                )
+
+                # Replace current script (carry source_test_case_id forward — AC2/13.8)
                 self._generated_scripts[self._current_review_index] = GeneratedScript(
                     test_case=test_case,
                     script_content=full_script_content,
                     file_path=filename,
                     confidence=script_data.get("confidence", 0.5),
+                    warnings=regen_warnings,
+                    source_test_case_id=source_tc_id,
                 )
 
                 return StageResult(
@@ -435,16 +625,40 @@ class SarahAgent(BaseAgent):
                     confidence=result.confidence,
                 )
             else:
+                regen_errors = result.errors if result.errors else ["Regeneration failed"]
+                # Replace with a failure placeholder so the stale (possibly previously
+                # approved) content does not linger; carry source_test_case_id forward
+                # and stamp error_message so it is skip-only, never approvable (C3).
+                self._generated_scripts[self._current_review_index] = GeneratedScript(
+                    test_case=test_case,
+                    script_content=f"# Generation failed: {regen_errors[0]}",
+                    file_path="",
+                    confidence=0.0,
+                    approved=False,
+                    error_message=regen_errors[0],
+                    source_test_case_id=source_tc_id,
+                )
                 return StageResult(
                     success=False,
                     data=None,
-                    errors=result.errors if result.errors else ["Regeneration failed"],
+                    errors=regen_errors,
                     warnings=result.warnings if result.warnings else [],
                     confidence=0.0,
                 )
 
         except Exception as e:
             logger.error(f"Error regenerating script: {e}")
+            # Replace with a failure placeholder carrying source_test_case_id (C16)
+            # and error_message so the failed regen is never approvable (C3).
+            self._generated_scripts[self._current_review_index] = GeneratedScript(
+                test_case=test_case,
+                script_content=f"# Generation failed: {e}",
+                file_path="",
+                confidence=0.0,
+                approved=False,
+                error_message=str(e),
+                source_test_case_id=source_tc_id,
+            )
             return StageResult(
                 success=False,
                 data=None,
@@ -453,50 +667,214 @@ class SarahAgent(BaseAgent):
                 confidence=0.0,
             )
 
-    async def handle_start(self, input_data: dict[str, Any]) -> None:
-        """Override handle_start to support Chrome path request.
+    # -------------------------------------------------------------------------
+    # Precondition gate (AC3)
+    # -------------------------------------------------------------------------
 
-        Args:
-            input_data: User input data
-        """
-        # Load chrome path now that project_context is available
-        self._load_chrome_path()
+    def _check_preconditions(self) -> list[str]:
+        """Return blocking messages (UX-DR12); empty list = all checks pass."""
+        ctx = self.project_context
+        if not ctx or not ctx.project_id or not ctx.user_id or not ctx.thread_id:
+            return ["Start Sarah from inside an active project thread."]
+        if ctx.artifact_service is None:
+            return ["The backend storage service is unavailable — contact support."]
+        return []
 
-        # Store input_data for context preservation in reject/regeneration
-        self._start_input_data = input_data
+    def _format_no_test_cases_message(self) -> str:
+        """UX-DR12 message when no approved test cases are found (AC3)."""
+        return (
+            "**What happened:** Sarah cannot generate scripts yet.\n\n"
+            "**Why:** No approved test cases were found for this project.\n\n"
+            "**What to do:** Run Mary to generate test cases from approved requirements "
+            "and approve at least one test case, then start Sarah again."
+        )
 
-        # Check for existing Chrome path
-        if not self._chrome_path:
-            # Transition to PROCESSING first (BaseAgent contract)
-            await self.transition_to(AgentState.PROCESSING)
-            # Request Chrome path from user
+    # -------------------------------------------------------------------------
+    # Input-selection helpers (AC2)
+    # -------------------------------------------------------------------------
+
+    async def _present_test_case_selection(self) -> None:
+        """Emit the test_case_selection payload to the frontend (AC2)."""
+        if self.project_context is None:
+            return
+        ctx = self.project_context
+        entries = []
+        any_from_thread = any(
+            a.thread_id is not None and a.thread_id == ctx.thread_id
+            for a in self.candidate_test_cases
+        )
+        for art in self.candidate_test_cases:
+            from_thread = art.thread_id is not None and art.thread_id == ctx.thread_id
+            # Default-select: current-thread entries always; others only when none from thread
+            default_selected = from_thread or not any_from_thread
+            parsed = self._testcases_from_artifact(art)
+            tc = parsed[0] if parsed else TestCase(title=self._testcase_base(art.name))
+            entries.append(
+                {
+                    "artifact_id": str(art.id),
+                    "name": art.name,
+                    "title": tc.title,
+                    "source_requirement_name": getattr(tc, "source_requirement_name", None),
+                    "source_url": getattr(tc, "source_url", None),
+                    "confidence_level": getattr(tc, "confidence_level", None),
+                    "from_current_thread": from_thread,
+                    "default_selected": default_selected,
+                    "preview": tc.objective or tc.title,
+                }
+            )
+        await self.send_message(
+            content="Please select which test cases to use for script generation.",
+            message_type="text",
+            metadata={
+                "type": "test_case_selection",
+                "is_input_selection": True,
+                "test_cases": entries,
+            },
+        )
+
+    async def _confirm_inputs(self, data: dict[str, Any] | None) -> None:
+        """Handle user confirmation of input selection (phase == input_selection)."""
+        selected_ids: list[str] = []
+        if data:
+            raw = data.get("selected_artifact_ids")
+            if isinstance(raw, list):
+                selected_ids = [str(x) for x in raw]
+
+        # Filter candidates to the selected set; fall back to all when nothing given
+        selected_set = set(selected_ids)
+        filtered = (
+            [a for a in self.candidate_test_cases if str(a.id) in selected_set]
+            if selected_set
+            else list(self.candidate_test_cases)
+        )
+
+        if not filtered:
+            # Re-present selection with corrective message
             await self.send_message(
-                "Hi! I'm Sarah. I'll generate Playwright test scripts from Mary's test cases.",
+                "Please select at least one test case before confirming.",
+                message_type="warning",
+            )
+            await self._present_test_case_selection()
+            return
+
+        # Parse confirmed artifacts into TestCase objects + capture source artifact IDs (AC2/13.8).
+        confirmed: list[TestCase] = []
+        source_ids: list[str | None] = []
+        for art in filtered:
+            parsed = self._testcases_from_artifact(art)
+            if not parsed:
+                logger.warning("Could not parse test case artifact %s", art.name)
+                continue
+            for item in parsed:
+                confirmed.append(item)
+                source_ids.append(str(art.id))
+
+        if not confirmed:
+            await self.send_message(
+                "No valid test cases could be parsed from the selection. Please try again.",
+                message_type="warning",
+            )
+            await self._present_test_case_selection()
+            return
+
+        self.confirmed_test_cases = confirmed
+        self._test_case_source_ids = source_ids  # AC2 (13.8): parallel artifact-ID list
+        self.phase = "script_review"
+        await self._begin_generation()
+
+    def _project_environments(self) -> list[dict[str, str]]:
+        """Return the project's configured target environments (``[{name, url}]``).
+
+        Project-wide and admin-managed (see ``Project.environments``). Returns ``[]`` when
+        the project has none, so Sarah falls back to a free-text URL. Only well-formed
+        ``{name, url}`` entries are surfaced.
+        """
+        if (
+            self.project_context is None
+            or self.project_context.artifact_service is None
+            or self.project_context.project_id is None
+        ):
+            return []
+        from ai_qa.db.models import Project
+
+        db = self.project_context.artifact_service.db
+        project = db.get(Project, self.project_context.project_id)
+        raw = getattr(project, "environments", None)
+        if not isinstance(raw, list):
+            return []
+        return [
+            {"name": str(entry["name"]), "url": str(entry["url"])}
+            for entry in raw
+            if isinstance(entry, dict) and entry.get("name") and entry.get("url")
+        ]
+
+    async def _begin_generation(self) -> None:
+        """Inputs check (target URL + Chrome path) → PROCESSING → generate → REVIEW (or error).
+
+        Both inputs are needed to drive the real app with browser-use. The target
+        URL is asked every run (it is the app under test); the Chrome path is asked
+        only when not already on file. When either is missing, emit a single
+        ``sarah_inputs_request`` and await a re-start carrying them.
+        """
+        needs_url = not self._target_url
+        # A "browser source" is either a Chrome executable to launch OR a CDP URL of
+        # a running Chrome to connect to (reusing its live SSO session).
+        has_browser = bool(self._chrome_path) or bool(self._cdp_url)
+        if needs_url or not has_browser:
+            # Await the inputs so the next handle_start re-entry skips the selection
+            # gate (keying off this flag, not confirmed_test_cases).
+            self._awaiting_inputs = True
+            await self.send_message(
+                "Hi! I'm Sarah. I'll generate Playwright test scripts from your approved "
+                "test cases. First, tell me which application to test and which browser to use.",
                 message_type="text",
             )
             await self.send_message(
-                "Please provide the path to your Chrome executable:",
+                "Please provide the application URL (and how to reach your browser):",
                 message_type="info",
                 metadata={
-                    "type": "chrome_path_request",
-                    "example": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                    "type": "sarah_inputs_request",
+                    "needs_url": needs_url,
+                    # A Chrome executable is required only when there is no browser
+                    # source yet; the CDP option is always offered (for SSO reuse).
+                    "needs_chrome": not has_browser,
+                    "chrome_on_file": bool(self._chrome_path),
+                    "chrome_example": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                    "cdp_example": "http://localhost:9222",
+                    # Project-wide target environments: when present the user PICKS one
+                    # (its URL becomes the target) instead of typing an application URL.
+                    "environments": self._project_environments(),
                 },
             )
-            # Transition back to START to wait for user input
             await self.transition_to(AgentState.START)
             return
 
-        # Chrome path exists - proceed with greeting
+        # Both inputs available — clear the re-entry flag.
+        self._awaiting_inputs = False
+
+        # Re-resolve the LLM config against the attached context before generation
+        # (defensive + idempotent): the awaiting-inputs re-entry path reaches here
+        # WITHOUT going through handle_start's resolve, so this is the first/only resolve
+        # on that path. Surface a UX-DR12 message on a genuinely missing key.
+        try:
+            self._ensure_llm_ready()
+        except Exception as exc:
+            logger.error("Sarah could not resolve the LLM config: %s", exc, exc_info=True)
+            await self.transition_to(AgentState.ERROR)
+            await self.send_message(
+                content=self._format_error_message([str(exc)]),
+                message_type="error",
+            )
+            return
+
         await self.send_message(
-            "Hi! I'm Sarah. Using your saved Chrome path. Ready to generate scripts from "
-            "Mary's test cases.",
+            "Thanks! Generating scripts from your approved test cases against "
+            f"{self._target_url} …",
             message_type="text",
         )
-
-        # Continue with normal start flow
         await self.transition_to(AgentState.PROCESSING)
         try:
-            result = await self.process(input_data, feedback=None)
+            result = await self.process(self._start_input_data, feedback=None)
         except Exception as exc:
             logger.error("Sarah process failed: %s", exc)
             await self.transition_to(AgentState.ERROR)
@@ -508,7 +886,7 @@ class SarahAgent(BaseAgent):
 
         if result.success:
             await self.transition_to(AgentState.REVIEW_REQUEST)
-            await self._present_current_script_for_review()
+            await self._present_script_review()
         else:
             await self.transition_to(AgentState.ERROR)
             await self.send_message(
@@ -516,28 +894,244 @@ class SarahAgent(BaseAgent):
                 message_type="error",
             )
 
-    async def handle_approve(self, data: dict[str, Any] | None = None) -> None:
-        """Handle approval of current script.
+    async def handle_start(self, input_data: dict[str, Any]) -> None:
+        """Override handle_start to insert the input-selection gate (13.1).
 
-        Saves the approved script and advances to next script or DONE.
+        Flow: preconditions → load approved test cases → AC3 block if empty →
+        present test_case_selection (REVIEW_REQUEST).  After the user confirms,
+        handle_approve dispatches to _confirm_inputs → _begin_generation (chrome-
+        path check → PROCESSING → generate → per-item script review).
+
+        Re-entry when Chrome path was missing: if we are awaiting a Chrome path
+        (``_awaiting_inputs``), skip the selection gate and go straight to
+        _begin_generation, preserving the already-confirmed selection.
         """
-        if self._current_review_index >= len(self._generated_scripts):
+        # Load chrome path now that project_context is available
+        self._load_chrome_path()
+
+        # Store input_data for context preservation in reject/regeneration
+        self._start_input_data = input_data
+
+        # Re-entry after inputs were missing: capture the submitted target URL +
+        # Chrome path, then skip the selection gate and go straight to generation
+        # with the already-confirmed test cases.
+        if self._awaiting_inputs:
+            submitted_chrome = (input_data.get("chrome_path") or "").strip()
+            if submitted_chrome and submitted_chrome != self._chrome_path:
+                try:
+                    await self._store_chrome_path(submitted_chrome)
+                except ValueError as exc:
+                    await self.send_message(
+                        f"That Chrome path looks invalid: {exc}. Please try again.",
+                        message_type="warning",
+                    )
+            submitted_url = (input_data.get("target_url") or "").strip()
+            if submitted_url:
+                self._target_url = submitted_url
+            submitted_cdp = (input_data.get("cdp_url") or "").strip()
+            if submitted_cdp:
+                self._cdp_url = submitted_cdp
+            await self._begin_generation()
+            return
+
+        # Fresh run: reset all per-run state so a re-start never inherits stale
+        # selection / generation / review bookkeeping from a previous run.
+        self.phase = "input_selection"
+        self.confirmed_test_cases = []
+        self.candidate_test_cases = []
+        self._generated_scripts = []
+        self._reviewed_indices = set()
+        self._test_case_source_ids = []
+        self._current_review_index = 0
+        # Re-ask the application URL + CDP URL each fresh run (run-specific, not
+        # saved settings). The Chrome path stays on file and is reused.
+        self._target_url = None
+        self._cdp_url = None
+
+        # --- Precondition gate ---
+        blockers = self._check_preconditions()
+        for msg in blockers:
             await self.send_message(
-                "No script to approve.",
+                content=self._format_error_message([msg]),
+                message_type="error",
+            )
+        if blockers:
+            return  # Stay START — re-submittable
+
+        # --- Load approved test cases (AC1) ---
+        if self.project_context is None:
+            return
+        candidates = PipelineArtifactAdapter(self.project_context).load_approved_test_cases()
+
+        # --- AC3 block: no approved test cases ---
+        if not candidates:
+            await self.send_message(
+                content=self._format_no_test_cases_message(),
+                message_type="error",
+            )
+            return  # Stay START — no PROCESSING, no generation
+
+        # Resolve the LLM config now that the context (and the user's encrypted secret
+        # store) is attached; surface a clean UX-DR12 message if the key is genuinely
+        # missing (mirrors Mary). Done before the selection gate so a missing key fails
+        # fast instead of surfacing as a raw provider auth error during generation.
+        try:
+            self._ensure_llm_ready()
+        except Exception as exc:
+            logger.error("Sarah could not resolve the LLM config: %s", exc, exc_info=True)
+            await self.transition_to(AgentState.ERROR)
+            await self.send_message(self._format_error_message([str(exc)]), message_type="error")
+            return
+
+        # --- Present input-selection panel (AC2) ---
+        self.candidate_test_cases = candidates
+        await self.transition_to(AgentState.REVIEW_REQUEST)
+        await self._present_test_case_selection()
+
+    def _resolve_script_index(self, data: dict[str, Any] | None) -> int:
+        """Resolve the target script index from ``data["script_index"]``.
+
+        Falls back to ``_current_review_index`` when no index is supplied. A malformed
+        (non-int) client value degrades to ``-1`` so callers hit the existing out-of-range
+        warning instead of raising (C37/C38).
+        """
+        raw_index = data.get("script_index") if data else None
+        if raw_index is None:
+            return self._current_review_index
+        try:
+            return int(raw_index)
+        except TypeError, ValueError:
+            return -1
+
+    @staticmethod
+    def _script_base_name(script: GeneratedScript) -> str:
+        """The ``.py`` base name for a script (``{filename}.py`` fallback when no path)."""
+        return Path(script.file_path).name or f"{script.test_case.filename}.py"
+
+    def _unique_script_name(self, script: GeneratedScript, index: int) -> str:
+        """Return a unique, role-foldered ``.py`` artifact name for the approved script.
+
+        A role-bearing test case is saved under a ``<role>/`` sub-folder mirroring Mary's
+        per-role test-case layout (Slice 5), so a future role-aware Jack can group scripts by
+        the account they must run as (different roles use different accounts and cannot
+        co-run). Collisions are resolved PER (role, base name) — two test cases that
+        normalise to the same base name within the same role folder get a source-test-case
+        (or per-index) suffix so each maps to a distinct artifact (C17); identical base names
+        in DIFFERENT role folders never collide.
+        """
+        base = self._script_base_name(script)
+        role_folder = role_to_folder(script.test_case.role)
+
+        collides = any(
+            i != index
+            and self._script_base_name(other) == base
+            and role_to_folder(other.test_case.role) == role_folder
+            for i, other in enumerate(self._generated_scripts)
+        )
+        if collides:
+            stem = Path(base).stem
+            suffix = script.source_test_case_id or str(index)
+            base = f"{stem}__{suffix}.py"
+
+        return f"{role_folder}/{base}" if role_folder else base
+
+    async def handle_approve(self, data: dict[str, Any] | None = None) -> None:
+        """Handle approve — phase-dispatched.
+
+        * ``phase == "input_selection"``: user confirmed the test-case selection set.
+        * ``phase == "script_review"`` (or any other): existing per-item script-review
+          approve logic (Epic 5, unchanged).
+        """
+        if self.phase == "input_selection":
+            await self._confirm_inputs(data)
+            return
+
+        # --- Script-review branch: index-addressable approve (13.5) ---
+
+        # Route skip through approve with action discriminator (WS only dispatches approve/reject)
+        action = data.get("action", "") if data else ""
+        if action == "skip":
+            await self._handle_skip_script(data)
+            return
+
+        # Resolve target index: data["script_index"] falls back to _current_review_index.
+        # A malformed client value degrades to the out-of-range warning (C37) rather than raising.
+        index = self._resolve_script_index(data)
+
+        if index < 0 or index >= len(self._generated_scripts):
+            await self.send_message(
+                "No script to approve at that index.",
                 message_type="warning",
             )
             return
 
-        # Mark current script as approved and persist in project mode.
-        current_script = self._generated_scripts[self._current_review_index]
+        # --- 13.6: edit + validate step ---
+        current_script = self._generated_scripts[index]
+
+        # C3: a failed-generation placeholder (error_message set) is skip-only, never
+        # approvable — reject the approval, do not advance or save.
+        if current_script.error_message is not None:
+            await self.send_message(
+                "This script failed to generate and cannot be approved. "
+                "Skip it (hand to Minh) or reject it to regenerate.",
+                message_type="warning",
+                metadata={
+                    "action": "script_not_approvable",
+                    "script_index": index,
+                },
+            )
+            return
+
+        edited: Any = data.get("script_content") if data else None
+        if isinstance(edited, str) and edited.strip():
+            result = validate_script(edited, unsafe_patterns=self._unsafe_patterns())
+            if not result.is_valid:
+                # AC2: actionable errors; do NOT save/approve/advance; stay REVIEW_REQUEST.
+                # Critical: do NOT re-emit _present_script_review() — that would send the
+                # original script_content and overwrite the client's edit buffer (AC1 violation).
+                await self.send_message(
+                    content=self._format_validation_errors(result.errors),
+                    message_type="error",
+                    metadata={
+                        "type": "script_validation_error",
+                        "script_index": index,
+                        "errors": [e.model_dump() for e in result.errors],
+                    },
+                )
+                return
+            # AC3: editing approved → authoritative content is the edited version
+            current_script.script_content = edited
+            current_script.validation_status = "validated"  # AC2 (13.8): track validated edit
+
+        # Mark script as approved and persist.
+        # AC3 (13.7): only approved scripts are persisted to test_scripts/ (kind="playwright_script").
+        # The approved flag + approved_by/approved_at are the Jack-eligibility discriminator
+        # consumed by Story 15.1 (load_approved_scripts). Rejected/skipped/regenerated scripts
+        # are never marked or saved as approved.
         current_script.approved = True
         if self.project_context is None:
             raise ValueError("SarahAgent requires an active project context.")
 
+        # C17/C18: derive a UNIQUE-per-test-case script artifact name. The base name is the
+        # .py filename (with a .py fallback when file_path is empty). If another script in
+        # this run normalises to the same name, disambiguate with the source test case ID
+        # (or a per-index suffix) so each test case maps to a distinct artifact. The saved
+        # name is recorded on the script so the sidecar (C18) shares the same stem.
+        save_name = self._unique_script_name(current_script, index)
+        current_script.saved_file_name = save_name
+
         PipelineArtifactAdapter(self.project_context).save_script(
-            Path(current_script.file_path).name or f"{current_script.test_case.filename}.spec.ts",
+            save_name,
             current_script.script_content,
         )
+
+        # AC1 (13.7): stamp who approved and when. Mirrors 12.4's TestCase stamp.
+        # Durable sidecar persistence of these fields is Story 13.8.
+        assert self.project_context is not None  # narrowed above
+        current_script.approved_by = self.project_context.user_email or str(
+            self.project_context.user_id
+        )
+        current_script.approved_at = datetime.now(UTC).isoformat()
 
         await self.send_message(
             f"Script '{current_script.test_case.title}' approved and saved.",
@@ -545,64 +1139,74 @@ class SarahAgent(BaseAgent):
             metadata={
                 "action": "script_approved",
                 "file_path": current_script.file_path,
-                "current_index": self._current_review_index,
+                "script_index": index,
             },
         )
 
-        # Advance to next script
-        self._current_review_index += 1
+        self._reviewed_indices.add(index)
+        self._current_review_index = index
 
-        # Check if all scripts approved
-        if self._current_review_index >= len(self._generated_scripts):
-            # Write all approved scripts metadata
+        # DONE when every script has been reviewed (approved OR skipped)
+        if len(self._reviewed_indices) >= len(self._generated_scripts):
+            # C39: re-emit the present-all payload ONCE before DONE so the final approved
+            # script's approved_by/approved_at/status reach the client (AC1 of 13.7).
+            await self._present_script_review()
             await self._write_approved_scripts_metadata()
-
-            # Transition to DONE
             await self.transition_to(AgentState.DONE)
-            destination = "project artifacts"
+            approved_count = sum(1 for s in self._generated_scripts if s.approved)
             await self.send_message(
-                f"{len(self._generated_scripts)} scripts saved to {destination}",
+                f"{approved_count} of {len(self._generated_scripts)} scripts approved and saved "
+                "to project artifacts",
                 message_type="success",
             )
         else:
-            # Present next script for review
             await self.transition_to(AgentState.REVIEW_REQUEST)
-            await self._present_current_script_for_review()
+            await self._present_script_review()
 
-    async def handle_reject(self, feedback: str) -> None:
-        """Handle rejection of current script with feedback.
-
-        Regenerates the current script with feedback context.
+    async def handle_reject(self, feedback: str, data: dict[str, Any] | None = None) -> None:
+        """Handle rejection of a script with feedback (index-addressable, 13.5).
 
         Args:
             feedback: User rejection feedback
+            data: Optional payload carrying ``script_index`` (defaults to
+                  ``_current_review_index`` for back-compat).
         """
-        if self._current_review_index >= len(self._generated_scripts):
+        # C37: malformed client index degrades to the out-of-range warning, not a raise.
+        index = self._resolve_script_index(data)
+
+        if index < 0 or index >= len(self._generated_scripts):
             await self.send_message(
-                "No script to reject.",
+                "No script to reject at that index.",
                 message_type="warning",
             )
             return
 
-        current_script = self._generated_scripts[self._current_review_index]
+        # Set index before regeneration so _regenerate_current_script targets the right one
+        self._current_review_index = index
 
-        # Acknowledge feedback
+        # Clear the prior approval/review state for the rejected script.
+        # AC2/AC3 (13.7): a rejected script is never eligible for Jack execution.
+        self._generated_scripts[index].approved = False
+        self._generated_scripts[index].approved_by = None
+        self._generated_scripts[index].approved_at = None
+        self._reviewed_indices.discard(index)
+
+        current_script = self._generated_scripts[index]
+
         await self.send_message(
             f"I'll revise the script for '{current_script.test_case.title}' "
             f"to address your feedback: '{feedback}'",
             message_type="text",
         )
 
-        # Transition to processing
         await self.transition_to(AgentState.PROCESSING)
 
-        # Regenerate with feedback - preserve original input context
         try:
             result = await self.process(self._start_input_data, feedback=feedback)
 
             if result.success:
                 await self.transition_to(AgentState.REVIEW_REQUEST)
-                await self._present_current_script_for_review()
+                await self._present_script_review()
             else:
                 await self.transition_to(AgentState.ERROR)
                 await self.send_message(
@@ -618,18 +1222,26 @@ class SarahAgent(BaseAgent):
             )
 
     async def handle_skip(self) -> None:
-        """Handle skip request (hand off to Minh for review).
+        """Handle skip request via direct call (back-compat shim; routes to _handle_skip_script)."""
+        await self._handle_skip_script(None)
 
-        Advances to next script without saving current one.
+    async def _handle_skip_script(self, data: dict[str, Any] | None) -> None:
+        """Skip a script by index (index-addressable, 13.5).
+
+        Skip = hand off to Minh for manual review; script not saved but still accessible.
+        Routed from handle_approve when data["action"] == "skip".
         """
-        if self._current_review_index >= len(self._generated_scripts):
+        # C37: malformed client index degrades to the out-of-range warning, not a raise.
+        index = self._resolve_script_index(data)
+
+        if index < 0 or index >= len(self._generated_scripts):
             await self.send_message(
-                "No script to skip.",
+                "No script to skip at that index.",
                 message_type="warning",
             )
             return
 
-        current_script = self._generated_scripts[self._current_review_index]
+        current_script = self._generated_scripts[index]
 
         await self.send_message(
             f"Script '{current_script.test_case.title}' skipped. "
@@ -638,31 +1250,25 @@ class SarahAgent(BaseAgent):
             metadata={
                 "action": "script_skipped",
                 "file_path": current_script.file_path,
-                "current_index": self._current_review_index,
+                "script_index": index,
             },
         )
 
-        # Advance to next script
-        self._current_review_index += 1
+        self._reviewed_indices.add(index)
+        self._current_review_index = index
 
-        # Check if all scripts reviewed
-        if self._current_review_index >= len(self._generated_scripts):
-            # Write approved scripts metadata
+        if len(self._reviewed_indices) >= len(self._generated_scripts):
             await self._write_approved_scripts_metadata()
-
-            # Transition to DONE
             await self.transition_to(AgentState.DONE)
             approved_count = sum(1 for s in self._generated_scripts if s.approved)
-            destination = "project artifacts"
             await self.send_message(
                 f"Review complete. {approved_count} of {len(self._generated_scripts)} "
-                f"scripts approved and saved to {destination}",
+                "scripts approved and saved to project artifacts",
                 message_type="success",
             )
         else:
-            # Present next script for review
             await self.transition_to(AgentState.REVIEW_REQUEST)
-            await self._present_current_script_for_review()
+            await self._present_script_review()
 
     async def handle_navigate(self, direction: str) -> None:
         """Handle navigation between scripts.
@@ -694,8 +1300,59 @@ class SarahAgent(BaseAgent):
                 message_type="error",
             )
 
+    async def _present_script_review(self) -> None:
+        """Present all generated scripts in a single present-all payload (13.5).
+
+        Emits metadata.type=="script_review" with the full scripts list so the
+        frontend panel owns Prev/Next and can display per-item review status.
+        Replaces the one-at-a-time _present_current_script_for_review call sites.
+        """
+        if not self._generated_scripts:
+            await self.send_message(
+                "No scripts to review.",
+                message_type="warning",
+            )
+            return
+
+        scripts_payload: list[dict[str, Any]] = []
+        for i, s in enumerate(self._generated_scripts):
+            raw_warnings = getattr(s, "warnings", [])
+            warnings_list: list[str] = list(raw_warnings) if raw_warnings else []
+            if i in self._reviewed_indices:
+                status = "approved" if s.approved else "skipped"
+            else:
+                status = "pending"
+            scripts_payload.append(
+                {
+                    "index": i,
+                    "test_case": s.test_case.model_dump(),
+                    "script_content": s.script_content,
+                    "script_language": "python",
+                    "file_path": s.file_path,
+                    "confidence": s.confidence,
+                    "warnings": warnings_list,
+                    "approved": s.approved,
+                    "approved_by": s.approved_by,
+                    "approved_at": s.approved_at,
+                    "status": status,
+                    "error_message": s.error_message,
+                }
+            )
+
+        total = len(self._generated_scripts)
+        await self.send_message(
+            content=f"Review {total} generated script(s)",
+            message_type="text",
+            metadata={
+                "type": "script_review",
+                "scripts": scripts_payload,
+                "current_index": self._current_review_index,
+                "total_count": total,
+            },
+        )
+
     async def _present_current_script_for_review(self) -> None:
-        """Present current script for side-by-side review."""
+        """Present current script for side-by-side review (back-compat; kept for tests)."""
         if not self._generated_scripts or self._current_review_index >= len(
             self._generated_scripts
         ):
@@ -721,6 +1378,7 @@ class SarahAgent(BaseAgent):
             "can_skip": True,
             "file_path": script.file_path,
             "confidence": script.confidence,
+            "warnings": script.warnings,
         }
 
         await self.send_message(
@@ -735,24 +1393,76 @@ class SarahAgent(BaseAgent):
         )
 
     async def _write_approved_scripts_metadata(self) -> None:
-        """Write metadata for all approved scripts."""
+        """Write real provenance side-car for APPROVED scripts only (AC1, AC2 — 13.8).
+
+        Iterates only approved scripts; skipped/failed/unapproved scripts are excluded
+        so the configuration/ folder never contains metadata for unreviewed scripts.
+        The side-car is the sole durable home for script-specific provenance because
+        the script is saved as raw .py text (no model_dump_json content carrier).
+        """
         if self.project_context is None:
             raise ValueError("SarahAgent requires an active project context.")
 
         adapter = PipelineArtifactAdapter(self.project_context)
         for script in self._generated_scripts:
+            if not script.approved:
+                continue
+            # C18: derive the sidecar name from the SAME (role-foldered) name as the saved
+            # .py so the script and its sidecar stay 1:1 — including any "<role>/" prefix,
+            # otherwise same-named scripts under different roles would share one sidecar.
+            saved_name = script.saved_file_name or self._script_base_name(script)
+            sidecar_name = (
+                f"{saved_name.removesuffix('.py')}.metadata.json"
+                if saved_name.endswith(".py")
+                else f"{Path(saved_name).stem}.metadata.json"
+            )
             try:
                 adapter.save_metadata(
-                    f"{script.test_case.filename}.metadata.json",
+                    sidecar_name,
                     {
-                        "source_url": script.test_case.filename,
+                        "source_test_case_id": script.source_test_case_id,
+                        "logical_path": script.file_path,
+                        # Role the script runs as (Slice 5) — the per-role grouping key a
+                        # future role-aware Jack uses (different roles = different accounts).
+                        "role": script.test_case.role,
+                        "approved_by": script.approved_by,
+                        "approved_at": script.approved_at,
+                        "validation_status": script.validation_status,
                         "model": self.config.model_name,
                         "confidence": script.confidence,
                         "test_case_title": script.test_case.title,
                     },
                 )
             except Exception as e:
-                logger.error(f"Failed to save metadata for {script.test_case.title}: {e}")
+                logger.warning("Failed to save metadata for %s: %s", script.test_case.title, e)
+
+    # -------------------------------------------------------------------------
+    # 13.6 helpers — validation
+    # -------------------------------------------------------------------------
+
+    def _unsafe_patterns(self) -> list[str]:
+        """Return the active unsafe-pattern denylist from AppSettings.
+
+        An empty ``script_unsafe_patterns`` means "use the module default".
+        """
+        from ai_qa.pipelines.script_validator import DEFAULT_UNSAFE_SCRIPT_PATTERNS
+
+        configured = self.app_settings.script_unsafe_patterns
+        return configured if configured else list(DEFAULT_UNSAFE_SCRIPT_PATTERNS)
+
+    def _format_validation_errors(self, errors: list[ScriptValidationError]) -> str:
+        """Format validation errors as a three-part UX-DR12 actionable message."""
+        error_lines = []
+        for err in errors:
+            prefix = f"Line {err.line}: " if err.line is not None else ""
+            error_lines.append(f"- {prefix}{err.message}")
+        error_body = "\n".join(error_lines)
+        return (
+            "**What happened:** Your edited script did not pass validation.\n\n"
+            f"**Why:**\n{error_body}\n\n"
+            "**What to do:** Fix the highlighted issues in the Edit pane and approve again "
+            "— your edits were kept."
+        )
 
     def _format_review_content(self, result: StageResult) -> str:
         """Format review content for display.

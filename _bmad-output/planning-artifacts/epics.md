@@ -113,8 +113,8 @@ NFR18: Startup validation checks all required system-level values and fails fast
 ### Additional Requirements
 
 - Architecture selected manual restructure/no starter template because the project already exists; future implementation must preserve current work.
-- Backend uses Python 3.12+, `uv`, Hatchling, FastAPI, SQLAlchemy/Alembic, PostgreSQL, SeaweedFS, Pydantic Settings, Ruff, mypy, pytest, and pytest-asyncio.
-- Frontend uses React 18+, TypeScript, Vite, Shadcn/ui, Tailwind CSS, React Router v6, react-markdown, react-syntax-highlighter, and Mermaid rendering.
+- Backend uses Python 3.14+, `uv`, Hatchling, FastAPI, SQLAlchemy/Alembic, PostgreSQL, SeaweedFS, Pydantic Settings, Ruff, mypy, pytest, and pytest-asyncio.
+- Frontend uses React 19+, TypeScript, Vite, Shadcn/ui, Tailwind CSS, React Router v6, react-markdown, react-syntax-highlighter, and Mermaid rendering.
 - Primary UX is a conversational React workspace with FastAPI REST and WebSocket backend, plus an admin dashboard route.
 - Five named agents are required: Alice, Bob, Mary, Sarah, and Jack, each using Start → Processing → Review Request → Approve/Reject → Done lifecycle.
 - Alice owns project selection, secret status, provider validation, runtime model discovery, discovered-model scoring, model assignment review, and persistence of only non-secret provider/model configuration.
@@ -172,9 +172,9 @@ FR7: Epic 13 - Produce one script file per test case
 FR8: Epic 13 - Prefer stable selectors
 FR9: Epic 13 - Map expected results into assertions
 FR10: Epic 11 - Trigger extraction from Confluence URL
-FR11: Epic 15 - Complete end-to-end pipeline execution
+FR11: Epic 14 - Complete end-to-end pipeline execution
 FR12: Epic 13 - Use browser-use with local Chrome and SSO session
-FR13: Epic 13 / Epic 15 - Save generated scripts and execution reports
+FR13: Epic 13 / Epic 14 - Save generated scripts and execution reports
 FR14: Epic 9 - Encrypted per-user AI/MCP secret storage
 FR14a: Epic 9 - User-driven secret replacement
 FR14b: Epic 9 - Non-secret provider/model configuration separation
@@ -183,7 +183,7 @@ FR15a: Epic 9 - Assign only discovered available models
 FR15b: Epic 9 - User-reviewable provider/model review
 FR16: Epic 8 - Admin CRUD for users, projects, and memberships
 FR16a: Epic 8 - Admin E2E test execution and report download
-FR17: Epic 14 - Provider comparison backlog support
+FR17: Epic 20 - Provider comparison backlog support
 FR18: Not implemented - removed from MVP
 FR19: Epic 13 - Side-by-side script/source review
 FR20: Epic 13 - Approve or reject generated scripts
@@ -191,11 +191,11 @@ FR21: Epic 13 - Edit scripts before approval
 FR22: Epic 12 / Epic 13 - Low-confidence review flagging
 FR23: Epic 11 - Jira MCP connection
 FR24: Epic 11 - Retrieve Jira test-related requirements
-FR25: Epic 14 - Audit logging
-FR26: Epic 15 - Script execution success-rate reporting
+FR25: Epic 20 - Audit logging
+FR26: Epic 14 - Script execution success-rate reporting
 FR27: Epic 11 / Epic 12 - Input quality detection and warnings
-FR28: Epic 14 - Leadership metrics dashboard
-FR29: Epic 14 - LLM cost tracking and comparison data
+FR28: Epic 20 - Leadership metrics dashboard
+FR29: Epic 20 - LLM cost tracking and comparison data
 FR30: Epic 7 - Project conversation threads
 FR31: Epic 7 - Create and resume threads
 FR32: Epic 7 - Private per-user conversation threads
@@ -1117,6 +1117,23 @@ So that Mary and other project members can use them as shared source inputs.
 **Then** partial output is not corrupted
 **And** the user receives a clear retry or recovery message
 
+### Story 11.8: Technical Debt Sweep and Hardening
+
+As a system developer,
+I want to resolve accumulated technical debt before adding new complex layers,
+So that the test suite is stable and old stubs do not provide a false sense of security.
+
+**Acceptance Criteria:**
+
+**Given** the test suite contains pre-existing `AdminDashboard` timeouts and unstable tests
+**When** the technical debt sweep is executed
+**Then** the timeouts and flaky tests are resolved
+**And** CI execution runs cleanly
+
+**Given** the codebase contains pre-existing stub tests (e.g. tests that assert exact opposites or never call the actual mutation)
+**When** the sweep is performed
+**Then** stale stubs are either fully implemented to assert correct behavior or explicitly marked with `@pytest.mark.skip(reason="TODO")`
+
 ### Epic 12: Test Case Generation with Mary
 
 Users can transform extracted requirements into structured natural-language test cases optimized for browser automation, then review, approve, or reject them.
@@ -1412,162 +1429,15 @@ So that Jack and other project members can run or inspect them later.
 **When** approved script artifacts exist
 **Then** Jack receives only approved project-scoped script artifacts through artifact service queries
 
-### Epic 14: Audit, Metrics, and Leadership Visibility
-
-Admins and leadership can see audit trail, execution metrics, success rates, effort reduction, LLM cost tracking, and provider comparison backlog support.
-
-**FRs covered:** FR17, FR25, FR28, FR29
-
-### Story 14.1: Audit Event Model and Persistence
-
-As an admin,
-I want pipeline and security-relevant actions recorded as structured audit events,
-So that activity can be reviewed consistently across projects and agents.
-
-**Acceptance Criteria:**
-
-**Given** a user, agent, or admin performs an auditable action
-**When** the action completes or fails
-**Then** an audit event is persisted with actor, project, thread, agent/run where applicable, action type, target type, target ID, timestamp, result, and safe metadata
-
-**Given** audit metadata is persisted
-**When** the event includes provider, model, artifact, execution, or admin context
-**Then** only non-secret identifiers and safe summaries are stored
-**And** API keys, tokens, cookies, passwords, and decrypted secret values are never stored
-
-**Given** audit events are stored
-**When** they are queried later
-**Then** events retain immutable core fields needed for compliance and troubleshooting
-
-### Story 14.2: Pipeline Audit Logging
-
-As an admin,
-I want all major pipeline actions logged,
-So that I can trace who read, generated, reviewed, approved, edited, executed, or exported QA artifacts.
-
-**Acceptance Criteria:**
-
-**Given** Bob retrieves or saves requirement artifacts
-**When** the operation occurs
-**Then** audit logs record the user, project, thread, agent run, source reference, artifact ID where available, and result
-
-**Given** Mary or Sarah generates, edits, approves, rejects, or saves outputs
-**When** the operation occurs
-**Then** audit logs record the action, affected artifact/test case/script, review decision, actor, timestamp, and result
-
-**Given** Jack executes scripts or produces reports
-**When** execution starts, completes, or fails
-**Then** audit logs record execution scope, browser where applicable, result summary, report artifact ID, and duration
-
-### Story 14.3: Admin Audit Trail View
-
-As an admin,
-I want to view and filter audit events,
-So that I can investigate project activity and compliance questions.
-
-**Acceptance Criteria:**
-
-**Given** an authenticated admin opens the audit trail
-**When** audit data loads
-**Then** the UI shows events with timestamp, actor, project, action, target, result, and safe summary
-
-**Given** many audit events exist
-**When** the admin filters the view
-**Then** filtering supports user, project, thread, agent, action type, artifact, result, and time range
-
-**Given** a non-admin user attempts to access audit trail data
-**When** the request is made
-**Then** access is denied and no audit event details are returned
-
-### Story 14.4: Execution Metrics Aggregation
-
-As a QA lead,
-I want script execution metrics aggregated over time,
-So that I can understand automation reliability and coverage trends.
-
-**Acceptance Criteria:**
-
-**Given** Jack execution results exist
-**When** metrics aggregation runs
-**Then** pass/fail counts, success rate, duration, execution count, browser breakdown, and project/thread summaries are calculated
-
-**Given** new execution results are saved
-**When** metrics are requested
-**Then** the dashboard reflects current results or clearly indicates last aggregation time
-
-**Given** execution metrics are aggregated
-**When** results include failed or skipped tests
-**Then** failure and skip counts remain distinguishable from passed tests
-
-### Story 14.5: Leadership Metrics Dashboard
-
-As a leadership or admin user,
-I want a metrics dashboard for QA automation impact,
-So that I can understand success rate, usage, and effort reduction indicators.
-
-**Acceptance Criteria:**
-
-**Given** a leadership/admin user opens the metrics dashboard
-**When** project metrics load
-**Then** the UI shows execution volume, success rate, failure trends, generated artifact counts, approved artifact counts, and recent pipeline activity
-
-**Given** effort reduction data is estimated
-**When** it is shown in the dashboard
-**Then** the calculation basis is visible as a safe explanatory summary
-**And** values are labeled as estimates unless based on configured measured values
-
-**Given** a user without required admin/leadership permission opens the dashboard
-**When** the request is made
-**Then** restricted metrics are denied or scoped according to their project permissions
-
-### Story 14.6: LLM Cost Tracking
-
-As an admin,
-I want estimated LLM usage and costs tracked by provider and model,
-So that I can monitor cost trends without exposing secrets.
-
-**Acceptance Criteria:**
-
-**Given** an agent run calls an LLM provider
-**When** usage metadata is returned or estimated
-**Then** token counts, provider name, model name, project, thread, agent, run, timestamp, and estimated cost are recorded where available
-
-**Given** provider usage metadata is incomplete
-**When** cost tracking records the run
-**Then** the system stores available usage fields and marks missing estimates clearly
-
-**Given** cost data is displayed
-**When** admins view it
-**Then** costs can be grouped by provider, model, project, agent, and time range
-**And** no API key, endpoint secret, request payload secret, or decrypted credential is exposed
-
-### Story 14.7: Provider Comparison Backlog Support
-
-As an admin,
-I want normalized provider/model metrics stored for future comparison,
-So that the product can later support provider quality and cost comparison without redesigning telemetry.
-
-**Acceptance Criteria:**
-
-**Given** agent runs execute with different providers or models
-**When** run metadata is persisted
-**Then** normalized fields capture provider, model, run type, token usage, estimated cost, latency, success/failure, quality/confidence signals where available, and related artifact IDs
-
-**Given** provider comparison UI is not fully implemented in MVP
-**When** metrics are stored
-**Then** the data model still supports later comparison by provider/model/project/agent/time range
-
-**Given** stored provider comparison metrics are queried by admins
-**When** the query is authorized
-**Then** results return only safe metadata and aggregate summaries, not prompts containing secrets or confidential source content
-
-### Epic 15: Test Execution and Reporting with Jack
+### Epic 14: Test Execution and Reporting with Jack
 
 Users can run generated Playwright scripts, collect execution results, and view success/failure reporting across supported browsers.
 
 **FRs covered:** FR11, FR13, FR26
 
-### Story 15.1: Approved Script Execution Input Selection
+**Note:** Promoted to highest priority (2026-06-20) — highest business value; completes the end-to-end pipeline. Script editing-before-approval and side-by-side source/script review (formerly proposed as a separate enhancement epic) are already delivered under Epic 13 (Stories 13.5 / 13.6) and are not re-scoped here.
+
+### Story 14.1: Approved Script Execution Input Selection
 
 As a QA user,
 I want Jack to execute only approved scripts for the selected project,
@@ -1589,7 +1459,7 @@ So that test runs use reviewed automation assets.
 **When** Jack is asked to run tests
 **Then** Jack blocks execution and explains that Sarah generation and approval must happen first
 
-### Story 15.2: Playwright Execution Runner
+### Story 14.2: Playwright Execution Runner
 
 As a QA user,
 I want Jack to execute approved Python Playwright scripts,
@@ -1611,7 +1481,7 @@ So that I can validate generated tests against the target application.
 **When** results are persisted
 **Then** each result is linked to its source script artifact, test case artifact where available, project, thread, and execution run ID
 
-### Story 15.3: Configurable Execution Output Path
+### Story 14.3: Configurable Execution Output Path
 
 As a system administrator,
 I want execution reports and run artifacts saved to configured project artifact locations,
@@ -1632,7 +1502,7 @@ So that outputs are organized consistently and do not rely on ad-hoc workspace w
 **When** outputs are saved
 **Then** each run uses a unique logical run path and does not overwrite prior reports unless explicitly configured
 
-### Story 15.4: Multi-Browser Execution Support
+### Story 14.4: Multi-Browser Execution Support
 
 As a QA user,
 I want Jack to run tests against configured browsers,
@@ -1654,7 +1524,7 @@ So that execution results reflect supported browser coverage.
 **When** a configured session is available
 **Then** Jack uses the configured browser context/session without storing or logging credentials
 
-### Story 15.5: Execution Result Report Generation
+### Story 14.5: Execution Result Report Generation
 
 As a QA user,
 I want Jack to generate structured execution reports,
@@ -1675,7 +1545,7 @@ So that I can understand test outcomes and diagnose failures.
 **When** project members retrieve it
 **Then** it is accessible as a project-scoped artifact according to project membership permissions
 
-### Story 15.6: Execution Report Review UX
+### Story 14.6: Execution Report Review UX
 
 As a QA user,
 I want to view execution summaries and drill into details,
@@ -1694,6 +1564,138 @@ So that I can quickly understand pass/fail status and investigate failures.
 **Given** multiple reports exist for a project
 **When** the user views execution history
 **Then** reports are sorted by run time and filterable by project, thread, browser, result, and date range
+
+### Epic 15: Admin Dashboard — Project-Admin RBAC and User/Project Management
+
+Repair and complete the platform-admin Dashboard for project and user management: fix project creation, finish the project_admin role wiring (project picker + membership on user-create), and add user-list sorting and per-user Edit/Delete. Realizes Slices 1-2 of the project-admin RBAC re-architecture (design-projectadmin-rbac-redesign-2026-06-21.md) for the Admin Dashboard surface. Source: investigation admin-dashboard-project-user-mgmt-investigation.md and sprint-change-proposal-2026-06-21.md.
+
+**FRs covered:** FR16/FR16a (admin CRUD for users/projects and project memberships); extends Epic 6 RBAC (6-2/6-3) and the signed-off project-admin RBAC design.
+
+**Status:** Active. Decisions (2026-06-21): the platform `admin` account is immutable (cannot be edited or deleted; only the platform admin may edit/delete project_admin and standard users); project_admin↔project linkage is many-to-many (no 1:1 uniqueness); demoting a project_admin to standard deletes the project_admin membership. App UI English-only.
+
+### Story 15.1: Fix Project Creation Regression
+
+As a platform admin,
+I want to create a project with only a name (and optional description),
+So that project creation succeeds without requiring Confluence/Jira config up front.
+
+**Acceptance Criteria:**
+
+**Given** the live database constraint on `projects.confluence_base_url`
+**When** the schema is migrated
+**Then** the column is nullable (an Alembic migration reverses the prior NOT NULL; downgrade backfills NULL→'' before re-adding NOT NULL)
+
+**Given** an admin submits the Create Project form with a non-blank name and no Confluence/Jira config
+**When** the request is processed
+**Then** the project is created (HTTP 2xx) with confluence_base_url NULL and appears in the project list
+
+**Given** an admin submits a blank project name
+**When** the request is validated
+**Then** creation is rejected with a clear "Project name is required" message (description remains optional)
+
+**Given** a duplicate project name OR another integrity violation occurs
+**When** the error is returned
+**Then** the message distinguishes a genuine duplicate-name conflict from other failures (the NOT-NULL violation no longer masquerades as "Project name already exists")
+
+### Story 15.2: Trim Obsolete Admin Dashboard Helper Copy
+
+As a platform admin,
+I want the Admin Dashboard to omit instructions about config it no longer owns,
+So that the UI reflects that Confluence/Jira, providers, environments, roles, and membership are managed by the project admin.
+
+**Acceptance Criteria:**
+
+**Given** the Create Project and Edit Project forms
+**When** they render
+**Then** the helper sentences about config being "configured/managed by the project admin after creation" are removed
+
+**Given** the Users Management list
+**When** a non-admin user row renders
+**Then** the "Project membership is managed by the project admin." note is removed (the whole conditional block, leaving no empty element)
+
+**Given** the removed copy
+**When** the dashboard is tested
+**Then** no test depends on the removed strings (optionally a negative assertion confirms their absence)
+
+### Story 15.3: Project-Admin Project Picker and Membership on User Create
+
+As a platform admin,
+I want to assign a project when creating a project_admin user,
+So that the new project_admin is linked to a project via a project_admin membership.
+
+**Acceptance Criteria:**
+
+**Given** the Create User form
+**When** the role is set to Project Admin
+**Then** a required project picker is shown; for the Standard role no project picker is shown
+
+**Given** an admin submits a project_admin user with a selected project
+**When** the request is processed
+**Then** the User (role=project_admin) and a ProjectMembership(role="project_admin") for that project are created atomically
+
+**Given** an admin submits a project_admin user without a project, or a standard user with a project
+**When** the request is validated
+**Then** the request is rejected (422) with a clear message
+
+**Given** the project_admin↔project linkage
+**When** memberships are created
+**Then** no 1:1 uniqueness is enforced — a project may have multiple project_admins and a user may admin multiple projects (additional assignments happen via existing membership flows)
+
+**Given** no projects exist yet
+**When** the admin selects the Project Admin role
+**Then** the form prevents submission and explains that a project must exist first
+
+### Story 15.4: Sort Users Management and Show Project-Admin's Project
+
+As a platform admin,
+I want the Users Management list sorted and annotated,
+So that I can scan users by role, status, timezone, and name.
+
+**Acceptance Criteria:**
+
+**Given** the Users Management list
+**When** it renders
+**Then** users are sorted by role (admin → project_admin → standard → other), then status (active before inactive), then timezone (A→Z), then display name (A→Z)
+
+**Given** a project_admin user
+**When** the row renders
+**Then** the administered project name(s) appear near the role badge (multiple names if the user admins multiple projects)
+
+**Given** the active/inactive status
+**When** it renders
+**Then** status is conveyed with text + icon, not color alone, per the design system
+
+### Story 15.5: User Edit and Delete with Platform-Admin Immutability
+
+As a platform admin,
+I want to edit and delete project_admin and standard users,
+So that I can manage the user directory while the platform admin account stays protected.
+
+**Acceptance Criteria:**
+
+**Given** a project_admin or standard user
+**When** the admin edits it
+**Then** a new update-user endpoint updates display name, role (project_admin↔standard only), timezone, active status, and optional password reset, returning a secret-free response
+
+**Given** a role change between project_admin and standard
+**When** the update is applied
+**Then** standard→project_admin requires a project and creates the project_admin membership; project_admin→standard deletes the user's project_admin membership(s)
+
+**Given** the platform admin account (role=admin)
+**When** any actor attempts to edit or delete it
+**Then** the action is rejected (403); promoting any user to admin is also rejected
+
+**Given** the current admin
+**When** they attempt to deactivate or delete their own account
+**Then** the action is rejected to prevent lockout
+
+**Given** a non-admin caller
+**When** they call the update or delete user endpoints
+**Then** access is denied (403)
+
+**Given** the Users Management list
+**When** rows render
+**Then** Edit and Delete controls appear for project_admin and standard users but NOT for the platform admin row, with distinct accessible labels
 
 ### Epic 16: Conversational UX System and Accessibility
 
@@ -1842,3 +1844,512 @@ So that project/provider/model setup is reviewable, safe, and understandable.
 **Given** Alice proposes per-agent model assignments
 **When** the user reviews assignments
 **Then** each assignment shows the agent, selected provider/model, scoring rationale, and editable selection controls where allowed
+
+### Story 16.8: Hierarchical Requirements Tree Mirroring Source Structure
+
+As a QA user,
+I want the Requirements artifact tree to mirror the multi-level Confluence page hierarchy,
+So that I can navigate generated requirements with the same parent/child structure as the source space.
+
+**Acceptance Criteria:**
+
+**Given** a Confluence space whose pages form a multi-level tree (parent pages with nested child pages across several depths)
+**When** Bob saves the extracted requirements artifacts
+**Then** each requirements artifact records its full ancestor chain, not only its immediate parent, so the complete source hierarchy is reconstructable
+
+**Given** the Requirements sidebar renders the saved requirements
+**When** the result tree is built
+**Then** it displays the same nested levels as the source space — parent nodes contain their child pages at the correct depth — instead of a single flat list
+
+**Given** a page has no resolvable parent or an incomplete ancestor chain
+**When** the tree is rendered
+**Then** the node falls back to the root level (or nearest known ancestor) and remains visible and distinct rather than being dropped or duplicated
+
+**Given** a parent node has child requirements
+**When** the user expands, collapses, or selects nodes
+**Then** expand/collapse state and selection behave predictably and do not reset chat input or scroll position
+
+### Story 16.9: Multilingual Agent Conversation with English Specifications
+
+As a QA user who prefers a non-English language,
+I want each agent to converse with me in my configured language while all generated specifications stay in English,
+So that I can collaborate naturally without changing the language of the artifacts the team relies on.
+
+**Acceptance Criteria:**
+
+**Given** an administrator opens the Admin Dashboard user management
+**When** they create or edit a user
+**Then** they can set that user's preferred conversation language, which is persisted on the user record
+
+**Given** a user has a preferred conversation language configured
+**When** Alice, Bob, Mary, Sarah, or Jack send conversational messages to that user
+**Then** the agent's chat-facing prose is written in the user's preferred language
+
+**Given** the user replies in their preferred language
+**When** the agent processes the reply (including feedback, clarifications, and approvals)
+**Then** the agent understands the input regardless of its language and continues the workflow correctly
+
+**Given** the workflow produces persisted specifications (requirements, test cases, scripts, execution reports, and any other saved artifacts)
+**When** those artifacts are generated and saved
+**Then** their content remains in English regardless of the user's conversation language
+
+**Given** the existing App-UI-English-only convention
+**When** static UI chrome (labels, buttons, placeholders, menus) is rendered
+**Then** it stays in English; only dynamic agent conversation content is localized to the user's preferred language
+
+### Story 16.10: Flat Test-Case and Script Storage (Remove Per-Role Sub-Folders)
+
+As a QA user,
+I want generated test cases and test scripts to be saved at the root of their artifact folder instead of inside a per-role sub-folder,
+So that a test case that applies to more than one role is not forced under a single role folder, while the role it belongs to is still visible from the artifact's own content.
+
+**Acceptance Criteria:**
+
+**Given** Mary saves a test case (draft during streaming or approved on confirmation)
+**When** the artifact name and storage key are derived
+**Then** the test case is stored directly in the Test Cases folder root (e.g. `<case>.md`) with no `<role>/` sub-folder segment
+**And** the role remains recorded in the Markdown body header (the `Role` section) so role information is not lost
+
+**Given** Sarah saves an approved test script
+**When** the script artifact name and storage key are derived
+**Then** the script is stored directly in the Test Scripts folder root (e.g. `<script>.py`) with no `<role>/` sub-folder segment
+**And** the script's sidecar metadata file is stored alongside it at the same root level
+
+**Given** two test cases — or two scripts — normalise to the same base name
+**When** their storage names are computed without a role folder to keep them apart
+**Then** name-uniqueness is resolved across the whole flat folder (not per-role), so each artifact maps to a distinct file and none is silently overwritten
+
+**Given** the role→folder mechanism is no longer used for storage
+**When** the test-case and script save paths are updated
+**Then** per-role sub-foldering is removed from both save paths, and any downstream consumer that previously grouped by folder path (e.g. role-aware execution grouping in Jack) reads the role from the artifact content/metadata instead of the folder path
+
+**Given** artifacts already saved under a `<role>/` sub-folder before this change
+**When** the new flat layout is in effect
+**Then** the change applies to newly generated artifacts and pre-existing role-foldered artifacts remain readable; regenerating a test case or script saves it at the flat root (no data migration is required)
+
+### Story 16.11: Display Current Frontend Version in UI
+
+As a QA user or administrator,
+I want the current frontend version to be visible somewhere in the UI,
+So that I can tell which build I am using when reporting issues or confirming a deployment.
+
+**Acceptance Criteria:**
+
+**Given** the frontend is built
+**When** the application bundle is produced
+**Then** the version is sourced from a single authoritative place (the frontend `package.json` version, optionally with short build/commit metadata) and injected at build time, so no extra runtime request is needed to read it
+
+**Given** an authenticated user is in the application shell
+**When** any primary screen is rendered
+**Then** the current frontend version is displayed in a consistent, unobtrusive location (e.g. a footer, the user/account menu, or an "About" area) using the App-UI-English-only convention
+
+**Given** the version label is shown
+**When** the user reads it
+**Then** it is clearly identifiable as the frontend version (e.g. `v1.4.0`), does not overlap or obstruct interactive controls, and meets the project accessibility/contrast baseline
+
+**Given** the build has no resolvable version or metadata
+**When** the version label would render
+**Then** it falls back to a safe placeholder (e.g. `dev` / `unknown`) rather than showing an empty, broken, or error state, and never exposes secrets or internal build paths
+
+### Story 16.12: Fix Sarah Browser-Use Chrome-Driven Script Generation
+
+**Priority: P0 — highest in Epic 16. This bug blocks the Sarah → Jack pipeline (no scripts are produced), so it must be worked before all other Epic 16 stories.**
+
+As a QA user,
+I want Sarah to reliably drive Chrome via browser-use and produce Playwright scripts from approved test cases,
+So that script generation succeeds instead of failing with an LLM authentication error and leaving the Scripts folder empty.
+
+**Observed bug:** When Sarah reaches "Generating script N of M", generation fails with `LLM Authentication failed: "Could not resolve authentication method. Expected either api_key or auth_token to be set. Or for one of the X-Api-Key or Authorization headers to be explicitly omitted"`. This message comes from the browser-use driving model (`browser_use.llm.ChatAnthropic` for the `claude` / `claude-sso` providers), so Sarah never actually drives Chrome; and because the failure is not absorbed into the fallback path it aborts the whole batch — the Scripts folder stays at 0 even though all 8 "Generating script…" messages appear.
+
+**Likely areas to investigate (not prescriptive):** `agents/sarah.py::_build_explore_llm`, `browser/llm_factory.py::build_browser_use_llm`, `pipelines/script_generator.py` (explore gating + the vision/LLM-only fallback), and `agents/base.py::get_llm_config` (how the per-user secret / base URL is resolved for the driving and fallback models).
+
+**Acceptance Criteria:**
+
+**Given** approved test cases and a configured provider whose credential resolves successfully
+**When** Sarah generates scripts
+**Then** the resolved credential authenticates correctly for both the browser-use driving model and the deterministic script-generation model, and no "Could not resolve authentication method" error occurs
+
+**Given** a Chrome path (or CDP URL) and a target application URL are available
+**When** Sarah generates a script for a test case
+**Then** the browser-use exploration path actually drives Chrome against the real app (real app → verified trace → deterministic Playwright) for that test case
+
+**Given** the browser-use driving credential is genuinely unavailable (for example Claude / Claude-SSO without a real Anthropic key)
+**When** the live exploration cannot run
+**Then** Sarah falls back cleanly to vision / LLM-only generation and still produces a script per test case, rather than hard-failing the entire batch
+
+**Given** generation completes for a batch of approved test cases
+**When** the results are saved
+**Then** the Scripts folder is populated with the generated scripts (not left empty) and each script is reviewable
+
+**Given** any generation or authentication failure
+**When** the error is surfaced in the conversation
+**Then** the message is actionable and secret-safe — it never exposes api_key, auth_token, or Authorization/X-Api-Key header values
+
+### Story 16.13: Fix Project Selection When Editing a Project-Admin User
+
+**Priority: low — work at the end of Epic 16 (after 16-1..16-11). Bug found 2026-06-22 on the Admin Dashboard.**
+
+As a platform administrator,
+I want to choose a project for a user whose role is already Project Admin when I edit them in Users Management,
+So that I can assign or change which project that project admin manages, not only at creation or while promoting a standard user.
+
+**Observed bug:** In the Admin Dashboard → Users Management → Edit form, selecting the role "Project Admin" shows no project selector when the user is *already* a Project Admin, so there is no way to assign/change their managed project on edit. The project selector only appears when promoting a standard user (`u.role === "standard" && editUserRole === "project_admin"`); the create-user form has its own picker. As a result an existing project admin's project assignment cannot be viewed or changed through the edit form.
+
+**Likely areas to investigate (not prescriptive):** frontend `components/admin/AdminDashboard.tsx` (the edit-form picker gate around `u.role === "standard" && editUserRole === "project_admin"` and the `promoting` logic in `handleEditUser`); backend `api/admin.py::update_user` + `AdminUserUpdateRequest` (today `project_id` is only consumed on the standard→project_admin transition — there is no branch to add/update a project membership for a user who is already a project_admin). Keep the many-to-many project_admin↔project model and platform-admin immutability from Epic 15, and the App-UI-English-only convention.
+
+**Acceptance Criteria:**
+
+**Given** I edit a user whose current role is Project Admin
+**When** the edit form is shown
+**Then** a project selector is present and reflects the project(s) the user currently administers, so I can assign or change the managed project
+
+**Given** I change the selected project for an existing Project Admin and save
+**When** the update is persisted
+**Then** the user's `project_admin` project membership is updated accordingly, consistent with the many-to-many project_admin↔project model, and the change is reflected in the Users Management list
+
+**Given** I promote a standard user to Project Admin (the existing flow)
+**When** I edit and save
+**Then** behavior is preserved — a project is still required and the membership is created as before
+
+**Given** the immutable platform admin account
+**When** it is viewed in Users Management
+**Then** it remains non-editable (no project selector, no role change) per the Epic 15 immutability decision
+
+**Given** an invalid or missing project selection on save
+**When** the request is submitted
+**Then** the form/API rejects it with a clear, actionable message and no partial/inconsistent membership state is left behind
+
+### Epic 17: Document Attachment Reading
+
+Today Bob extracts requirements only from the body of a Confluence page or Jira issue; attached documents (Excel, Word, PDF, etc.) are ignored, so requirements captured in spreadsheets and specs are lost. This epic lets Bob discover, download, and parse file attachments via the existing MCP retrieval path and fold their content into requirement extraction, so the resulting requirements cover both the page/issue body and its attachments.
+
+**FRs covered:** new (extends Epic 11: FR23/FR24 Confluence+Jira MCP retrieval, FR27 input-quality detection; feeds requirements-artifact-save 11-7)
+
+**Status:** Provisional — single product-owner one-liner, no PRD yet; acceptance criteria to be elaborated via a full PRD before development. Open questions: which MCP tools expose attachment lists/downloads (current readers use confluence_get_page / jira_get_issue only), supported file types + size caps, how parsed attachment text is merged with body content for the LLM, and whether attachment bytes are persisted as artifacts. Per-user encrypted-secret + no-secret-leak conventions apply to any new download path.
+
+### Story 17.1: Discover and Download Attachments via MCP
+
+As Bob, I want to discover and download files attached to a Confluence page or Jira issue through the existing MCP retrieval path, so that attachment bytes are available for parsing alongside the body.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 17.2: Parse Excel, Word, and PDF Documents
+
+As the content pipeline, I want to convert downloaded xlsx/docx/pdf attachments into clean LLM-friendly text, so that their content can feed requirement extraction the same way body content does.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 17.3: Feed Parsed Attachments into Bob Extraction
+
+As Bob, I want parsed attachment content merged into the requirement-extraction input, so that generated requirements reflect attachments, not just the page/issue body.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 17.4: Surface Which Attachments Were Read
+
+As a user, I want to see which attachments Bob read (and which were skipped or unsupported), so that I can trust and verify the source coverage of the extracted requirements.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Epic 18: Source Change Detection and Downstream Cascade Update
+
+Detect when the Confluence/Jira sources behind a project's artifacts have changed since the last run, and offer a guided, user-confirmed re-run of the affected downstream chain (requirements -> test cases -> test scripts -> execution runs). A versioned snapshot of each source is persisted per run so the next run can diff against it and surface exactly what changed and which generated artifacts are now potentially stale.
+
+**FRs covered:** new (extends FR1-FR4, FR23-FR24 source ingestion and FR45 artifact lineage; relates to FR25 audit and FR61-FR63 realtime events). Suggest reserving FR68+ for this epic.
+
+**Status:** Provisional — acceptance criteria TBD via PRD. Grounding: ConfluencePage.version and JiraIssue status/fields are cheap-to-hash change indicators; ArtifactVersion.content_hash + Artifact.source_url/source_type + agent_run_id give the lineage to walk source -> requirement -> test case -> script (DiscoveredModelSnapshot is an existing "last-seen snapshot" precedent). Needs a new snapshot table + Alembic migration and a backfill story for pre-existing artifacts (treat as "never-checked", not "changed"). The execution-run leg depends on Jack (Epic 14), which now ships first. Open questions: on-demand vs scheduled detection (no scheduler today), and cascade granularity (project vs page vs single test case).
+
+### Story 18.1: Per-Run Source Snapshot Persistence
+
+As the system, I want each run to persist a versioned snapshot/hash of every Confluence page and Jira issue it consumed, so that a later run has a baseline to diff against.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 18.2: Source Change Detection vs Last Run
+
+As a QA user, I want Bob to detect whether the bound Confluence/Jira sources changed since the last snapshot, so that I am told what changed before regenerating anything.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 18.3: Downstream Staleness Impact Mapping
+
+As a QA user, I want changed sources mapped to the affected requirements, test cases, scripts, and execution runs via artifact lineage, so that I can see exactly which generated assets are now potentially stale.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 18.4: Guided Cascade Re-Run with Confirmation
+
+As a QA user, I want to confirm whether to cascade an update through requirements -> test cases -> scripts -> execution, so that downstream regeneration only happens with my explicit approval and at the scope I choose.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 18.5: Change Notice, Realtime Signal, and Audit Trail
+
+As a project member, I want detected source changes and cascade decisions surfaced as a notice/realtime event and recorded in the audit trail, so that the team knows when sources drifted and what was regenerated.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Epic 19: Frontend UX Enhancement via ui-ux-pro-max Design Conventions
+
+Adopt the design-system and UI-quality conventions from the external "ui-ux-pro-max" skill (https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) to raise the visual and interaction quality of the existing React frontend, without changing pipeline behavior or backend contracts. The work is a polish pass over already-shipped screens — chat workspace, agent review panels, admin dashboard, and shared ui/ primitives.
+
+**FRs covered:** new (presentation-layer quality; refines the UX surface of FR15b/FR19-FR22 review panels, FR16/FR16a admin dashboard, and the Epic 16 conversational-UX stories)
+
+**Status:** Provisional, LOW priority, internal-only (no external/runtime dependency — the skill provides conventions applied during development; nothing from the repo ships in the bundle). Must be reconciled with Epic 16 (Conversational UX) to avoid scope overlap: treat Epic 16 as the functional baseline and this epic as the quality/polish layer on top. Keep the App UI English-only per project convention.
+
+### Story 19.1: Audit Current UI Against Skill Conventions
+
+As a frontend developer, I want to audit the existing React screens and shared ui/ primitives against the ui-ux-pro-max conventions, so that we have a prioritized gap list before making changes.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 19.2: Adopt Design-System Conventions
+
+As a frontend developer, I want to align our Tailwind v4 tokens, spacing, typography, and shared ui/ primitives with the skill's design-system conventions, so that the app has a consistent visual foundation.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 19.3: Polish Key Workflow Screens
+
+As a QA user, I want the chat workspace and agent review panels (Bob/Mary/Sarah) refined to the new conventions, so that the core pipeline flow looks and feels polished and coherent.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 19.4: Polish Admin and Navigation Surfaces
+
+As an admin, I want the admin dashboard and project navigation/sidebar refined to match the new conventions, so that management screens are visually consistent with the workspace.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 19.5: Visual-Regression and Conventions Guardrail
+
+As a frontend developer, I want lightweight checks and documented conventions that catch UI drift, so that future changes stay aligned with the adopted design system.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Epic 20: Audit, Metrics, and Leadership Visibility
+
+Admins and leadership can see audit trail, execution metrics, success rates, effort reduction, LLM cost tracking, and provider comparison backlog support.
+
+**FRs covered:** FR17, FR25, FR28, FR29
+
+**Note:** Lower business value (2026-06-20 reprioritization) — sequenced after the core pipeline, UX, and new-feature epics but ahead of the externally-blocked SSO epics. Absorbs the former standalone audit-logger backlog (foundation + extended event types).
+
+### Story 20.1: Audit Event Model and Persistence
+
+As an admin,
+I want pipeline and security-relevant actions recorded as structured audit events,
+So that activity can be reviewed consistently across projects and agents.
+
+**Acceptance Criteria:**
+
+**Given** a user, agent, or admin performs an auditable action
+**When** the action completes or fails
+**Then** an audit event is persisted with actor, project, thread, agent/run where applicable, action type, target type, target ID, timestamp, result, and safe metadata
+
+**Given** audit metadata is persisted
+**When** the event includes provider, model, artifact, execution, or admin context
+**Then** only non-secret identifiers and safe summaries are stored
+**And** API keys, tokens, cookies, passwords, and decrypted secret values are never stored
+
+**Given** audit events are stored
+**When** they are queried later
+**Then** events retain immutable core fields needed for compliance and troubleshooting
+
+### Story 20.2: Pipeline Audit Logging
+
+As an admin,
+I want all major pipeline actions logged,
+So that I can trace who read, generated, reviewed, approved, edited, executed, or exported QA artifacts.
+
+**Acceptance Criteria:**
+
+**Given** Bob retrieves or saves requirement artifacts
+**When** the operation occurs
+**Then** audit logs record the user, project, thread, agent run, source reference, artifact ID where available, and result
+
+**Given** Mary or Sarah generates, edits, approves, rejects, or saves outputs
+**When** the operation occurs
+**Then** audit logs record the action, affected artifact/test case/script, review decision, actor, timestamp, and result
+
+**Given** Jack executes scripts or produces reports
+**When** execution starts, completes, or fails
+**Then** audit logs record execution scope, browser where applicable, result summary, report artifact ID, and duration
+
+### Story 20.3: Admin Audit Trail View
+
+As an admin,
+I want to view and filter audit events,
+So that I can investigate project activity and compliance questions.
+
+**Acceptance Criteria:**
+
+**Given** an authenticated admin opens the audit trail
+**When** audit data loads
+**Then** the UI shows events with timestamp, actor, project, action, target, result, and safe summary
+
+**Given** many audit events exist
+**When** the admin filters the view
+**Then** filtering supports user, project, thread, agent, action type, artifact, result, and time range
+
+**Given** a non-admin user attempts to access audit trail data
+**When** the request is made
+**Then** access is denied and no audit event details are returned
+
+### Story 20.4: Execution Metrics Aggregation
+
+As a QA lead,
+I want script execution metrics aggregated over time,
+So that I can understand automation reliability and coverage trends.
+
+**Acceptance Criteria:**
+
+**Given** Jack execution results exist
+**When** metrics aggregation runs
+**Then** pass/fail counts, success rate, duration, execution count, browser breakdown, and project/thread summaries are calculated
+
+**Given** new execution results are saved
+**When** metrics are requested
+**Then** the dashboard reflects current results or clearly indicates last aggregation time
+
+**Given** execution metrics are aggregated
+**When** results include failed or skipped tests
+**Then** failure and skip counts remain distinguishable from passed tests
+
+### Story 20.5: Leadership Metrics Dashboard
+
+As a leadership or admin user,
+I want a metrics dashboard for QA automation impact,
+So that I can understand success rate, usage, and effort reduction indicators.
+
+**Acceptance Criteria:**
+
+**Given** a leadership/admin user opens the metrics dashboard
+**When** project metrics load
+**Then** the UI shows execution volume, success rate, failure trends, generated artifact counts, approved artifact counts, and recent pipeline activity
+
+**Given** effort reduction data is estimated
+**When** it is shown in the dashboard
+**Then** the calculation basis is visible as a safe explanatory summary
+**And** values are labeled as estimates unless based on configured measured values
+
+**Given** a user without required admin/leadership permission opens the dashboard
+**When** the request is made
+**Then** restricted metrics are denied or scoped according to their project permissions
+
+### Story 20.6: LLM Cost Tracking
+
+As an admin,
+I want estimated LLM usage and costs tracked by provider and model,
+So that I can monitor cost trends without exposing secrets.
+
+**Acceptance Criteria:**
+
+**Given** an agent run calls an LLM provider
+**When** usage metadata is returned or estimated
+**Then** token counts, provider name, model name, project, thread, agent, run, timestamp, and estimated cost are recorded where available
+
+**Given** provider usage metadata is incomplete
+**When** cost tracking records the run
+**Then** the system stores available usage fields and marks missing estimates clearly
+
+**Given** cost data is displayed
+**When** admins view it
+**Then** costs can be grouped by provider, model, project, agent, and time range
+**And** no API key, endpoint secret, request payload secret, or decrypted credential is exposed
+
+### Story 20.7: Provider Comparison Backlog Support
+
+As an admin,
+I want normalized provider/model metrics stored for future comparison,
+So that the product can later support provider quality and cost comparison without redesigning telemetry.
+
+**Acceptance Criteria:**
+
+**Given** agent runs execute with different providers or models
+**When** run metadata is persisted
+**Then** normalized fields capture provider, model, run type, token usage, estimated cost, latency, success/failure, quality/confidence signals where available, and related artifact IDs
+
+**Given** provider comparison UI is not fully implemented in MVP
+**When** metrics are stored
+**Then** the data model still supports later comparison by provider/model/project/agent/time range
+
+**Given** stored provider comparison metrics are queried by admins
+**When** the query is authorized
+**Then** results return only safe metadata and aggregate summaries, not prompts containing secrets or confidential source content
+
+### Epic 21: Claude SSO Authentication for Browser Use (IT-gated)
+
+Let Sarah's browser-use exploration authenticate to Claude through enterprise SSO or the internal company gateway/MCP, so users never paste a raw Anthropic key — when IT enables it. The codebase already has the SSO login flow (OAuth+PKCE, mock IdP, the per-user `claude_sso` secret, `ClaudeSSOAdapter`, and `build_browser_use_llm` mapping `claude-sso` -> `ChatAnthropic`), but browser-use still needs a REAL `sk-ant-api...` key that SSO login alone never yields, so it falls back to a server-side enterprise key. This epic closes that gap by sourcing a usable Claude credential from the SSO/IT path, with no raw-key entry.
+
+**FRs covered:** FR1, FR12, FR14, FR36, FR54 (existing); new — "SSO/IT path yields a usable Claude credential for browser-use, or the company gateway/MCP proxies Claude, without raw-key entry"
+
+**Status:** Provisional and heavily IT-dependent. The core unknown is which mechanism IT provides: (a) a real Anthropic key provisioned behind SSO, (b) an OAuth/SSO token the Anthropic/gateway API accepts directly, or (c) a Claude-capable company gateway/MCP that proxies inference. Confirm the IT mechanism via a PRD/correct-course before dev. Honor conventions: secrets never in messages/logs/artifacts; leak-canary coverage; deterministic model selection.
+
+### Story 21.1: Confirm the IT-Supported Claude Credential Path
+
+As the team, we want to confirm with company IT which mechanism is available (SSO-issued real key vs OAuth-token-accepting API vs Claude-capable internal gateway/MCP), so that the rest of the epic targets a real, IT-blessed credential path instead of the current server-side-key stopgap.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 21.2: Source a Usable Claude Credential from the SSO/IT Path
+
+As a QA user, I want logging in via SSO to make a usable Claude credential available for the pipeline (without pasting a raw sk-ant key), so that Claude inference works through the company-approved path rather than a manually entered key.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 21.3: Drive Sarah's Browser-Use with the SSO-Sourced Claude Credential
+
+As a QA user, I want Sarah's browser-use exploration to authenticate to Claude using the SSO/gateway-sourced credential, so that script generation runs end-to-end on Claude without a raw key, and falls back gracefully when the IT path is unavailable.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 21.4: Validate Claude-SSO Connection and Discover Models
+
+As a user, I want Alice to validate the Claude-SSO/gateway connection and discover available Claude models through that path, so that configuration review reflects real reachability and never silently assumes a working credential.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 21.5: Support Claude via the Internal Company Gateway/MCP
+
+As an enterprise deployment, I want Claude inference to optionally route through a Claude-capable internal gateway/MCP endpoint, so that browser-use can use Claude even when no SSO-issued Anthropic key is obtainable, reusing the on-premises/OpenAI-compatible adapter pattern.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Epic 22: Company SSO and User Directory Sync
+
+Let employees sign in with their corporate Azure Entra ID identity instead of (or alongside) local email/password accounts, and keep the user directory in step with the company source of truth by syncing users from Oracle SharedERP. This subsumes the previously deferred Azure Entra SSO foundation and layers automated user provisioning on top of the existing local auth + RBAC + admin user-management foundation. Per-user encrypted secrets and project-scoped RBAC stay unchanged; only the identity and account-provisioning layer is added.
+
+**FRs covered:** reuses/extends Epic 6 auth + RBAC (6-2, 6-3) and admin user management (2-2); revives the deferred Azure Entra SSO foundation. SharedERP directory sync is new (no existing FR).
+
+**Status:** Provisional, LOW priority, gated on company IT/security policy approval. SSO is additive to local auth, not a hard replacement (local bootstrap-admin retained as break-glass fallback). The UserSession dataclass already exposes groups/given_name/family_name, so SSO claims slot into the existing session layer. SharedERP sync is the only genuinely new external integration (likely an ai_connection/ directory adapter) and needs a reconciliation policy (create/update/deactivate, never hard-delete). Open questions: group-claim-to-role mapping, deprovisioning policy, sync cadence, and the stable join key between Entra and SharedERP.
+
+### Story 22.1: Azure Entra ID SSO Login Foundation
+
+As an employee, I want to sign in with my corporate Azure Entra ID account, so that I authenticate with my existing company identity instead of a local password.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 22.2: SSO Identity to Platform Account Linking
+
+As a returning SSO user, I want my Entra identity matched to (or provisioning) my platform User record, so that my role, project memberships, and per-user secrets carry over across logins.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 22.3: Oracle SharedERP User Directory Sync
+
+As an admin, I want company users synced from Oracle SharedERP, so that the platform user directory stays aligned with the official employee list without manual entry.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 22.4: Auth Mode Config and Local Fallback
+
+As an operator, I want to configure SSO vs local auth (and a break-glass fallback for admins), so that the platform works during R&D and degrades safely if SSO is unavailable.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 22.5: Admin Sync and Directory Management UI
+
+As an admin, I want to trigger/review SharedERP syncs and manage SSO-provisioned users from the admin dashboard, so that I can oversee provisioning, deactivation, and role assignment.
+
+_Provisional — acceptance criteria TBD via PRD._

@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: ${DOCKER_IMAGE_PREFIX}/ai-qa-db:${DOCKER_POSTGRESQL_VERSION}
+    image: ${DOCKER_IMAGE_PREFIX}/${DOCKER_DB_IMAGE}:${DOCKER_POSTGRESQL_VERSION}
     container_name: ai_qa_postgres
     restart: unless-stopped
     ports:
@@ -18,19 +18,20 @@ services:
       retries: 5
 
   seaweedfs:
-    image: ${DOCKER_IMAGE_PREFIX}/ai-qa-fs:${DOCKER_SEAWEEDFS_VERSION}
+    image: ${DOCKER_IMAGE_PREFIX}/${DOCKER_FS_IMAGE}:${DOCKER_SEAWEEDFS_VERSION}
     container_name: ai_qa_seaweedfs
     restart: unless-stopped
     ports:
       - "127.0.0.1:8333:8333"
       - "127.0.0.1:9333:9333"
+      - "127.0.0.1:8888:8888"
     volumes:
       - seaweedfs_data:/data
     command: server -s3 -dir=/data
 
   backend:
     image: ${DOCKER_IMAGE_PREFIX}/${DOCKER_BACKEND_IMAGE}:${DOCKER_IMAGE_VERSION:-latest}
-    container_name: ai_qa_backend
+    container_name: ai-qa-backend
     restart: unless-stopped
     ports:
       - "127.0.0.1:${SERVER_PORT:-8000}:8000"
@@ -54,13 +55,24 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE}
       SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE}
       
+      # User Secret Encryption
+      USER_SECRETS_ENCRYPTION_KEY: ${USER_SECRETS_ENCRYPTION_KEY}
+
       # External & AI API URLs
       ON_PREMISES_API_BASE_URL: ${ON_PREMISES_API_BASE_URL}
       BROWSER_USE_CLOUD_URL: ${BROWSER_USE_CLOUD_URL}
       CLAUDE_API_BASE_URL: ${CLAUDE_API_BASE_URL}
       GEMINI_API_BASE_URL: ${GEMINI_API_BASE_URL}
       OPENAI_API_BASE_URL: ${OPENAI_API_BASE_URL}
-      
+
+      # Claude SSO
+      CLAUDE_SSO_AUTHORIZE_URL: ${CLAUDE_SSO_AUTHORIZE_URL}
+      CLAUDE_SSO_TOKEN_URL: ${CLAUDE_SSO_TOKEN_URL}
+      CLAUDE_SSO_CLIENT_ID: ${CLAUDE_SSO_CLIENT_ID}
+      CLAUDE_SSO_REDIRECT_URI: ${CLAUDE_SSO_REDIRECT_URI}
+      CLAUDE_SSO_ENTERPRISE_API_KEY: ${CLAUDE_SSO_ENTERPRISE_API_KEY}
+      CLAUDE_SSO_ALLOWED_EMAIL_DOMAIN: ${CLAUDE_SSO_ALLOWED_EMAIL_DOMAIN}
+
       # MCP & Browser
       MCP_SERVER_URL: ${MCP_SERVER_URL}
       MCP_TOOL_PREFIX: ${MCP_TOOL_PREFIX}
@@ -68,6 +80,36 @@ services:
       MCP_MAX_RETRIES: ${MCP_MAX_RETRIES}
       MCP_RETRY_BACKOFF: ${MCP_RETRY_BACKOFF}
       BROWSER_TIMEOUT: ${BROWSER_TIMEOUT}
+
+      # E2E in-app runner (admin "Run E2E Tests"). On a server keep
+      # E2E_SERVER_MODE=1 → headless + sandbox disabled + TLS errors ignored.
+      # BASE_URL must be the deployed HTTPS URL so Secure session cookies work
+      # (a Secure cookie is never sent over plain HTTP, regardless of cert).
+      # API_URL is the in-container backend used by global setup/teardown
+      # (Bearer-token, server-to-server) — leave it as localhost:8000.
+      E2E_SERVER_MODE: ${E2E_SERVER_MODE:-1}
+      BASE_URL: ${BASE_URL}
+      API_URL: ${API_URL:-http://localhost:8000}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+      # For E2E and models sync
+      TEST_BROWSER_USE_KEY: ${TEST_BROWSER_USE_KEY}
+      TEST_CLAUDE_SSO_EMAIL: ${TEST_CLAUDE_SSO_EMAIL}
+      TEST_CLAUDE_SSO_PASSWORD: ${TEST_CLAUDE_SSO_PASSWORD}
+      TEST_CLAUDE_KEY: ${TEST_CLAUDE_KEY}
+      TEST_GEMINI_KEY: ${TEST_GEMINI_KEY}
+      TEST_OPENAI_KEY: ${TEST_OPENAI_KEY}
+      TEST_ON_PREMISES_KEY: ${TEST_ON_PREMISES_KEY}
+      LLM_STATS_API_KEY: ${LLM_STATS_API_KEY}
+      LLM_STATS_API_BASE_URL: ${LLM_STATS_API_BASE_URL}      
+    # Chromium needs more shared memory than the 64 MB Docker default.
+    shm_size: "1gb"
+    # If the backend container cannot resolve the public BASE_URL hostname,
+    # map it to the Docker host gateway (routes back through the reverse proxy /
+    # the published frontend port). Uncomment and set your hostname:
+    # extra_hosts:
+    #   - "[DOMAIN]:host-gateway"
     volumes:
       - workspace:/app/workspace
     depends_on:
@@ -78,7 +120,7 @@ services:
 
   frontend:
     image: ${DOCKER_IMAGE_PREFIX}/${DOCKER_FRONTEND_IMAGE}:${DOCKER_IMAGE_VERSION:-latest}
-    container_name: ai_qa_frontend
+    container_name: ai-qa-frontend
     restart: unless-stopped
     ports:
       - "8080:80"

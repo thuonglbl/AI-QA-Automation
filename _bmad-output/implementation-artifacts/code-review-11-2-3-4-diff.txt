@@ -1,0 +1,2387 @@
+﻿diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index bb819a5..6e5c67f 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -171,6 +171,7 @@ interface AliceState {
+ 
+ interface BobState {
+   mcpPat: string;
++  jiraUrl: string;
+   isPaginating: boolean;
+   isConfirmParent: boolean;
+   suggestedPage: string;
+@@ -504,6 +505,7 @@ function App() {
+ 
+   const [bobState, setBobState] = useState<BobState>({
+     mcpPat: "",
++    jiraUrl: "",
+     isPaginating: false,
+     isConfirmParent: false,
+     suggestedPage: "",
+@@ -932,6 +934,9 @@ function App() {
+       inputData: {
+         mcp_pat: bobState.mcpPat,
+         confluence_url: selectedProject?.confluence_base_url ?? "",
++        ...(selectedProject?.jira_base_url && bobState.jiraUrl
++          ? { jira_url: bobState.jiraUrl }
++          : {}),
+       },
+     });
+   }, [
+@@ -939,6 +944,7 @@ function App() {
+     addUserMessage,
+     selectedProjectId,
+     bobState.mcpPat,
++    bobState.jiraUrl,
+     selectedProject,
+   ]);
+ 
+@@ -1464,6 +1470,21 @@ function App() {
+                               <p className="text-sm font-medium">
+                                 Please enter your MCP key to continue
+                               </p>
++                              {selectedProject?.jira_base_url && (
++                                <input
++                                  type="url"
++                                  placeholder="Jira ticket or URL (optional)"
++                                  value={bobState.jiraUrl}
++                                  onChange={(e) =>
++                                    setBobState((prev) => ({
++                                      ...prev,
++                                      jiraUrl: e.target.value,
++                                    }))
++                                  }
++                                  disabled={bobState.submittedMcp}
++                                  className="rounded-md border border-[#e2e8f0] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b82f6] focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
++                                />
++                              )}
+                               <div className="flex gap-3">
+                                 <input
+                                   type="password"
+@@ -1537,6 +1558,21 @@ function App() {
+                       <p className="text-sm font-medium">
+                         Please enter your MCP key to continue
+                       </p>
++                      {selectedProject?.jira_base_url && (
++                        <input
++                          type="url"
++                          placeholder="Jira ticket or URL (optional)"
++                          value={bobState.jiraUrl}
++                          onChange={(e) =>
++                            setBobState((prev) => ({
++                              ...prev,
++                              jiraUrl: e.target.value,
++                            }))
++                          }
++                          disabled={bobState.submittedMcp}
++                          className="rounded-md border border-[#e2e8f0] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b82f6] focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
++                        />
++                      )}
+                       <div className="flex gap-3">
+                         <input
+                           type="password"
+diff --git a/src/ai_qa/agents/bob.py b/src/ai_qa/agents/bob.py
+index 3b55c23..c23bb9a 100644
+--- a/src/ai_qa/agents/bob.py
++++ b/src/ai_qa/agents/bob.py
+@@ -2,6 +2,8 @@ import logging
+ from datetime import UTC, datetime
+ from typing import Any
+ 
++from markdownify import markdownify
++
+ from ai_qa.agents.base import AgentState, BaseAgent
+ from ai_qa.ai_connection.client import LLMClient
+ from ai_qa.config import AppSettings
+@@ -10,13 +12,81 @@ from ai_qa.mcp.client import MCPClient
+ from ai_qa.models import StageResult
+ from ai_qa.pipelines.artifact_adapter import PipelineArtifactAdapter
+ from ai_qa.pipelines.confluence_reader import ConfluenceReader, ConfluenceURLParser
+-from ai_qa.pipelines.models import ConfluencePage
++from ai_qa.pipelines.content_parser import ContentParser
++from ai_qa.pipelines.jira_reader import JiraReader
++from ai_qa.pipelines.models import ConfluencePage, JiraIssue, QualityIssue
+ from ai_qa.pipelines.requirement_formatter import RequirementFormatter
+ from ai_qa.secrets import SECRET_TYPE_MCP
+-from ai_qa.secrets.service import get_user_secret
++from ai_qa.secrets.service import get_secret_status, get_user_secret
+ 
+ logger = logging.getLogger(__name__)
+ 
++_QUALITY_MIN_CONTENT_CHARS = 200
++
++_VAGUE_TERMS: tuple[str, ...] = (
++    "etc.",
++    "and so on",
++    "tbd",
++    "to be defined",
++    "as appropriate",
++    "as needed",
++    "should work",
++    "works properly",
++    "works correctly",
++    "somehow",
++    "some kind of",
++    "various",
++    "as required",
++)
++
++_AMBIGUOUS_UI_TERMS: tuple[str, ...] = (
++    "the button",
++    "that button",
++    "the link",
++    "the field",
++    "the relevant",
++    "the appropriate",
++    "the correct page",
++    "the right page",
++)
++
++_EXPECTED_RESULT_MARKERS: tuple[str, ...] = (
++    "expected",
++    "then ",
++    "## acceptance criteria",
++    "acceptance criteria",
++    "result",
++)
++
++_PRECONDITION_MARKERS: tuple[str, ...] = (
++    "precondition",
++    "given ",
++    "## preconditions",
++    "prerequisite",
++    "setup",
++)
++
++_IMPACT_BY_CATEGORY: dict[str, str] = {
++    "unsupported_content": (
++        "Source content could not be fully parsed; generated tests may miss this detail."
++    ),
++    "missing_expected_results": (
++        "Without expected results, Mary cannot derive assertions and generated tests may lack verification steps."
++    ),
++    "missing_preconditions": (
++        "Without preconditions, test setup state is undefined and scripts may start from the wrong state."
++    ),
++    "vague_language": (
++        "Vague wording forces the model to guess; generated steps may be inaccurate or unstable."
++    ),
++    "ambiguous_ui_reference": (
++        "Unnamed UI elements force the model to guess selectors; Sarah's scripts may be brittle."
++    ),
++    "insufficient_content": (
++        "Too little detail to generate meaningful test cases for this item."
++    ),
++}
++
+ 
+ class BobAgent(BaseAgent):
+     """Bob Agent ΓÇö Requirements Extraction.
+@@ -37,7 +107,299 @@ class BobAgent(BaseAgent):
+         self.output_files_saved = 0
+         self._space_key: str | None = None
+         self._page_id: str | None = None
++        self._jira_ref: str | None = None
+         self.phase = "init"
++        self._has_quality_warnings: bool = False
++
++    def _load_project(self) -> Any:
++        """Load Project from DB using project context. Returns None if unavailable."""
++        if not self.project_context or not self.project_context.artifact_service:
++            return None
++        db = self.project_context.artifact_service.db
++        from ai_qa.db.models import Project
++
++        return db.get(Project, self.project_context.project_id)
++
++    def _check_preconditions(self) -> list[str]:
++        """Return list of blocking recovery messages; empty list means all good.
++
++        Checks (in order): project/thread context present, Alice provider config
++        ready, MCP credential configured. Performs DB reads only ΓÇö no MCP, no decryption.
++        """
++        ctx = self.project_context
++        if not ctx or not ctx.project_id or not ctx.user_id or not ctx.thread_id:
++            return ["Start Bob from inside an active project thread."]
++
++        db = ctx.artifact_service.db if ctx.artifact_service else None
++        if db is None:
++            return ["The backend storage service is unavailable ΓÇö contact support."]
++
++        reasons: list[str] = []
++
++        from ai_qa.threads.models import Thread
++
++        thread = db.get(Thread, ctx.thread_id)
++        bob_cfg = (thread.agent_configs or {}).get("bob") if thread else None
++        bob_model = (
++            (bob_cfg.get("model") or bob_cfg.get("model_name"))
++            if isinstance(bob_cfg, dict)
++            else None
++        )
++        if not thread or not thread.provider_name or not bob_model:
++            reasons.append(
++                "Complete provider and model setup with Alice before starting Bob."
++            )
++
++        if not get_secret_status(db, ctx.user_id, SECRET_TYPE_MCP).configured:
++            reasons.append("Add your MCP key in provider configuration, then retry.")
++
++        return reasons
++
++    @staticmethod
++    def _validate_confluence_url(url: str, confluence_base_url: str | None) -> str | None:
++        """Returns None when the URL is accepted; otherwise a correction string.
++
++        Rules (in order): blank ΓåÆ required; invalid format ΓåÆ format hint; wrong host
++        vs configured base ΓåÆ host-mismatch; no page-id or space-key ΓåÆ identifier hint.
++        """
++        from urllib.parse import urlparse
++
++        url = url.strip()
++        if not url:
++            return "A Confluence page URL is required to start extraction."
++
++        if not ConfluenceURLParser.is_valid_confluence_url(url):
++            return (
++                "The URL does not appear to be a valid Confluence page URL. "
++                "Expected formats:\n"
++                "  - https://company.atlassian.net/wiki/spaces/SPACE/pages/PAGE_ID\n"
++                "  - https://confluence.company.com/display/SPACE/Page+Title\n"
++                "  - https://confluence.company.com/pages/viewpage.action?pageId=PAGE_ID"
++            )
++
++        if isinstance(confluence_base_url, str) and confluence_base_url:
++            c_base = confluence_base_url if "://" in confluence_base_url else "https://" + confluence_base_url
++            s_url = url if "://" in url else "https://" + url
++            configured_host = (urlparse(c_base).netloc or "").lower()
++            submitted_host = (urlparse(s_url).netloc or "").lower()
++            if configured_host and submitted_host != configured_host:
++                return (
++                    f"This URL is not part of the project's configured Confluence "
++                    f"instance ({configured_host})."
++                )
++
++        page_id = ConfluenceURLParser.extract_page_id(url)
++        space_key = ConfluenceURLParser.extract_space_key(url)
++        if not page_id and not space_key:
++            return (
++                "Could not find a page ID or space key in the URL ΓÇö "
++                "point to a specific Confluence page."
++            )
++
++        return None
++
++    @staticmethod
++    def _validate_jira_ref(jira_ref: str | None, jira_base_url: str | None) -> str | None:
++        """Returns None when Jira ref is valid or Jira is disabled; otherwise a correction.
++
++        Jira is optional ΓÇö a missing ref when Jira is enabled is accepted. Never blocks
++        Confluence extraction.
++        """
++        import re
++        from urllib.parse import urlparse
++
++        if not jira_base_url:
++            return None
++
++        if not jira_ref or not str(jira_ref).strip():
++            return None
++
++        jira_ref = str(jira_ref).strip()
++
++        if re.match(r"^[A-Z][A-Z0-9_]+-\d+$", jira_ref, re.IGNORECASE):
++            return None
++
++        s_url = jira_ref if "://" in jira_ref else "https://" + jira_ref
++        parsed = urlparse(s_url)
++
++        if not re.search(r"\b[A-Z][A-Z0-9_]+-\d+\b", jira_ref, re.IGNORECASE):
++            return "The Jira URL must contain a valid issue key (e.g. PROJ-123)."
++
++        if parsed.netloc:
++            c_base = jira_base_url if "://" in jira_base_url else "https://" + jira_base_url
++            configured_host = (urlparse(c_base).netloc or "").lower()
++            submitted_host = (parsed.netloc or "").lower()
++            if submitted_host == configured_host:
++                return None
++            return (
++                f"The Jira URL does not match the project's configured Jira instance "
++                f"({configured_host})."
++            )
++
++        return (
++            "The Jira reference must be a ticket key (e.g. PROJ-123) or a URL from "
++            "the project's configured Jira instance."
++        )
++
++    def _format_blocked_message(self, reasons: list[str]) -> str:
++        """Format precondition failure reasons into a UX-DR12 blocking message."""
++        bullets = "\n".join(f"  - {r}" for r in reasons)
++        return (
++            "**What happened:** Bob cannot start requirements extraction.\n\n"
++            "**Why:** One or more required conditions are not met.\n\n"
++            f"**What to do:**\n{bullets}"
++        )
++
++    def _format_jira_markdown(self, issue: JiraIssue) -> str:
++        """Render a JiraIssue to clean Markdown for the review panel (AC2).
++
++        Deterministic, synchronous, no side effects. Only non-empty fields are
++        rendered so None values never leak into the output.
++        """
++        lines: list[str] = []
++
++        lines.append(f"# [{issue.issue_key}] {issue.summary}")
++        lines.append("")
++
++        # Metadata line ΓÇö each segment only when present
++        meta_parts: list[str] = []
++        if issue.status:
++            meta_parts.append(f"**Status:** {issue.status}")
++        if issue.issue_type:
++            meta_parts.append(f"**Type:** {issue.issue_type}")
++        if issue.labels:
++            meta_parts.append(f"**Labels:** {', '.join(issue.labels)}")
++        if meta_parts:
++            lines.append(" ┬╖ ".join(meta_parts))
++            lines.append("")
++
++        lines.append(f"**Source:** [{issue.issue_key}]({issue.url})")
++
++        if issue.description:
++            lines.append("")
++            lines.append("## Description")
++            lines.append("")
++            lines.append(issue.description)
++
++        if issue.acceptance_criteria:
++            lines.append("")
++            lines.append("## Acceptance Criteria")
++            lines.append("")
++            lines.append(issue.acceptance_criteria)
++
++        return "\n".join(lines)
++
++    def _detect_quality_issues(self, page: dict[str, Any]) -> list[QualityIssue]:
++        """Deterministic, synchronous quality scan over a single page dict.
++
++        Returns a list of QualityIssue instances (possibly empty). Never raises.
++        """
++        issues: list[QualityIssue] = []
++
++        title = str(page.get("page_title") or page.get("page_id") or "this page")
++        text = str(page.get("requirement_md") or page.get("parsed_markdown") or "")
++        lowered = text.lower()
++
++        for w in page.get("warnings") or []:
++            issues.append(
++                QualityIssue(
++                    category="unsupported_content",
++                    location=title,
++                    message=str(w),
++                    impact=_IMPACT_BY_CATEGORY["unsupported_content"],
++                )
++            )
++
++        if len(text.strip()) < _QUALITY_MIN_CONTENT_CHARS:
++            issues.append(
++                QualityIssue(
++                    category="insufficient_content",
++                    location=title,
++                    message=(
++                        f"The extracted requirement for '{title}' is very short "
++                        f"(fewer than {_QUALITY_MIN_CONTENT_CHARS} characters)."
++                    ),
++                    impact=_IMPACT_BY_CATEGORY["insufficient_content"],
++                )
++            )
++
++        if not any(m in lowered for m in _EXPECTED_RESULT_MARKERS):
++            issues.append(
++                QualityIssue(
++                    category="missing_expected_results",
++                    location=title,
++                    message="No expected results or acceptance criteria were found.",
++                    impact=_IMPACT_BY_CATEGORY["missing_expected_results"],
++                )
++            )
++
++        if not any(m in lowered for m in _PRECONDITION_MARKERS):
++            issues.append(
++                QualityIssue(
++                    category="missing_preconditions",
++                    location=title,
++                    message="No preconditions or setup steps were found.",
++                    impact=_IMPACT_BY_CATEGORY["missing_preconditions"],
++                )
++            )
++
++        found_vague = sorted({t for t in _VAGUE_TERMS if t in lowered})
++        if found_vague:
++            issues.append(
++                QualityIssue(
++                    category="vague_language",
++                    location=title,
++                    message=f"Vague wording detected: {', '.join(found_vague)}.",
++                    impact=_IMPACT_BY_CATEGORY["vague_language"],
++                )
++            )
++
++        found_ui = sorted({t for t in _AMBIGUOUS_UI_TERMS if t in lowered})
++        if found_ui:
++            issues.append(
++                QualityIssue(
++                    category="ambiguous_ui_reference",
++                    location=title,
++                    message=f"Ambiguous UI references without a specific element name: {', '.join(found_ui)}.",
++                    impact=_IMPACT_BY_CATEGORY["ambiguous_ui_reference"],
++                )
++            )
++
++        return issues
++
++    async def _run_quality_detection(self) -> bool:
++        """Run quality detection over all assembled pages; surface a warning summary if any issues.
++
++        Returns True if any page had quality issues.
++        """
++        has_issues = False
++        page_summaries: list[str] = []
++
++        for page in self.pages:
++            issues = self._detect_quality_issues(page)
++            page["quality_issues"] = [qi.model_dump(mode="json") for qi in issues]
++            if issues:
++                has_issues = True
++                title = str(page.get("page_title") or page.get("page_id") or "this page")
++                lines = [f"**{title}**"]
++                for qi in issues:
++                    lines.append(f"  - {qi.message} ΓÇö {qi.impact}")
++                page_summaries.append("\n".join(lines))
++
++        if has_issues:
++            summary_body = "\n\n".join(page_summaries)
++            summary = (
++                f"ΓÜá Quality issues detected in the extracted requirements:\n\n"
++                f"{summary_body}\n\n"
++                "You can still approve to proceed; approving records that you acknowledged these warnings."
++            )
++            await self.send_message(
++                content=summary,
++                message_type="warning",
++                metadata={"is_quality_warning": True},
++            )
++
++        return has_issues
+ 
+     def _resolve_mcp_pat(self) -> str:
+         """Resolve MCP PAT from the thread owner's encrypted secrets.
+@@ -80,8 +442,118 @@ class BobAgent(BaseAgent):
+             )
+         return mcp_pat
+ 
++    async def _retrieve_jira_requirements(
++        self,
++        client: MCPClient,
++        jira_base_url: str | None,
++    ) -> list[str]:
++        """Best-effort Jira retrieval ΓÇö appends ticket to self.pages and returns warnings (AC1/AC2/AC3).
++
++        Reuses the already-connected client; never creates a new MCPClient.
++        On any failure, logs and returns a warning list without re-raising (AC3).
++        """
++        try:
++            jira_ref = getattr(self, "_jira_ref", None)
++            if not jira_ref:
++                return []
++
++            if not jira_base_url:
++                return []
++
++            reader = JiraReader(client, jira_base_url)
++            missing = await reader.check_tool_availability()
++            if missing:
++                await self.send_message(
++                    "ΓÜá Jira skipped ΓÇö required tools are not available on the MCP server.",
++                    "warning",
++                )
++                return ["Jira skipped: MCP Jira tools unavailable"]
++
++            result = await reader.read_issue(jira_ref)
++            if not result.success or result.data is None:
++                await self.send_message(
++                    "ΓÜá Could not retrieve the referenced Jira ticket ΓÇö continuing with Confluence only.",
++                    "warning",
++                )
++                return ["Jira ticket retrieval failed; skipped"]
++
++            issue: JiraIssue = result.data
++            self.pages.append(
++                {
++                    "page_id": issue.issue_key,
++                    "page_title": f"[{issue.issue_key}] {issue.summary}",
++                    "source_url": issue.url,
++                    "raw_html": "",
++                    "requirement_md": self._format_jira_markdown(issue),
++                    "source_type": "jira",
++                    "warnings": [],
++                }
++            )
++            await self.send_message(f"Γ£ô Retrieved Jira ticket {issue.issue_key}", "info")
++            return []
++
++        except Exception as e:
++            logger.error("Jira retrieval step failed: %s", e, exc_info=True)
++            await self.send_message(
++                "ΓÜá Jira step skipped due to an unexpected error ΓÇö continuing with Confluence only.",
++                "warning",
++            )
++            return ["Jira step skipped due to unexpected error"]
++
+     async def handle_start(self, input_data: dict[str, Any]) -> None:
+         """Override to parse multiple pages immediately."""
++        # --- 11.2 intake gate ΓÇö runs before any MCP/processing ---
++        blockers = self._check_preconditions()
++        if blockers:
++            await self.send_message(self._format_blocked_message(blockers), message_type="error")
++            return
++
++        project = self._load_project()
++        confluence_url = str(input_data.get("confluence_url") or "").strip()
++        url_err = self._validate_confluence_url(
++            confluence_url, project.confluence_base_url if project else None
++        )
++        if url_err:
++            await self.send_message(url_err, message_type="error")
++            return
++
++        jira_err = self._validate_jira_ref(
++            input_data.get("jira_url"), project.jira_base_url if project else None
++        )
++        if jira_err:
++            await self.send_message(jira_err, message_type="error")
++            return
++        self._jira_ref = str(input_data.get("jira_url") or "").strip() or None
++
++        # --- 11.1 Capability Check ---
++        try:
++            mcp_pat = self._resolve_mcp_pat()
++            settings = AppSettings()
++            client = MCPClient(auth_token=mcp_pat, settings=settings)
++            await client.connect()
++
++            reader_conf = ConfluenceReader(client, confluence_base_url=confluence_url)
++            if hasattr(reader_conf, "check_tool_availability"):
++                missing_conf = await reader_conf.check_tool_availability()
++                if missing_conf:
++                    await client.disconnect()
++                    await self.send_message(f"Missing Confluence tools on MCP server: {', '.join(missing_conf)}", message_type="error")
++                    return
++
++            if self._jira_ref:
++                reader_jira = JiraReader(client, jira_base_url=project.jira_base_url if project else None)
++                if hasattr(reader_jira, "check_tool_availability"):
++                    missing_jira = await reader_jira.check_tool_availability()
++                    if missing_jira:
++                        await client.disconnect()
++                        await self.send_message(f"Missing Jira tools on MCP server: {', '.join(missing_jira)}", message_type="error")
++                        return
++            await client.disconnect()
++        except Exception as e:
++            await self.send_message(f"Failed to verify MCP tools: {e}", message_type="error")
++            return
++
++        # --- existing extraction flow (UNCHANGED) ---
+         self.phase = "confirm_parent"
+         await self.transition_to(AgentState.PROCESSING)
+ 
+@@ -344,6 +816,7 @@ class BobAgent(BaseAgent):
+ 
+         try:
+             confluence_base_url = None
++            jira_base_url: str | None = None
+             if self.project_context and self.project_context.artifact_service:
+                 db = self.project_context.artifact_service.db
+                 from ai_qa.db.models import Project
+@@ -351,6 +824,7 @@ class BobAgent(BaseAgent):
+                 project = db.get(Project, self.project_context.project_id)
+                 if project:
+                     confluence_base_url = project.confluence_base_url
++                    jira_base_url = project.jira_base_url
+ 
+             reader = ConfluenceReader(client, confluence_base_url=confluence_base_url)
+ 
+@@ -370,6 +844,17 @@ class BobAgent(BaseAgent):
+                 },
+             )
+ 
++            # Soft tool-availability guard ΓÇö skip silently if Story 11.1 not yet merged
++            if hasattr(reader, "check_tool_availability"):
++                missing_tools: list[str] = await reader.check_tool_availability()
++                if missing_tools:
++                    await self.send_message(
++                        "ΓÜá Some required Confluence tools are unavailable: "
++                        f"{', '.join(missing_tools)}. "
++                        "Descendant discovery may be limited ΓÇö check your MCP server configuration.",
++                        "warning",
++                    )
++
+             # Use page_id if available (direct children fetch), else search by title
+             if self._page_id:
+                 logger.debug("_extract_descendants: using page_id=%r for children", self._page_id)
+@@ -449,13 +934,22 @@ class BobAgent(BaseAgent):
+             config = self.get_llm_config()
+             llm_client = LLMClient(config)
+             formatter = RequirementFormatter(llm_client)
++            parser = ContentParser(adapter)
+ 
+-            # Phase 2: Convert to Requirement
++            # Phase 2: Parse + Convert to Requirement
+             self.pages = []
+             for page in raw_pages:
+-                await self.send_message(f"Converting '{page.title}' to requirement...", "info")
++                await self.send_message(f"Parsing '{page.title}'...", "info")
++                parsed_result = await parser.parse(page)
++                parsed = parsed_result.data
++                warnings = parsed_result.warnings or []
++                clean_md = (
++                    parsed.markdown
++                    if parsed
++                    else markdownify(page.content, heading_style="ATX")
++                )
+                 try:
+-                    requirement_md = await formatter.convert_page(page)
++                    requirement_md = await formatter.convert_markdown(page, clean_md)
+                     adapter.save_requirement_page(page.page_id, requirement_md)
+                     await self.send_message(f"Γ£ô Converted '{page.title}'", "info")
+                     self.pages.append(
+@@ -465,11 +959,25 @@ class BobAgent(BaseAgent):
+                             "source_url": page.url,
+                             "raw_html": page.content,
+                             "requirement_md": requirement_md,
++                            "parsed_markdown": clean_md,
++                            "warnings": warnings,
+                         }
+                     )
+                 except Exception as e:
+                     logger.error(f"Failed to convert page {page.title}: {e}")
+                     await self.send_message(f"ΓÜá Failed to convert: '{page.title}'", "warning")
++                    self.pages.append(
++                        {
++                            "page_id": page.page_id,
++                            "page_title": page.title,
++                            "source_url": page.url,
++                            "raw_html": page.content,
++                            "requirement_md": "",
++                            "parsed_markdown": clean_md,
++                            "warnings": warnings
++                            + [f"Conversion to requirement failed: {type(e).__name__}"],
++                        }
++                    )
+ 
+             if not self.pages:
+                 return StageResult(
+@@ -480,6 +988,10 @@ class BobAgent(BaseAgent):
+                     confidence=0.0,
+                 )
+ 
++            # --- 11.4: supplement Confluence with Jira (best-effort, never fatal) ---
++            # jira_base_url was captured inside the `if project:` block above (Task 4.1)
++            jira_warnings = await self._retrieve_jira_requirements(client, jira_base_url)
++
+             await self.send_message(
+                 content="Requirements extraction complete.",
+                 message_type="info",
+@@ -500,7 +1012,7 @@ class BobAgent(BaseAgent):
+                 success=True,
+                 data=self.pages,
+                 errors=[],
+-                warnings=[],
++                warnings=jira_warnings,
+                 confidence=1.0,
+             )
+ 
+diff --git a/src/ai_qa/mcp/client.py b/src/ai_qa/mcp/client.py
+index ba075f9..52d0c75 100644
+--- a/src/ai_qa/mcp/client.py
++++ b/src/ai_qa/mcp/client.py
+@@ -260,6 +260,24 @@ class MCPClient:
+                 raise MCPToolError(f"Tool '{name}' not found on server") from e
+             raise
+ 
++    async def check_required_tools(self, required_tools: list[str]) -> list[str]:
++        """Return names from required_tools that are absent on the MCP server.
++
++        Args:
++            required_tools: Tool names to check for (use prefixed names when applicable).
++
++        Returns:
++            List of missing tool names; empty list means all required tools are present.
++
++        Raises:
++            MCPConnectionError: If list_tools() fails due to connectivity.
++            MCPAuthenticationError: If authentication fails.
++        """
++        if not required_tools:
++            return []
++        available = {t.name for t in await self.list_tools()}
++        return [name for name in required_tools if name not in available]
++
+     async def discover_capabilities(self) -> ServerCapabilities:
+         """Discover server capabilities.
+ 
+diff --git a/src/ai_qa/pipelines/__init__.py b/src/ai_qa/pipelines/__init__.py
+index 93c9b41..01cbe00 100644
+--- a/src/ai_qa/pipelines/__init__.py
++++ b/src/ai_qa/pipelines/__init__.py
+@@ -7,7 +7,13 @@ the AI QA workflow. Each stage follows the StageResult contract.
+ from ai_qa.models import TestCase, TestCaseStep
+ from ai_qa.pipelines.confluence_reader import ConfluenceReader
+ from ai_qa.pipelines.content_parser import ContentParser
+-from ai_qa.pipelines.models import ConfluencePage, OutputMetadata, PageSummary, ParsedContent
++from ai_qa.pipelines.models import (
++    ConfluencePage,
++    JiraIssue,
++    OutputMetadata,
++    PageSummary,
++    ParsedContent,
++)
+ from ai_qa.pipelines.output_writer import OutputWriter
+ from ai_qa.pipelines.test_case_extractor import TestCaseExtractor
+ from ai_qa.pipelines.vision_locator import LocatorResult, SelectorInfo, VisionLocator
+@@ -15,6 +21,7 @@ from ai_qa.pipelines.vision_locator import LocatorResult, SelectorInfo, VisionLo
+ __all__ = [
+     "ConfluenceReader",
+     "ConfluencePage",
++    "JiraIssue",
+     "PageSummary",
+     "ContentParser",
+     "ParsedContent",
+diff --git a/src/ai_qa/pipelines/confluence_reader.py b/src/ai_qa/pipelines/confluence_reader.py
+index 962cb18..d6a079a 100644
+--- a/src/ai_qa/pipelines/confluence_reader.py
++++ b/src/ai_qa/pipelines/confluence_reader.py
+@@ -280,6 +280,19 @@ class ConfluenceReader:
+         """Get the full tool name including any configured prefix."""
+         return f"{self._tool_prefix}{base_name}"
+ 
++    async def check_tool_availability(self) -> list[str]:
++        """Return names of required Confluence tools absent from the MCP server.
++
++        Returns:
++            List of missing tool names; empty list means all tools are present.
++
++        Raises:
++            MCPConnectionError: If list_tools() cannot reach the MCP server.
++            MCPAuthenticationError: If authentication with the MCP server fails.
++        """
++        prefixed = [self._get_tool_name(t) for t in self.CONFLUENCE_TOOLS]
++        return await self._mcp_client.check_required_tools(prefixed)
++
+     async def read_page(self, page_url: str) -> StageResult:
+         """Read a single Confluence page.
+ 
+diff --git a/src/ai_qa/pipelines/content_parser.py b/src/ai_qa/pipelines/content_parser.py
+index 4194343..b21d8f4 100644
+--- a/src/ai_qa/pipelines/content_parser.py
++++ b/src/ai_qa/pipelines/content_parser.py
+@@ -4,7 +4,7 @@ from datetime import UTC, datetime
+ from typing import TYPE_CHECKING, Any
+ 
+ if TYPE_CHECKING:
+-    from ai_qa.pipelines.pipeline_artifact_adapter import PipelineArtifactAdapter
++    from ai_qa.pipelines.artifact_adapter import PipelineArtifactAdapter
+ 
+ import httpx
+ import markdownify
+diff --git a/src/ai_qa/pipelines/jira_reader.py b/src/ai_qa/pipelines/jira_reader.py
+new file mode 100644
+index 0000000..2acf4a3
+--- /dev/null
++++ b/src/ai_qa/pipelines/jira_reader.py
+@@ -0,0 +1,226 @@
++"""Jira Reader Pipeline Stage.
++
++This module provides the JiraReader pipeline stage for retrieving
++issue content from Jira via MCP server.
++"""
++
++from __future__ import annotations
++
++import re
++from datetime import UTC, datetime
++from typing import Any
++
++from ai_qa.exceptions import MCPError
++from ai_qa.mcp.client import MCPClient
++from ai_qa.models import StageResult
++from ai_qa.pipelines.models import JiraIssue
++
++_ISSUE_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9_]+-\d+)\b", re.IGNORECASE)
++
++
++class JiraReader:
++    """Pipeline stage for reading Jira issues via MCP.
++
++    Retrieves Jira issue content through the MCP server and returns
++    structured JiraIssue data for downstream processing.
++
++    Example:
++        >>> reader = JiraReader(mcp_client, jira_base_url="https://jira.company.com")
++        >>> result = await reader.read_issue("PROJ-123")
++        >>> if result.success:
++        ...     issue = result.data
++        ...     print(issue.summary)
++    """
++
++    JIRA_TOOLS: list[str] = [
++        "jira_get_issue",
++        "jira_search_issues",
++        "jira_get_project",
++    ]
++
++    def __init__(
++        self,
++        mcp_client: MCPClient,
++        jira_base_url: str | None = None,
++        max_concurrent_requests: int = 10,
++    ) -> None:
++        """Initialize Jira reader.
++
++        Args:
++            mcp_client: Configured MCPClient instance
++            jira_base_url: Base URL for the Jira instance
++            max_concurrent_requests: Maximum concurrent requests
++
++        Raises:
++            ValueError: If mcp_client is None
++        """
++        if mcp_client is None:
++            raise ValueError("MCP client is required")
++        self._mcp_client = mcp_client
++        self._jira_base_url = (jira_base_url or "").rstrip("/")
++        self._tool_prefix = (
++            getattr(mcp_client._settings, "mcp_tool_prefix", "")
++            if hasattr(mcp_client, "_settings")
++            else ""
++        )
++        self._max_concurrent_requests = max_concurrent_requests
++
++    def _get_tool_name(self, base_name: str) -> str:
++        """Get the full tool name including any configured prefix."""
++        return f"{self._tool_prefix}{base_name}"
++
++    @classmethod
++    def _parse_issue_ref(cls, ref: str) -> str:
++        """Extract Jira issue key from a URL or bare key string.
++
++        Args:
++            ref: Issue key (e.g. "PROJ-123") or Jira browse URL
++
++        Returns:
++            Extracted issue key
++
++        Raises:
++            ValueError: If ref is empty or contains no valid issue key
++        """
++        stripped = ref.strip()
++        if not stripped:
++            raise ValueError("Issue reference must not be empty")
++        match = _ISSUE_KEY_RE.search(stripped)
++        if not match:
++            raise ValueError(f"No Jira issue key found in: {stripped!r}")
++        return match.group(1)
++
++    def _map_issue_data(self, raw: Any, issue_key: str) -> JiraIssue:
++        """Map raw MCP tool response to JiraIssue model.
++
++        Handles both Jira Cloud (flat) and Data Center (fields-nested) response shapes.
++        """
++        if not isinstance(raw, dict):
++            raw = {}
++        # Data Center wraps everything under "fields"; Cloud may be flat
++        fields: Any = raw.get("fields", raw)
++        if not isinstance(fields, dict):
++            fields = raw
++
++        resolved_key: str = str(raw.get("key", "") or issue_key)
++
++        def _get_str(d: Any, key: str) -> str | None:
++            val = d.get(key) if isinstance(d, dict) else None
++            return str(val) if val is not None else None
++
++        def _get_name(d: Any, key: str) -> str | None:
++            obj = d.get(key) if isinstance(d, dict) else None
++            if isinstance(obj, dict):
++                return str(obj.get("displayName") or obj.get("name") or "")
++            return None
++
++        def _get_nested_name(d: Any, key: str) -> str | None:
++            obj = d.get(key) if isinstance(d, dict) else None
++            if isinstance(obj, dict):
++                return str(obj.get("name")) if obj.get("name") else None
++            return None
++
++        status_val = fields.get("status") if isinstance(fields, dict) else None
++        status: str | None
++        if isinstance(status_val, dict):
++            status = str(status_val.get("name") or "")
++        else:
++            status = str(status_val) if status_val is not None else None
++
++        project_val = fields.get("project") if isinstance(fields, dict) else None
++        project_key: str
++        if isinstance(project_val, dict):
++            project_key = str(project_val.get("key") or "")
++        elif project_val is not None:
++            project_key = str(project_val)
++        else:
++            project_key = ""
++
++        labels_val = fields.get("labels") if isinstance(fields, dict) else None
++        labels: list[str] = list(labels_val) if labels_val else []
++
++        url = f"{self._jira_base_url}/browse/{resolved_key}" if self._jira_base_url else f"jira://{resolved_key}"
++
++        return JiraIssue(
++            issue_key=resolved_key,
++            summary=str(fields.get("summary", "") if isinstance(fields, dict) else ""),
++            description=_get_str(fields, "description"),
++            acceptance_criteria=_get_str(fields, "acceptance_criteria"),
++            status=status,
++            labels=labels,
++            project_key=project_key,
++            url=url,
++            retrieved_at=datetime.now(tz=UTC),
++            issue_type=_get_nested_name(fields, "issuetype"),
++            reporter=_get_name(fields, "reporter"),
++            assignee=_get_name(fields, "assignee"),
++        )
++
++    async def read_issue(self, issue_ref: str) -> StageResult:
++        """Read a single Jira issue.
++
++        Args:
++            issue_ref: Issue key (e.g. "PROJ-123") or Jira browse URL
++
++        Returns:
++            StageResult with JiraIssue data on success, or error details on failure.
++            Never re-raises MCP errors ΓÇö soft failures are returned as StageResult.
++        """
++        try:
++            issue_key = self._parse_issue_ref(issue_ref)
++        except ValueError as e:
++            return StageResult(
++                success=False,
++                data=None,
++                errors=[str(e)],
++                warnings=[],
++                confidence=0.0,
++            )
++
++        try:
++            tool_result = await self._mcp_client.call_tool(
++                self._get_tool_name("jira_get_issue"),
++                {
++                    "issue_key": issue_key,
++                },
++            )
++        except MCPError as e:
++            return StageResult(
++                success=False,
++                data=None,
++                errors=[str(e)],
++                warnings=[],
++                confidence=0.0,
++            )
++
++        if not tool_result.success:
++            return StageResult(
++                success=False,
++                data=None,
++                errors=[tool_result.error or "Failed to retrieve Jira issue"],
++                warnings=[],
++                confidence=0.0,
++            )
++
++        issue = self._map_issue_data(tool_result.data, issue_key)
++
++        return StageResult(
++            success=True,
++            data=issue,
++            errors=[],
++            warnings=[],
++            confidence=1.0,
++        )
++
++    async def check_tool_availability(self) -> list[str]:
++        """Return names of required Jira tools absent from the MCP server.
++
++        Returns:
++            List of missing tool names; empty list means all tools are present.
++
++        Raises:
++            MCPConnectionError: If list_tools() cannot reach the MCP server.
++            MCPAuthenticationError: If authentication with the MCP server fails.
++        """
++        prefixed = [self._get_tool_name(t) for t in self.JIRA_TOOLS]
++        return await self._mcp_client.check_required_tools(prefixed)
+diff --git a/src/ai_qa/pipelines/models.py b/src/ai_qa/pipelines/models.py
+index e30ce0a..9b4a572 100644
+--- a/src/ai_qa/pipelines/models.py
++++ b/src/ai_qa/pipelines/models.py
+@@ -6,7 +6,7 @@ Models for pipeline stage inputs and outputs.
+ from __future__ import annotations
+ 
+ from datetime import UTC, datetime
+-from typing import Any
++from typing import Any, Literal
+ 
+ from pydantic import BaseModel, ConfigDict, Field, field_validator
+ 
+@@ -54,6 +54,57 @@ class ConfluencePage(BaseModel):
+         return self.model_dump(mode="json")
+ 
+ 
++class JiraIssue(BaseModel):
++    """Represents a retrieved Jira issue.
++
++    Attributes:
++        issue_key: Issue key (e.g. "PROJ-123")
++        summary: Issue summary/title
++        description: Issue description body
++        acceptance_criteria: Acceptance criteria text (from description or custom field)
++        status: Issue status name
++        labels: List of issue labels
++        project_key: Jira project key
++        url: Direct URL to the issue in Jira
++        retrieved_at: ISO 8601 timestamp when issue was retrieved
++        issue_type: Issue type name (e.g. "Story", "Bug")
++        reporter: Display name of reporter
++        assignee: Display name of assignee
++    """
++
++    issue_key: str = Field(description="Jira issue key (e.g. 'PROJ-123')")
++    summary: str = Field(description="Issue summary/title")
++    description: str | None = Field(default=None, description="Issue description body")
++    acceptance_criteria: str | None = Field(
++        default=None, description="Acceptance criteria text"
++    )
++    status: str | None = Field(default=None, description="Issue status name")
++    labels: list[str] = Field(default_factory=list, description="List of issue labels")
++    project_key: str = Field(description="Jira project key")
++    url: str = Field(description="Direct URL to the issue in Jira")
++    retrieved_at: datetime = Field(
++        default_factory=lambda: datetime.now(UTC),
++        description="ISO 8601 timestamp when issue was retrieved",
++    )
++    issue_type: str | None = Field(default=None, description="Issue type name")
++    reporter: str | None = Field(default=None, description="Display name of reporter")
++    assignee: str | None = Field(default=None, description="Display name of assignee")
++
++    model_config = ConfigDict(validate_assignment=True)
++
++    @field_validator("retrieved_at")
++    @classmethod
++    def validate_retrieved_at_timezone(cls, v: datetime) -> datetime:
++        """Ensure retrieved_at is timezone-aware."""
++        if v.tzinfo is None:
++            raise ValueError("retrieved_at must be timezone-aware")
++        return v
++
++    def to_dict(self) -> dict[str, Any]:
++        """Convert to dictionary for serialization."""
++        return self.model_dump(mode="json")
++
++
+ class ParsedContent(BaseModel):
+     """Represents LLM-optimized content parsed from a Confluence page."""
+ 
+@@ -97,6 +148,31 @@ class ParsedContent(BaseModel):
+         return self.model_dump(mode="json")
+ 
+ 
++QualityCategory = Literal[
++    "unsupported_content",
++    "missing_expected_results",
++    "missing_preconditions",
++    "vague_language",
++    "ambiguous_ui_reference",
++    "insufficient_content",
++]
++
++
++class QualityIssue(BaseModel):
++    """A single detected quality issue on a source requirement page."""
++
++    category: QualityCategory
++    location: str
++    message: str
++    impact: str
++
++    model_config = ConfigDict(validate_assignment=True)
++
++    def to_dict(self) -> dict[str, Any]:
++        """Convert to dictionary for serialization."""
++        return self.model_dump(mode="json")
++
++
+ class PageSummary(BaseModel):
+     """Summary for page listing operations.
+ 
+diff --git a/src/ai_qa/pipelines/requirement_formatter.py b/src/ai_qa/pipelines/requirement_formatter.py
+index b1c5269..0151dd8 100644
+--- a/src/ai_qa/pipelines/requirement_formatter.py
++++ b/src/ai_qa/pipelines/requirement_formatter.py
+@@ -66,6 +66,14 @@ class RequirementFormatter:
+ 
+         return await self._format_story(page, md)
+ 
++    async def convert_markdown(self, page: ConfluencePage, markdown: str) -> str:
++        """Convert pre-parsed Markdown to BMAD story format without re-fetching images.
++
++        ContentParser already saved images by reference ΓÇö skip the HTML markdownify
++        and image download/caption block that convert_page performs.
++        """
++        return await self._format_story(page, markdown)
++
+     async def _caption_image(self, image_bytes: bytes, filename: str) -> str:
+         b64 = base64.b64encode(image_bytes).decode("utf-8")
+         prompt = "Describe this image in a single sentence as it relates to software requirements."
+@@ -105,7 +113,7 @@ So that [benefit/outcome from content].
+ 
+ ## Technical Requirements
+ 
+-[Reorganize the remaining content logically under headings here. Keep all Image captions and text.]
++[Reorganize the remaining content under logical headings. **Preserve all source headings, bulleted/numbered lists, and Markdown tables verbatim ΓÇö do not collapse tables into prose or drop list items.** Keep all image references.]
+ """
+         from langchain_core.messages import HumanMessage
+ 
+diff --git a/tests/conftest.py b/tests/conftest.py
+index bd3e5e8..a20f8e6 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -36,14 +36,21 @@ def mock_db() -> MagicMock:
+         if model is User:
+             return user
+         if model is Thread:
+-            thread = Thread(id=ident, provider_name="claude", provider_base_url="")
++            thread = Thread(
++                id=ident,
++                provider_name="claude",
++                provider_base_url="",
++                agent_configs={"bob": {"model": "claude-sonnet"}},
++            )
+             return thread
+-        return MagicMock()
++        from unittest.mock import DEFAULT
++        return DEFAULT
+ 
+     db.get.side_effect = mock_db_get
+-    # A fresh user has no stored UserSecret rows; the secret accessor uses
+-    # db.scalar(select(...)), so default it to None to mirror real behavior.
+-    db.scalar.return_value = None
++    # Default scalar to a configured UserSecret mock so get_secret_status returns
++    # configured=True for the happy-path gate in BobAgent._check_preconditions.
++    # Individual tests that need configured=False can override db.scalar.return_value.
++    db.scalar.return_value = MagicMock(configured=True, updated_at=None)
+     return db
+ 
+ 
+diff --git a/tests/pipelines/test_content_parser.py b/tests/pipelines/test_content_parser.py
+index 1ac0dc8..c9e2e98 100644
+--- a/tests/pipelines/test_content_parser.py
++++ b/tests/pipelines/test_content_parser.py
+@@ -336,3 +336,48 @@ async def test_no_llm_calls_made(mock_adapter: MagicMock, test_page: ConfluenceP
+         parser = ContentParser(mock_adapter)
+         await parser.parse(test_page)
+         mock_post.assert_not_called()
++
++
++# ---------------------------------------------------------------------------
++# Story 11.3 ΓÇö RequirementFormatter.convert_markdown (no image re-fetch)
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_convert_markdown_calls_format_story_without_image_refetch() -> None:
++    """Task 6.6: convert_markdown feeds markdown to _format_story; no httpx client opened."""
++    from datetime import UTC, datetime
++    from unittest.mock import AsyncMock, MagicMock, patch
++
++    from ai_qa.ai_connection.client import LLMClient
++    from ai_qa.pipelines.requirement_formatter import RequirementFormatter
++
++    mock_llm = MagicMock(spec=LLMClient)
++    mock_response = MagicMock()
++    mock_response.content = "# Formatted Story"
++    mock_llm._chat_model = MagicMock()
++    mock_llm._chat_model.ainvoke = AsyncMock(return_value=mock_response)
++
++    formatter = RequirementFormatter(mock_llm)
++
++    page = ConfluencePage(
++        page_id="p1",
++        title="My Page",
++        content="<p>Original HTML ΓÇö must NOT be re-parsed</p>",
++        space_key="TEST",
++        url="https://confluence.example.com/p1",
++        retrieved_at=datetime.now(UTC),
++        labels=[],
++    )
++    clean_md = "# My Page\n\n| Col A | Col B |\n| --- | --- |\n| 1 | 2 |"
++
++    with patch("httpx.AsyncClient") as mock_httpx:
++        result = await formatter.convert_markdown(page, clean_md)
++
++    # No httpx client was instantiated ΓÇö images must not be re-fetched
++    mock_httpx.assert_not_called()
++
++    # The LLM was invoked exactly once (via _format_story)
++    mock_llm._chat_model.ainvoke.assert_called_once()
++
++    assert result == "# Formatted Story"
+diff --git a/tests/pipelines/test_jira_reader.py b/tests/pipelines/test_jira_reader.py
+new file mode 100644
+index 0000000..9179c25
+--- /dev/null
++++ b/tests/pipelines/test_jira_reader.py
+@@ -0,0 +1,234 @@
++"""Tests for JiraReader pipeline stage and related capability helpers."""
++
++from unittest.mock import AsyncMock, MagicMock
++
++import pytest
++
++from ai_qa.exceptions import MCPConnectionError, MCPToolError  # noqa: F401 (used in pytest.raises)
++from ai_qa.mcp.tools import ToolResult
++from ai_qa.pipelines.jira_reader import JiraReader
++
++# ---------------------------------------------------------------------------
++# Fixtures
++# ---------------------------------------------------------------------------
++
++
++@pytest.fixture
++def mock_mcp_client() -> MagicMock:
++    client = MagicMock()
++    client.is_connected = True
++    client.server_url = "http://localhost:3000/sse"
++    client._settings = MagicMock()
++    client._settings.mcp_tool_prefix = ""
++    client.call_tool = AsyncMock()
++    client.list_tools = AsyncMock()
++    client.check_required_tools = AsyncMock()
++    return client
++
++
++@pytest.fixture
++def jira_reader(mock_mcp_client: MagicMock) -> JiraReader:
++    return JiraReader(
++        mcp_client=mock_mcp_client,
++        jira_base_url="https://jira.company.com",
++    )
++
++
++_REALISTIC_PAYLOAD = {
++    "key": "PROJ-123",
++    "fields": {
++        "summary": "Login fails for SSO users",
++        "description": "Steps to reproduce: ...",
++        "acceptance_criteria": "Given SSO is configured, user can log in",
++        "status": {"name": "In Progress"},
++        "labels": ["auth", "sso"],
++        "project": {"key": "PROJ"},
++        "issuetype": {"name": "Story"},
++        "reporter": {"displayName": "Alice Smith"},
++        "assignee": {"displayName": "Bob Jones"},
++    },
++}
++
++
++# ---------------------------------------------------------------------------
++# _parse_issue_ref tests
++# ---------------------------------------------------------------------------
++
++
++class TestParseIssueRef:
++    def test_plain_key(self) -> None:
++        assert JiraReader._parse_issue_ref("PROJ-123") == "PROJ-123"
++
++    def test_cloud_url(self) -> None:
++        url = "https://company.atlassian.net/browse/PROJ-123"
++        assert JiraReader._parse_issue_ref(url) == "PROJ-123"
++
++    def test_datacenter_url(self) -> None:
++        url = "https://jira.company.com/browse/PROJ-123"
++        assert JiraReader._parse_issue_ref(url) == "PROJ-123"
++
++    def test_empty_string_raises(self) -> None:
++        with pytest.raises(ValueError, match="must not be empty"):
++            JiraReader._parse_issue_ref("")
++
++    def test_whitespace_only_raises(self) -> None:
++        with pytest.raises(ValueError, match="must not be empty"):
++            JiraReader._parse_issue_ref("   ")
++
++    def test_garbage_input_raises(self) -> None:
++        with pytest.raises(ValueError, match="No Jira issue key found"):
++            JiraReader._parse_issue_ref("https://example.com/not-a-jira-url")
++
++    def test_lowercase_key_works(self) -> None:
++        assert JiraReader._parse_issue_ref("proj-123") == "proj-123"
++
++
++# ---------------------------------------------------------------------------
++# read_issue happy path
++# ---------------------------------------------------------------------------
++
++
++class TestReadIssueHappyPath:
++    async def test_returns_jira_issue(
++        self, jira_reader: JiraReader, mock_mcp_client: MagicMock
++    ) -> None:
++        mock_mcp_client.call_tool.return_value = ToolResult.from_data(_REALISTIC_PAYLOAD)
++
++        result = await jira_reader.read_issue("PROJ-123")
++
++        assert result.success is True
++        assert result.data is not None
++        issue = result.data
++        assert issue.issue_key == "PROJ-123"
++        assert issue.summary == "Login fails for SSO users"
++        assert issue.description == "Steps to reproduce: ..."
++        assert issue.acceptance_criteria == "Given SSO is configured, user can log in"
++        assert issue.status == "In Progress"
++        assert issue.labels == ["auth", "sso"]
++        assert issue.project_key == "PROJ"
++        assert issue.issue_type == "Story"
++        assert issue.reporter == "Alice Smith"
++        assert issue.assignee == "Bob Jones"
++        assert "PROJ-123" in issue.url
++
++    async def test_url_contains_browse(
++        self, jira_reader: JiraReader, mock_mcp_client: MagicMock
++    ) -> None:
++        mock_mcp_client.call_tool.return_value = ToolResult.from_data(_REALISTIC_PAYLOAD)
++        result = await jira_reader.read_issue("PROJ-123")
++        assert result.success is True
++        assert result.data is not None
++        assert "/browse/PROJ-123" in result.data.url
++
++    async def test_accepts_browse_url(
++        self, jira_reader: JiraReader, mock_mcp_client: MagicMock
++    ) -> None:
++        mock_mcp_client.call_tool.return_value = ToolResult.from_data(_REALISTIC_PAYLOAD)
++        result = await jira_reader.read_issue("https://jira.company.com/browse/PROJ-123")
++        assert result.success is True
++        assert result.data is not None
++        assert result.data.issue_key == "PROJ-123"
++
++
++# ---------------------------------------------------------------------------
++# read_issue error paths
++# ---------------------------------------------------------------------------
++
++
++class TestReadIssueErrors:
++    async def test_mcp_tool_error_returns_failure(
++        self, jira_reader: JiraReader, mock_mcp_client: MagicMock
++    ) -> None:
++        mock_mcp_client.call_tool.side_effect = MCPToolError("tool not found")
++        result = await jira_reader.read_issue("PROJ-123")
++        assert result.success is False
++        assert result.data is None
++        assert result.errors
++        assert "tool not found" in result.errors[0]
++
++    async def test_unsuccessful_tool_result_returns_failure(
++        self, jira_reader: JiraReader, mock_mcp_client: MagicMock
++    ) -> None:
++        mock_mcp_client.call_tool.return_value = ToolResult.from_error("issue not found")
++        result = await jira_reader.read_issue("PROJ-123")
++        assert result.success is False
++        assert result.data is None
++        assert result.errors
++
++    async def test_invalid_issue_ref_returns_failure(
++        self, jira_reader: JiraReader, mock_mcp_client: MagicMock
++    ) -> None:
++        result = await jira_reader.read_issue("not-a-jira-key")
++        assert result.success is False
++        assert result.data is None
++        mock_mcp_client.call_tool.assert_not_called()
++
++
++# ---------------------------------------------------------------------------
++# check_tool_availability tests
++# ---------------------------------------------------------------------------
++
++
++class TestCheckToolAvailability:
++    async def test_returns_missing_tool(
++        self, jira_reader: JiraReader, mock_mcp_client: MagicMock
++    ) -> None:
++        mock_mcp_client.check_required_tools.return_value = ["jira_search_issues"]
++        missing = await jira_reader.check_tool_availability()
++        assert missing == ["jira_search_issues"]
++
++    async def test_returns_empty_when_all_present(
++        self, jira_reader: JiraReader, mock_mcp_client: MagicMock
++    ) -> None:
++        mock_mcp_client.check_required_tools.return_value = []
++        missing = await jira_reader.check_tool_availability()
++        assert missing == []
++
++    async def test_propagates_mcp_connection_error(
++        self, jira_reader: JiraReader, mock_mcp_client: MagicMock
++    ) -> None:
++        mock_mcp_client.check_required_tools.side_effect = MCPConnectionError(
++            "cannot reach server"
++        )
++        with pytest.raises(MCPConnectionError):
++            await jira_reader.check_tool_availability()
++
++    async def test_passes_prefixed_names(
++        self, mock_mcp_client: MagicMock
++    ) -> None:
++        mock_mcp_client._settings.mcp_tool_prefix = "myprefix_"
++        reader = JiraReader(mock_mcp_client, jira_base_url="https://jira.company.com")
++        mock_mcp_client.check_required_tools.return_value = []
++        await reader.check_tool_availability()
++        called_with = mock_mcp_client.check_required_tools.call_args[0][0]
++        assert all(name.startswith("myprefix_") for name in called_with)
++
++
++# ---------------------------------------------------------------------------
++# ConfluenceReader.check_tool_availability delegation
++# ---------------------------------------------------------------------------
++
++
++class TestConfluenceReaderCheckToolAvailability:
++    async def test_delegates_to_check_required_tools(
++        self, mock_mcp_client: MagicMock
++    ) -> None:
++        from ai_qa.pipelines.confluence_reader import ConfluenceReader
++
++        mock_mcp_client.check_required_tools.return_value = []
++        reader = ConfluenceReader(mcp_client=mock_mcp_client)
++        await reader.check_tool_availability()
++
++        mock_mcp_client.check_required_tools.assert_called_once()
++        called_tools: list[str] = mock_mcp_client.check_required_tools.call_args[0][0]
++        assert len(called_tools) == len(ConfluenceReader.CONFLUENCE_TOOLS)
++
++    async def test_returns_missing_confluence_tools(
++        self, mock_mcp_client: MagicMock
++    ) -> None:
++        from ai_qa.pipelines.confluence_reader import ConfluenceReader
++
++        mock_mcp_client.check_required_tools.return_value = ["confluence_get_page"]
++        reader = ConfluenceReader(mcp_client=mock_mcp_client)
++        missing = await reader.check_tool_availability()
++        assert missing == ["confluence_get_page"]
+diff --git a/tests/test_agents/test_bob.py b/tests/test_agents/test_bob.py
+index 24d6d3b..af0132b 100644
+--- a/tests/test_agents/test_bob.py
++++ b/tests/test_agents/test_bob.py
+@@ -1,11 +1,14 @@
++from datetime import UTC, datetime
+ from unittest.mock import AsyncMock, MagicMock, patch
+ 
+ import pytest
+ 
+ from ai_qa.agents.base import AgentState
+ from ai_qa.agents.bob import BobAgent
+-from ai_qa.exceptions import PipelineError
++from ai_qa.exceptions import MCPConnectionError, PipelineError
+ from ai_qa.models import StageResult
++from ai_qa.pipelines.models import JiraIssue
++from ai_qa.secrets.service import SecretStatus
+ 
+ 
+ @pytest.fixture
+@@ -144,6 +147,8 @@ async def test_bob_extract_descendants_creates_single_mcp_client(bob_agent: BobA
+         patch("ai_qa.agents.bob.AppSettings"),
+         patch("ai_qa.agents.bob.LLMClient"),
+         patch("ai_qa.agents.bob.RequirementFormatter"),
++        patch("ai_qa.agents.bob.ContentParser"),
++        patch("ai_qa.agents.bob.JiraReader"),
+         patch("ai_qa.agents.bob.get_user_secret", return_value="test-mcp-pat"),
+         patch.object(bob_agent, "get_llm_config") as mock_llm_config,
+     ):
+@@ -171,35 +176,53 @@ async def test_bob_extract_descendants_creates_single_mcp_client(bob_agent: BobA
+         assert mock_mcp_client_class.call_count == 1
+ 
+ 
++_VALID_CONFLUENCE_URL = "https://company.atlassian.net/wiki/spaces/TEST/pages/12345/Title"
++
++
+ @pytest.mark.asyncio
+-async def test_bob_handle_start_confirm_parent(bob_agent: BobAgent) -> None:
++@patch("ai_qa.agents.bob.MCPClient")
++@patch("ai_qa.agents.bob.ConfluenceReader")
++async def test_bob_handle_start_confirm_parent(mock_reader_class: MagicMock, mock_mcp_client_class: MagicMock, bob_agent: BobAgent) -> None:
+     """Test handle_start when process returns confirm_parent."""
++    mock_reader_class.return_value.check_tool_availability = AsyncMock(return_value=[])
++    mock_mcp_client_class.return_value.connect = AsyncMock()
++    mock_mcp_client_class.return_value.disconnect = AsyncMock()
+     with patch.object(bob_agent, "process") as mock_process:
+         mock_process.return_value = StageResult(
+             success=True, data={"type": "confirm_parent", "suggested_page": "url1"}
+         )
+-        await bob_agent.handle_start({"space_key": "TEST"})
++        await bob_agent.handle_start({"confluence_url": _VALID_CONFLUENCE_URL})
+         assert bob_agent.phase == "confirm_parent"
+         assert bob_agent.state == AgentState.REVIEW_REQUEST
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_bob_handle_start_review_markdown(bob_agent: BobAgent) -> None:
++@patch("ai_qa.agents.bob.MCPClient")
++@patch("ai_qa.agents.bob.ConfluenceReader")
++async def test_bob_handle_start_review_markdown(mock_reader_class: MagicMock, mock_mcp_client_class: MagicMock, bob_agent: BobAgent) -> None:
+     """Test handle_start when pages are successfully processed."""
++    mock_reader_class.return_value.check_tool_availability = AsyncMock(return_value=[])
++    mock_mcp_client_class.return_value.connect = AsyncMock()
++    mock_mcp_client_class.return_value.disconnect = AsyncMock()
+     with patch.object(bob_agent, "process") as mock_process:
+         mock_process.return_value = StageResult(success=True)
+         bob_agent.pages = [{"title": "Page 1"}]
+-        await bob_agent.handle_start({"confluence_url": "test"})
++        await bob_agent.handle_start({"confluence_url": _VALID_CONFLUENCE_URL})
+         assert bob_agent.phase == "review_markdown"
+         assert bob_agent.state == AgentState.REVIEW_REQUEST
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_bob_handle_start_error(bob_agent: BobAgent) -> None:
++@patch("ai_qa.agents.bob.MCPClient")
++@patch("ai_qa.agents.bob.ConfluenceReader")
++async def test_bob_handle_start_error(mock_reader_class: MagicMock, mock_mcp_client_class: MagicMock, bob_agent: BobAgent) -> None:
+     """Test handle_start when process raises an exception."""
++    mock_reader_class.return_value.check_tool_availability = AsyncMock(return_value=[])
++    mock_mcp_client_class.return_value.connect = AsyncMock()
++    mock_mcp_client_class.return_value.disconnect = AsyncMock()
+     with patch.object(bob_agent, "process") as mock_process:
+         mock_process.side_effect = Exception("Crash")
+-        await bob_agent.handle_start({"confluence_url": "test"})
++        await bob_agent.handle_start({"confluence_url": _VALID_CONFLUENCE_URL})
+         assert bob_agent.state == AgentState.ERROR
+ 
+ 
+@@ -260,6 +283,8 @@ async def test_bob_extract_descendants_disconnects_mcp_on_exception(bob_agent: B
+         patch("ai_qa.agents.bob.AppSettings"),
+         patch("ai_qa.agents.bob.LLMClient"),
+         patch("ai_qa.agents.bob.RequirementFormatter"),
++        patch("ai_qa.agents.bob.ContentParser"),
++        patch("ai_qa.agents.bob.JiraReader"),
+         patch("ai_qa.agents.bob.get_user_secret", return_value="test-mcp-pat"),
+     ):
+         mock_client = AsyncMock()
+@@ -297,6 +322,8 @@ async def test_bob_extract_descendants_disconnects_mcp_on_completion(bob_agent:
+         patch("ai_qa.agents.bob.AppSettings"),
+         patch("ai_qa.agents.bob.LLMClient"),
+         patch("ai_qa.agents.bob.RequirementFormatter"),
++        patch("ai_qa.agents.bob.ContentParser"),
++        patch("ai_qa.agents.bob.JiraReader"),
+         patch("ai_qa.agents.bob.get_user_secret", return_value="test-mcp-pat"),
+         patch.object(bob_agent, "get_llm_config") as mock_llm_config,
+     ):
+@@ -372,3 +399,726 @@ async def test_bob_process_raises_on_empty_string_mcp_secret(
+     with patch("ai_qa.agents.bob.get_user_secret", return_value=""):
+         with pytest.raises(PipelineError, match="MCP PAT not configured"):
+             await bob_agent.process(input_data)
++
++
++# ---------------------------------------------------------------------------
++# Story 11.2 ΓÇö Intake gate tests
++# ---------------------------------------------------------------------------
++
++_VALID_CONF_URL = "https://company.atlassian.net/wiki/spaces/TEST/pages/12345/Title"
++_CONFIGURED_MCP = SecretStatus(
++    secret_type="mcp",
++    configured=True,
++    status="configured",
++    last_updated=None,
++    validation_state="configured",
++)
++_UNCONFIGURED_MCP = SecretStatus(
++    secret_type="mcp",
++    configured=False,
++    status="missing",
++    last_updated=None,
++    validation_state="missing",
++)
++
++
++# --- AC3: precondition checks ---
++
++
++@pytest.mark.asyncio
++async def test_bob_gate_blocks_when_thread_context_missing(bob_agent: BobAgent) -> None:
++    """AC3: missing thread_id ΓåÆ blocking message sent, no MCP connection."""
++    bob_agent.project_context.thread_id = None  # type: ignore[attr-defined]
++
++    with (
++        patch("ai_qa.agents.bob.MCPClient") as mock_mcp,
++        patch.object(bob_agent, "send_message") as mock_send,
++    ):
++        await bob_agent.handle_start({"confluence_url": _VALID_CONF_URL})
++        mock_mcp.assert_not_called()
++        mock_send.assert_called_once()
++        _, kwargs = mock_send.call_args
++        assert kwargs.get("message_type") == "error"
++
++
++@pytest.mark.asyncio
++async def test_bob_gate_blocks_when_thread_missing_provider_name(
++    bob_agent: BobAgent,
++) -> None:
++    """AC3: thread with no provider_name ΓåÆ blocking message, no MCP."""
++    assert bob_agent.project_context is not None
++    assert bob_agent.project_context.artifact_service is not None
++    bob_agent.project_context.artifact_service.db.get.side_effect = None
++    # Thread has no provider_name
++    mock_thread = MagicMock()
++    mock_thread.provider_name = None
++    mock_thread.agent_configs = {"bob": {"model": "claude-sonnet"}}
++    bob_agent.project_context.artifact_service.db.get.return_value = mock_thread
++
++    with (
++        patch("ai_qa.agents.bob.MCPClient") as mock_mcp,
++        patch("ai_qa.agents.bob.get_secret_status", return_value=_CONFIGURED_MCP),
++        patch.object(bob_agent, "send_message") as mock_send,
++    ):
++        await bob_agent.handle_start({"confluence_url": _VALID_CONF_URL})
++        assert mock_mcp.call_count == 0
++        mock_send.assert_called_once()
++        _, kwargs = mock_send.call_args
++        assert kwargs.get("message_type") == "error"
++        assert "Alice" in mock_send.call_args[0][0]
++
++
++@pytest.mark.asyncio
++async def test_bob_gate_blocks_when_bob_model_missing(bob_agent: BobAgent) -> None:
++    """AC3: thread has provider_name but no bob model config ΓåÆ blocking message, no MCP."""
++    assert bob_agent.project_context is not None
++    assert bob_agent.project_context.artifact_service is not None
++    bob_agent.project_context.artifact_service.db.get.side_effect = None
++    mock_thread = MagicMock()
++    mock_thread.provider_name = "claude"
++    mock_thread.agent_configs = {}  # no "bob" entry
++    bob_agent.project_context.artifact_service.db.get.return_value = mock_thread
++
++    with (
++        patch("ai_qa.agents.bob.MCPClient") as mock_mcp,
++        patch("ai_qa.agents.bob.get_secret_status", return_value=_CONFIGURED_MCP),
++        patch.object(bob_agent, "send_message") as mock_send,
++    ):
++        await bob_agent.handle_start({"confluence_url": _VALID_CONF_URL})
++        assert mock_mcp.call_count == 0
++        mock_send.assert_called_once()
++        _, kwargs = mock_send.call_args
++        assert kwargs.get("message_type") == "error"
++
++
++@pytest.mark.asyncio
++async def test_bob_gate_blocks_when_mcp_not_configured(bob_agent: BobAgent) -> None:
++    """AC3: MCP credential not configured ΓåÆ blocking message, MCPClient never instantiated."""
++    with (
++        patch("ai_qa.agents.bob.MCPClient") as mock_mcp,
++        patch("ai_qa.agents.bob.get_secret_status", return_value=_UNCONFIGURED_MCP),
++        patch.object(bob_agent, "send_message") as mock_send,
++    ):
++        await bob_agent.handle_start({"confluence_url": _VALID_CONF_URL})
++        assert mock_mcp.call_count == 0
++        mock_send.assert_called_once()
++        _, kwargs = mock_send.call_args
++        assert kwargs.get("message_type") == "error"
++        assert "MCP key" in mock_send.call_args[0][0]
++
++
++# --- AC2: _validate_confluence_url unit tests ---
++
++
++def test_validate_confluence_url_empty_returns_required_message() -> None:
++    assert BobAgent._validate_confluence_url("", None) is not None
++    assert BobAgent._validate_confluence_url("   ", None) is not None
++    assert "required" in (BobAgent._validate_confluence_url("", None) or "")
++
++
++def test_validate_confluence_url_invalid_format_returns_hint() -> None:
++    result = BobAgent._validate_confluence_url("not-a-url", None)
++    assert result is not None
++    assert "Expected formats" in result
++
++
++def test_validate_confluence_url_wrong_host_vs_configured_base() -> None:
++    url = "https://evil.com/wiki/spaces/HACK/pages/111/Title"
++    base = "https://company.atlassian.net"
++    result = BobAgent._validate_confluence_url(url, base)
++    assert result is not None
++    assert "company.atlassian.net" in result
++
++
++def test_validate_confluence_url_valid_cloud_matching_host_returns_none() -> None:
++    url = "https://company.atlassian.net/wiki/spaces/TEST/pages/123/Title"
++    base = "https://company.atlassian.net/wiki"
++    assert BobAgent._validate_confluence_url(url, base) is None
++
++
++def test_validate_confluence_url_valid_no_base_configured_returns_none() -> None:
++    url = "https://company.atlassian.net/wiki/spaces/TEST/pages/123/Title"
++    assert BobAgent._validate_confluence_url(url, None) is None
++
++
++@pytest.mark.asyncio
++async def test_bob_gate_invalid_url_blocks_before_mcp(bob_agent: BobAgent) -> None:
++    """AC2: invalid confluence_url ΓåÆ correction sent, MCPClient not instantiated."""
++    with (
++        patch("ai_qa.agents.bob.MCPClient") as mock_mcp,
++        patch("ai_qa.agents.bob.get_secret_status", return_value=_CONFIGURED_MCP),
++        patch.object(bob_agent, "send_message") as mock_send,
++    ):
++        await bob_agent.handle_start({"confluence_url": "not-a-url"})
++        assert mock_mcp.call_count == 0
++        mock_send.assert_called_once()
++        _, kwargs = mock_send.call_args
++        assert kwargs.get("message_type") == "error"
++
++
++# --- AC1: _validate_jira_ref unit tests ---
++
++
++def test_validate_jira_ref_jira_disabled_ignores_any_input() -> None:
++    assert BobAgent._validate_jira_ref("PROJ-123", None) is None
++    assert BobAgent._validate_jira_ref("https://jira.company.com/x", None) is None
++    assert BobAgent._validate_jira_ref("garbage", None) is None
++
++
++def test_validate_jira_ref_jira_enabled_empty_ref_returns_none() -> None:
++    assert BobAgent._validate_jira_ref(None, "https://jira.company.com") is None
++    assert BobAgent._validate_jira_ref("", "https://jira.company.com") is None
++    assert BobAgent._validate_jira_ref("   ", "https://jira.company.com") is None
++
++
++def test_validate_jira_ref_valid_bare_key_returns_none() -> None:
++    assert BobAgent._validate_jira_ref("PROJ-123", "https://jira.company.com") is None
++    assert BobAgent._validate_jira_ref("AB-1", "https://jira.company.com") is None
++
++
++def test_validate_jira_ref_valid_same_host_url_returns_none() -> None:
++    assert (
++        BobAgent._validate_jira_ref(
++            "https://jira.company.com/browse/PROJ-1", "https://jira.company.com"
++        )
++        is None
++    )
++
++
++def test_validate_jira_ref_foreign_host_url_returns_correction() -> None:
++    result = BobAgent._validate_jira_ref(
++        "https://evil.atlassian.net/browse/PROJ-1", "https://jira.company.com"
++    )
++    assert result is not None
++    assert "jira.company.com" in result
++
++
++def test_validate_jira_ref_garbage_returns_correction() -> None:
++    result = BobAgent._validate_jira_ref("not-a-ticket", "https://jira.company.com")
++    assert result is not None
++
++
++@pytest.mark.asyncio
++async def test_bob_gate_stashes_valid_jira_ref(bob_agent: BobAgent) -> None:
++    """AC1: valid Jira ref is stashed on self._jira_ref after gate passes."""
++    assert bob_agent.project_context is not None
++    assert bob_agent.project_context.artifact_service is not None
++    bob_agent.project_context.artifact_service.db.get.side_effect = None
++    mock_project = MagicMock()
++    mock_project.confluence_base_url = None
++    mock_project.jira_base_url = "https://jira.company.com"
++    mock_thread = MagicMock()
++    mock_thread.provider_name = "claude"
++    mock_thread.agent_configs = {"bob": {"model": "claude-sonnet"}}
++
++    def side_effect(model: type, ident: object, **kw: object) -> object:
++        from ai_qa.db.models import Project
++        from ai_qa.threads.models import Thread
++
++        if model is Thread:
++            return mock_thread
++        if model is Project:
++            return mock_project
++        return MagicMock()
++
++    bob_agent.project_context.artifact_service.db.get.side_effect = side_effect
++
++    with (
++        patch("ai_qa.agents.bob.MCPClient") as mock_mcp,
++        patch("ai_qa.agents.bob.get_secret_status", return_value=_CONFIGURED_MCP),
++        patch.object(bob_agent, "process", new_callable=AsyncMock) as mock_proc,
++    ):
++        mock_mcp_instance = AsyncMock()
++        mock_mcp.return_value = mock_mcp_instance
++        mock_proc.return_value = StageResult(
++            success=True, data={"type": "confirm_parent", "suggested_page": "url1"}
++        )
++        await bob_agent.handle_start(
++            {
++                "confluence_url": _VALID_CONF_URL,
++                "jira_url": "PROJ-99",
++            }
++        )
++        assert bob_agent._jira_ref == "PROJ-99"
++
++
++@pytest.mark.asyncio
++@patch("ai_qa.agents.bob.MCPClient")
++@patch("ai_qa.agents.bob.ConfluenceReader")
++async def test_bob_gate_happy_path_reaches_confirm_parent(mock_reader_class: MagicMock, mock_mcp_client_class: MagicMock, bob_agent: BobAgent) -> None:
++    """Happy-path regression: valid start with all preconditions met reaches confirm_parent."""
++    mock_reader_class.return_value.check_tool_availability = AsyncMock(return_value=[])
++    mock_mcp_client_class.return_value.connect = AsyncMock()
++    mock_mcp_client_class.return_value.disconnect = AsyncMock()
++    with (
++        patch("ai_qa.agents.bob.get_secret_status", return_value=_CONFIGURED_MCP),
++        patch.object(bob_agent, "process", new_callable=AsyncMock) as mock_proc,
++    ):
++        mock_proc.return_value = StageResult(
++            success=True, data={"type": "confirm_parent", "suggested_page": "url1"}
++        )
++        await bob_agent.handle_start({"confluence_url": _VALID_CONF_URL})
++        assert bob_agent.phase == "confirm_parent"
++        assert bob_agent.state == AgentState.REVIEW_REQUEST
++        mock_proc.assert_called_once()
++
++
++# ---------------------------------------------------------------------------
++# Story 11.3 ΓÇö ContentParser wiring (AC2/AC3)
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_bob_extract_descendants_wires_content_parser(bob_agent: BobAgent) -> None:
++    """AC2/AC3: ContentParser.parse() is called; clean markdown and warnings carried forward."""
++    from datetime import UTC, datetime
++
++    from ai_qa.pipelines.models import ConfluencePage, ParsedContent
++
++    # Use page_id matching mock_page so summaries has exactly one entry
++    bob_agent._page_id = "page-1"
++    bob_agent._space_key = "TEST"
++
++    bob_agent.project_context.artifact_service.db.get.side_effect = None
++    mock_project = MagicMock()
++    mock_project.confluence_base_url = "https://confluence.company.com"
++    bob_agent.project_context.artifact_service.db.get.return_value = mock_project
++
++    mock_page = ConfluencePage(
++        page_id="page-1",
++        title="My Page",
++        content="<p>Hello</p>",
++        space_key="TEST",
++        url="https://confluence.company.com/page-1",
++        retrieved_at=datetime.now(UTC),
++        labels=[],
++    )
++    clean_md = "# Clean\n| a | b |\n| --- | --- |\n| 1 | 2 |"
++    gliffy_warning = "Gliffy diagram detected ΓÇö manual review recommended"
++    parsed_content = ParsedContent(
++        page_id="page-1",
++        page_title="My Page",
++        source_url="https://confluence.company.com/page-1",
++        markdown=clean_md,
++        mermaid_diagrams=[],
++        image_paths=[],
++        test_cases_detected=[],
++        parsed_at=datetime.now(UTC),
++    )
++    parse_result = StageResult(
++        success=True,
++        data=parsed_content,
++        errors=[],
++        warnings=[gliffy_warning],
++        confidence=0.8,
++    )
++
++    mock_formatter = AsyncMock()
++    mock_formatter.convert_markdown.return_value = "# Story"
++    mock_parser = AsyncMock()
++    mock_parser.parse.return_value = parse_result
++    mock_adapter = MagicMock()
++
++    with (
++        patch("ai_qa.agents.bob.MCPClient", return_value=AsyncMock()),
++        patch("ai_qa.agents.bob.AppSettings"),
++        patch("ai_qa.agents.bob.LLMClient"),
++        patch("ai_qa.agents.bob.RequirementFormatter", return_value=mock_formatter),
++        patch("ai_qa.agents.bob.ContentParser", return_value=mock_parser),
++        patch("ai_qa.agents.bob.PipelineArtifactAdapter", return_value=mock_adapter),
++        patch("ai_qa.agents.bob.ConfluenceReader") as mock_reader_class,
++        patch("ai_qa.agents.bob.JiraReader"),
++        patch("ai_qa.agents.bob.get_user_secret", return_value="test-mcp-pat"),
++        patch.object(bob_agent, "get_llm_config", return_value=MagicMock()),
++    ):
++        mock_reader = AsyncMock()
++        # Return no children ΓÇö the parent page (page-1) is added to summaries automatically
++        mock_reader.get_children_by_id.return_value = StageResult(
++            success=True,
++            data=[],
++            errors=[],
++            warnings=[],
++            confidence=1.0,
++        )
++        mock_reader.read_page_by_id.return_value = StageResult(
++            success=True, data=mock_page, errors=[], warnings=[], confidence=1.0
++        )
++        mock_reader_class.return_value = mock_reader
++
++        result = await bob_agent._extract_descendants("My Page")
++
++    assert result.success
++    assert len(bob_agent.pages) == 1
++    page = bob_agent.pages[0]
++
++    # AC2: clean markdown carried forward on the page dict
++    assert page["parsed_markdown"] == clean_md
++    assert page["requirement_md"] == "# Story"
++
++    # AC3: Gliffy warning surfaced, not dropped
++    assert gliffy_warning in page["warnings"]
++
++    # convert_markdown was called with clean_md; convert_page must NOT have been called
++    mock_formatter.convert_markdown.assert_called_once_with(mock_page, clean_md)
++    mock_formatter.convert_page.assert_not_called()
++
++
++@pytest.mark.asyncio
++async def test_bob_extract_descendants_no_silent_drop_on_parse_failure(bob_agent: BobAgent) -> None:
++    """AC3: page with ContentParser.parse() data=None still appears in self.pages with warnings."""
++    from datetime import UTC, datetime
++
++    from ai_qa.pipelines.models import ConfluencePage
++
++    # page_id matches mock_page so summaries has exactly one entry (no children)
++    bob_agent._page_id = "page-1"
++    bob_agent._space_key = "TEST"
++
++    bob_agent.project_context.artifact_service.db.get.side_effect = None
++    bob_agent.project_context.artifact_service.db.get.return_value = MagicMock(
++        confluence_base_url=None
++    )
++
++    mock_page = ConfluencePage(
++        page_id="page-1",
++        title="Bad Page",
++        content="<p>Content</p>",
++        space_key="TEST",
++        url="https://confluence.company.com/page-1",
++        retrieved_at=datetime.now(UTC),
++        labels=[],
++    )
++    failed_parse = StageResult(
++        success=False,
++        data=None,
++        errors=["Parse error"],
++        warnings=["HTML-to-Markdown conversion failed ΓÇö content unavailable: timeout"],
++        confidence=0.0,
++    )
++
++    mock_formatter = AsyncMock()
++    mock_formatter.convert_markdown.return_value = "# Fallback Story"
++    mock_parser = AsyncMock()
++    mock_parser.parse.return_value = failed_parse
++    mock_adapter = MagicMock()
++
++    with (
++        patch("ai_qa.agents.bob.MCPClient", return_value=AsyncMock()),
++        patch("ai_qa.agents.bob.AppSettings"),
++        patch("ai_qa.agents.bob.LLMClient"),
++        patch("ai_qa.agents.bob.RequirementFormatter", return_value=mock_formatter),
++        patch("ai_qa.agents.bob.ContentParser", return_value=mock_parser),
++        patch("ai_qa.agents.bob.PipelineArtifactAdapter", return_value=mock_adapter),
++        patch("ai_qa.agents.bob.ConfluenceReader") as mock_reader_class,
++        patch("ai_qa.agents.bob.JiraReader"),
++        patch("ai_qa.agents.bob.get_user_secret", return_value="test-mcp-pat"),
++        patch.object(bob_agent, "get_llm_config", return_value=MagicMock()),
++    ):
++        mock_reader = AsyncMock()
++        # No children ΓÇö only the parent page (page-1) in summaries
++        mock_reader.get_children_by_id.return_value = StageResult(
++            success=True,
++            data=[],
++            errors=[],
++            warnings=[],
++            confidence=1.0,
++        )
++        mock_reader.read_page_by_id.return_value = StageResult(
++            success=True, data=mock_page, errors=[], warnings=[], confidence=1.0
++        )
++        mock_reader_class.return_value = mock_reader
++
++        result = await bob_agent._extract_descendants("Bad Page")
++
++    # Page must be in self.pages even when parse() returned data=None (AC3: warn, not drop)
++    assert len(bob_agent.pages) == 1
++    page = bob_agent.pages[0]
++    assert page["page_id"] == "page-1"
++    assert any("HTML-to-Markdown conversion failed" in w for w in page["warnings"])
++    # run must not crash and reports success (fallback clean_md was used)
++    assert result.success
++
++
++# ---------------------------------------------------------------------------
++# Story 11.4 ΓÇö Jira requirements retrieval (AC1/AC2/AC3)
++# ---------------------------------------------------------------------------
++
++
++def _make_jira_issue(**kwargs: object) -> JiraIssue:
++    """Factory for test JiraIssue instances with sensible defaults."""
++    defaults: dict[str, object] = {
++        "issue_key": "PROJ-123",
++        "summary": "Login fails on SSO",
++        "description": "Steps to reproduce...",
++        "acceptance_criteria": "Given SSO configured Then login succeeds",
++        "status": "In Progress",
++        "labels": ["auth", "regression"],
++        "project_key": "PROJ",
++        "url": "https://jira.company.com/browse/PROJ-123",
++        "retrieved_at": datetime.now(UTC),
++        "issue_type": "Story",
++        "reporter": None,
++        "assignee": None,
++    }
++    defaults.update(kwargs)
++    return JiraIssue(**defaults)  # type: ignore[arg-type]
++
++
++# --- 5.2: _format_jira_markdown (AC2, pure sync) ---
++
++
++def test_format_jira_markdown_full_issue(bob_agent: BobAgent) -> None:
++    """Fully-populated issue renders all expected fields; labels joined, not raw list."""
++    issue = _make_jira_issue()
++    result = bob_agent._format_jira_markdown(issue)
++
++    assert "PROJ-123" in result
++    assert "Login fails on SSO" in result
++    assert "In Progress" in result
++    assert "Story" in result
++    assert "auth, regression" in result
++    assert "## Description" in result
++    assert "Steps to reproduce" in result
++    assert "## Acceptance Criteria" in result
++    assert "Given SSO configured" in result
++    assert "https://jira.company.com/browse/PROJ-123" in result
++    # Raw list form must never appear
++    assert "['auth'" not in result
++    assert "['regression'" not in result
++
++
++def test_format_jira_markdown_minimal_issue(bob_agent: BobAgent) -> None:
++    """Minimal issue (no description/AC/labels/status) has no None leakage or empty sections."""
++    issue = _make_jira_issue(
++        description=None,
++        acceptance_criteria=None,
++        labels=[],
++        status=None,
++        issue_type=None,
++    )
++    result = bob_agent._format_jira_markdown(issue)
++
++    assert "None" not in result
++    assert "## Description" not in result
++    assert "## Acceptance Criteria" not in result
++    assert "**Labels:**" not in result
++    assert "**Status:**" not in result
++    # Issue key and summary still present
++    assert "PROJ-123" in result
++    assert "Login fails on SSO" in result
++
++
++# --- 5.3: AC1 ΓÇö tools unavailable skips retrieval ---
++
++
++@pytest.mark.asyncio
++async def test_retrieve_jira_tools_unavailable_skips(bob_agent: BobAgent) -> None:
++    """AC1: when check_tool_availability returns missing tools, read_issue is never called."""
++    bob_agent._jira_ref = "PROJ-123"
++    mock_client = MagicMock()
++
++    with patch("ai_qa.agents.bob.JiraReader") as mock_jira_reader_class:
++        mock_reader = MagicMock()
++        mock_reader.check_tool_availability = AsyncMock(return_value=["jira_get_issue"])
++        mock_reader.read_issue = AsyncMock()
++        mock_jira_reader_class.return_value = mock_reader
++
++        warnings = await bob_agent._retrieve_jira_requirements(
++            mock_client, "https://jira.company.com"
++        )
++
++    mock_reader.read_issue.assert_not_awaited()
++    assert not any(p.get("source_type") == "jira" for p in bob_agent.pages)
++    assert len(warnings) > 0
++    assert any("unavailable" in w.lower() or "skip" in w.lower() for w in warnings)
++
++
++# --- 5.4: AC2 ΓÇö happy path appends rich review item ---
++
++
++@pytest.mark.asyncio
++async def test_retrieve_jira_happy_path_appends_item(bob_agent: BobAgent) -> None:
++    """AC2: successful retrieval appends a Jira review item to self.pages."""
++    bob_agent._jira_ref = "PROJ-123"
++    issue = _make_jira_issue()
++    mock_client = MagicMock()
++
++    with patch("ai_qa.agents.bob.JiraReader") as mock_jira_reader_class:
++        mock_reader = MagicMock()
++        mock_reader.check_tool_availability = AsyncMock(return_value=[])
++        mock_reader.read_issue = AsyncMock(
++            return_value=StageResult(success=True, data=issue, errors=[], warnings=[], confidence=1.0)
++        )
++        mock_jira_reader_class.return_value = mock_reader
++
++        warnings = await bob_agent._retrieve_jira_requirements(
++            mock_client, "https://jira.company.com"
++        )
++
++    assert warnings == []
++    assert len(bob_agent.pages) == 1
++    item = bob_agent.pages[-1]
++    assert item["source_type"] == "jira"
++    assert item["page_id"] == "PROJ-123"
++    assert item["page_title"].startswith("[PROJ-123]")
++    assert item["source_url"] == "https://jira.company.com/browse/PROJ-123"
++    assert "Steps to reproduce" in item["requirement_md"]
++    assert "Given SSO configured" in item["requirement_md"]
++
++
++# --- 5.5: AC3 ΓÇö soft retrieval failure does not crash ---
++
++
++@pytest.mark.asyncio
++async def test_retrieve_jira_soft_failure_returns_warning(bob_agent: BobAgent) -> None:
++    """AC3: read_issue soft-fail ΓåÆ warning returned, no item appended, no exception."""
++    bob_agent._jira_ref = "PROJ-123"
++    mock_client = MagicMock()
++
++    with patch("ai_qa.agents.bob.JiraReader") as mock_jira_reader_class:
++        mock_reader = MagicMock()
++        mock_reader.check_tool_availability = AsyncMock(return_value=[])
++        mock_reader.read_issue = AsyncMock(
++            return_value=StageResult(
++                success=False, data=None, errors=["Jira tool error"], warnings=[], confidence=0.0
++            )
++        )
++        mock_jira_reader_class.return_value = mock_reader
++
++        warnings = await bob_agent._retrieve_jira_requirements(
++            mock_client, "https://jira.company.com"
++        )
++
++    assert not any(p.get("source_type") == "jira" for p in bob_agent.pages)
++    assert len(warnings) > 0
++
++
++# --- 5.6: AC3 ΓÇö exception safety ---
++
++
++@pytest.mark.asyncio
++async def test_retrieve_jira_exception_returns_warning_not_raise(bob_agent: BobAgent) -> None:
++    """AC3: exception from check_tool_availability is caught; returns warning, does not raise."""
++    bob_agent._jira_ref = "PROJ-123"
++    initial_pages = list(bob_agent.pages)
++    mock_client = MagicMock()
++
++    with patch("ai_qa.agents.bob.JiraReader") as mock_jira_reader_class:
++        mock_reader = MagicMock()
++        mock_reader.check_tool_availability = AsyncMock(
++            side_effect=MCPConnectionError("down")
++        )
++        mock_jira_reader_class.return_value = mock_reader
++
++        warnings = await bob_agent._retrieve_jira_requirements(
++            mock_client, "https://jira.company.com"
++        )
++
++    assert len(warnings) > 0
++    assert bob_agent.pages == initial_pages
++
++
++# --- 5.7: No-ref short-circuit ---
++
++
++@pytest.mark.asyncio
++async def test_retrieve_jira_no_ref_returns_empty_no_reader(bob_agent: BobAgent) -> None:
++    """When _jira_ref is None, JiraReader is never constructed and [] is returned."""
++    bob_agent._jira_ref = None
++    mock_client = MagicMock()
++
++    with patch("ai_qa.agents.bob.JiraReader") as mock_jira_reader_class:
++        warnings = await bob_agent._retrieve_jira_requirements(
++            mock_client, "https://jira.company.com"
++        )
++        mock_jira_reader_class.assert_not_called()
++
++    assert warnings == []
++
++
++# --- 5.8: Integration in _extract_descendants (AC2 end-to-end) ---
++
++
++@pytest.mark.asyncio
++async def test_bob_extract_descendants_with_jira_produces_two_pages(bob_agent: BobAgent) -> None:
++    """AC2 integration: _extract_descendants yields 1 Confluence + 1 Jira page when Jira ref set."""
++    bob_agent._page_id = "12345"
++    bob_agent._jira_ref = "PROJ-123"
++
++    mock_project = MagicMock()
++    mock_project.confluence_base_url = "https://confluence.company.com"
++    mock_project.jira_base_url = "https://jira.company.com"
++    assert bob_agent.project_context is not None
++    assert bob_agent.project_context.artifact_service is not None
++    bob_agent.project_context.artifact_service.db.get.return_value = mock_project
++
++    mock_confluence_page = MagicMock()
++    mock_confluence_page.page_id = "12345"
++    mock_confluence_page.title = "Parent"
++    mock_confluence_page.content = "<p>x</p>"
++    mock_confluence_page.url = "https://confluence.company.com/x"
++
++    jira_issue = _make_jira_issue()
++
++    mock_client = AsyncMock()
++    mock_client.is_connected = True
++
++    with (
++        patch("ai_qa.agents.bob.MCPClient") as mock_mcp_client_class,
++        patch("ai_qa.agents.bob.ConfluenceReader") as mock_reader_class,
++        patch("ai_qa.agents.bob.AppSettings"),
++        patch("ai_qa.agents.bob.LLMClient"),
++        patch("ai_qa.agents.bob.RequirementFormatter") as mock_formatter_class,
++        patch("ai_qa.agents.bob.ContentParser") as mock_parser_class,
++        patch("ai_qa.agents.bob.PipelineArtifactAdapter"),
++        patch("ai_qa.agents.bob.JiraReader") as mock_jira_reader_class,
++        patch("ai_qa.agents.bob.get_user_secret", return_value="test-mcp-pat"),
++        patch.object(bob_agent, "get_llm_config", return_value=MagicMock()),
++    ):
++        mock_mcp_client_class.return_value = mock_client
++
++        mock_reader = AsyncMock()
++        mock_reader.check_tool_availability = AsyncMock(return_value=[])
++        mock_reader.get_children_by_id.return_value = StageResult(
++            success=True, data=[], errors=[], warnings=[], confidence=1.0
++        )
++        mock_reader.read_page_by_id.return_value = StageResult(
++            success=True, data=mock_confluence_page, errors=[], warnings=[], confidence=1.0
++        )
++        mock_reader_class.return_value = mock_reader
++
++        mock_formatter_class.return_value.convert_markdown = AsyncMock(return_value="# Req")
++
++        mock_parser_inst = AsyncMock()
++        mock_parser_inst.parse.return_value = StageResult(
++            success=True,
++            data=MagicMock(markdown="# Clean"),
++            errors=[],
++            warnings=[],
++            confidence=1.0,
++        )
++        mock_parser_class.return_value = mock_parser_inst
++
++        mock_jira_reader = MagicMock()
++        mock_jira_reader.check_tool_availability = AsyncMock(return_value=[])
++        mock_jira_reader.read_issue = AsyncMock(
++            return_value=StageResult(
++                success=True, data=jira_issue, errors=[], warnings=[], confidence=1.0
++            )
++        )
++        mock_jira_reader_class.return_value = mock_jira_reader
++
++        result = await bob_agent._extract_descendants("Parent")
++
++    assert result.success is True
++    assert len(bob_agent.pages) == 2
++
++    jira_pages = [p for p in bob_agent.pages if p.get("source_type") == "jira"]
++    confluence_pages = [p for p in bob_agent.pages if p.get("source_type") != "jira"]
++    assert len(jira_pages) == 1
++    assert len(confluence_pages) == 1
++    assert jira_pages[0]["page_id"] == "PROJ-123"
++    assert result.warnings == []
++
++    # MCPClient still instantiated only once
++    assert mock_mcp_client_class.call_count == 1
+diff --git a/tests/unit/test_mcp_client_capabilities.py b/tests/unit/test_mcp_client_capabilities.py
+new file mode 100644
+index 0000000..e78ed8b
+--- /dev/null
++++ b/tests/unit/test_mcp_client_capabilities.py
+@@ -0,0 +1,63 @@
++"""Tests for MCPClient.check_required_tools capability checking."""
++
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++
++from ai_qa.exceptions import MCPConnectionError
++from ai_qa.mcp.client import MCPClient
++from ai_qa.mcp.tools import Tool
++
++
++def _make_tool(name: str) -> Tool:
++    return Tool(name=name, description="", parameters=[], returns="")
++
++
++@pytest.fixture
++def mock_mcp_client() -> MCPClient:
++    with patch("ai_qa.mcp.client.ConnectionManager"):
++        client = MCPClient(server_url="http://localhost:3000/sse")
++    client._connection = MagicMock()
++    client._connection.is_connected = True
++    return client
++
++
++class TestCheckRequiredTools:
++    async def test_empty_required_returns_empty(self, mock_mcp_client: MCPClient) -> None:
++        missing = await mock_mcp_client.check_required_tools([])
++        assert missing == []
++
++    async def test_all_present_returns_empty(self, mock_mcp_client: MCPClient) -> None:
++        mock_mcp_client.list_tools = AsyncMock(
++            return_value=[
++                _make_tool("tool_a"),
++                _make_tool("tool_b"),
++            ]
++        )
++        missing = await mock_mcp_client.check_required_tools(["tool_a", "tool_b"])
++        assert missing == []
++
++    async def test_missing_tool_returned(self, mock_mcp_client: MCPClient) -> None:
++        mock_mcp_client.list_tools = AsyncMock(
++            return_value=[_make_tool("tool_a")]
++        )
++        missing = await mock_mcp_client.check_required_tools(["tool_a", "tool_b"])
++        assert missing == ["tool_b"]
++
++    async def test_all_missing(self, mock_mcp_client: MCPClient) -> None:
++        mock_mcp_client.list_tools = AsyncMock(return_value=[])
++        missing = await mock_mcp_client.check_required_tools(["tool_a", "tool_b"])
++        assert set(missing) == {"tool_a", "tool_b"}
++
++    async def test_propagates_connection_error(self, mock_mcp_client: MCPClient) -> None:
++        mock_mcp_client.list_tools = AsyncMock(
++            side_effect=MCPConnectionError("cannot connect")
++        )
++        with pytest.raises(MCPConnectionError):
++            await mock_mcp_client.check_required_tools(["tool_a"])
++
++    async def test_does_not_bypass_cache(self, mock_mcp_client: MCPClient) -> None:
++        mock_mcp_client.list_tools = AsyncMock(return_value=[_make_tool("tool_a")])
++        await mock_mcp_client.check_required_tools(["tool_a"])
++        # list_tools is delegated with default args (uses_cache=True by default)
++        mock_mcp_client.list_tools.assert_called_once()

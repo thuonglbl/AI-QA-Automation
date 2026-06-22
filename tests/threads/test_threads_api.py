@@ -316,7 +316,7 @@ def test_removed_member_denied_on_all_thread_endpoints(thread_client: TestClient
             {"conversation": {"messages": [], "current_step": 1, "status": "start"}},
         ),
         ("get", f"/api/threads/{thread_id}/messages", None),
-        ("post", f"/api/threads/{thread_id}/messages", {"role": "user", "content": "hi"}),
+        ("post", f"/api/threads/{thread_id}/messages", {"sender": "user", "content": "hi"}),
         ("post", f"/api/threads/{thread_id}/runs", {"status": "running"}),
         (
             "patch",

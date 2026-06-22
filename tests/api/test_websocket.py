@@ -32,7 +32,7 @@ def client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def _reset_active_connections() -> Generator[None, None, None]:
+def _reset_active_connections() -> Generator[None]:
     """Reset active_connections before each test to prevent state leaking."""
     active_connections.clear()
     yield

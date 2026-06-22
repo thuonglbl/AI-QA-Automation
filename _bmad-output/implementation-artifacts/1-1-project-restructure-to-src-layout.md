@@ -23,10 +23,10 @@
 **Epic Goal:** Project Foundation & Infrastructure Setup. This story establishes the core build and structure upon which all other features will be built.
 
 ### Technical & Architecture Requirements
-- **Language/Environment**: Python 3.12+ (managed by `uv`)
+- **Language/Environment**: Python 3.14+ (managed by `uv`)
 - **Build System**: Hatchling (`[build-system]` section in `pyproject.toml`)
 - **PEP 621**: Utilize `[project]` settings rather than tool-specific proprietary fields.
-- **Linter & Formatting**: Configure Ruff (Target: Python 3.12, line-length 100).
+- **Linter & Formatting**: Configure Ruff (Target: Python 3.14, line-length 100).
 - **Type Checking**: Configure `mypy` for static type checking.
 
 ### Library & Framework Requirements

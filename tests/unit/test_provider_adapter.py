@@ -9,6 +9,7 @@ Following project rules #19/#20/#21 for test patterns.
 
 from collections.abc import Generator
 from typing import cast
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -171,11 +172,21 @@ def test_discovered_model_has_required_fields() -> None:
 
 def test_get_provider_adapter_returns_known_providers() -> None:
     """Factory returns correct adapter for each known provider id."""
-    known_ids = ["claude", "openai", "gemini", "on-premises", "browser-use-cloud"]
+    known_ids = ["claude", "claude-sso", "openai", "gemini", "on-premises", "browser-use-cloud"]
     for provider_id in known_ids:
         adapter = get_provider_adapter(provider_id)
         assert isinstance(adapter, ProviderAdapter)
         assert adapter.provider_id == provider_id
+
+
+def test_claude_sso_adapter_resolves_to_anthropic_base_url() -> None:
+    """claude-sso reuses the Anthropic Messages API surface and base URL."""
+    from ai_qa.config import AppSettings
+
+    adapter = get_provider_adapter("claude-sso")
+    assert adapter.provider_id == "claude-sso"
+    settings = AppSettings()
+    assert "anthropic" in resolve_base_url(settings, "claude-sso")
 
 
 def test_get_provider_adapter_raises_for_unknown() -> None:
@@ -380,15 +391,26 @@ async def test_on_premises_adapter_rejects_non_http_url() -> None:
 
 
 @pytest.mark.asyncio
-async def test_browser_use_adapter_rejects_short_key() -> None:
-    """Browser Use adapter rejects short API key."""
+@patch("httpx.AsyncClient.get")
+async def test_browser_use_adapter_rejects_short_key(mock_get: MagicMock) -> None:
+    """Browser Use adapter rejects a short API key at the format floor — no network.
+
+    The key must be shorter than the 8-char format floor (``_MIN_API_KEY_LENGTH``)
+    so it is rejected *before* any network probe, exactly like the Anthropic/
+    OpenAI/Gemini sibling tests above. The former value ``"bu_short"`` was exactly
+    8 chars, so it slipped past the ``len < 8`` floor and triggered a real call to
+    ``api.browser-use.com`` — an order-dependent flake under pytest-randomly, where
+    the live call's outcome varied and surfaced as ``unreachable``/``provider_error``
+    instead of ``auth``. The ``assert_not_awaited`` below pins the test hermetic.
+    """
     adapter = BrowserUseAdapter()
     result = await adapter.validate_connection(
-        credentials={"api_key": "bu_short"},
+        credentials={"api_key": "bu_key"},
         base_url="https://api.browser-use.com/api/v2",
     )
     assert result.success is False
     assert result.error_category == "auth"
+    mock_get.assert_not_awaited()  # rejected at the format floor, before any probe
 
 
 @pytest.mark.asyncio

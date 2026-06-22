@@ -225,7 +225,7 @@ tests/api/test_secret_leakage.py                     # CREATE: 7-channel leakage
 
 ### Latest Tech Information
 
-- Python 3.12 + uv — no changes needed
+- Python 3.14 + uv — no changes needed
 - FastAPI WebSocket already handles agent state transitions
 - SQLAlchemy `UserSecretEncryptedString` type handles transparent encryption/decryption
 - Tenacity retry + custom exception hierarchy already in place

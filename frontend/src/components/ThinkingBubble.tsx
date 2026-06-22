@@ -1,16 +1,30 @@
 import React, { useState } from "react";
 import { ThinkingTrace } from "../types/provider";
+import { MessageTime } from "@/components/MessageTime";
+
+// Shared style for the Available / Unavailable model chip boxes. A taller cap
+// (max-h-60) shows far more of a long model list, and an explicitly-styled
+// scrollbar forces a classic, always-visible scrollbar instead of the OS
+// auto-hiding overlay (which made it look like the list could not be scrolled).
+const modelBoxClass =
+  "max-h-60 overflow-y-auto bg-white border border-gray-200 rounded p-2 text-xs " +
+  "[scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 " +
+  "[&::-webkit-scrollbar-track]:bg-gray-100 [&::-webkit-scrollbar-thumb]:rounded-full " +
+  "[&::-webkit-scrollbar-thumb]:bg-gray-400";
 
 interface ThinkingBubbleProps {
   trace: ThinkingTrace | null;
   isCompleted?: boolean;
   title?: string;
+  /** ISO timestamp of the backing message; shown as hh:mm:ss next to the title. */
+  timestamp?: string;
 }
 
 export const ThinkingBubble: React.FC<ThinkingBubbleProps> = ({
   trace,
   isCompleted = false,
   title = "Alice's thought",
+  timestamp,
 }) => {
   // Always start open, user can collapse manually
   const [isOpen, setIsOpen] = useState(true);
@@ -36,6 +50,7 @@ export const ThinkingBubble: React.FC<ThinkingBubbleProps> = ({
       >
         <div className="flex items-center gap-2">
           <span className="text-purple-600 font-bold">{title}</span>
+          <MessageTime timestamp={timestamp} fallbackToNow />
           {isCompleted && (
             <span className="bg-green-100 text-green-800 text-xs px-2 py-0.5 rounded-full">
               Complete
@@ -70,7 +85,7 @@ export const ThinkingBubble: React.FC<ThinkingBubbleProps> = ({
               <h4 className="font-semibold text-gray-900 mb-1 text-green-700">
                 Available Models ({available_models.length})
               </h4>
-              <div className="max-h-24 overflow-y-auto bg-white border border-gray-200 rounded p-2 text-xs">
+              <div className={modelBoxClass}>
                 {available_models.map((m) => (
                   <span
                     key={m.id}
@@ -89,7 +104,7 @@ export const ThinkingBubble: React.FC<ThinkingBubbleProps> = ({
               <h4 className="font-semibold text-gray-900 mb-1 text-red-700">
                 Unavailable Models ({trace.unavailable_models.length})
               </h4>
-              <div className="max-h-24 overflow-y-auto bg-white border border-gray-200 rounded p-2 text-xs">
+              <div className={modelBoxClass}>
                 {trace.unavailable_models.map((m: any) => (
                   <span
                     key={m.id}
@@ -133,8 +148,26 @@ export const ThinkingBubble: React.FC<ThinkingBubbleProps> = ({
                     key={i}
                     className="bg-white border border-gray-200 rounded p-2 text-xs"
                   >
-                    <div className="font-semibold text-blue-600 capitalize">
-                      {a.agent}
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-blue-600 capitalize">
+                        {a.agent}
+                      </span>
+                      {a.tier_source && (
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                            a.tier_source === "admin"
+                              ? "bg-purple-100 text-purple-800"
+                              : a.tier_source === "curated"
+                                ? "bg-green-100 text-green-800"
+                                : a.tier_source === "parsed"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : "bg-gray-100 text-gray-700"
+                          }`}
+                          title="How this model was selected"
+                        >
+                          {a.tier_source}
+                        </span>
+                      )}
                     </div>
                     <div className="mt-1">
                       <span className="font-semibold">Model:</span> {a.model}
@@ -142,6 +175,11 @@ export const ThinkingBubble: React.FC<ThinkingBubbleProps> = ({
                     <div className="mt-1 text-gray-600 italic">
                       {a.rationale}
                     </div>
+                    {a.score_breakdown && (
+                      <div className="mt-1 text-gray-400 font-mono text-[10px]">
+                        {a.score_breakdown}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

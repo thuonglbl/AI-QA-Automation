@@ -4,9 +4,13 @@
 export type ProviderId =
   | "browser-use-cloud"
   | "claude"
+  | "claude-sso"
   | "openai"
   | "gemini"
   | "on-premises";
+
+/** How a provider collects credentials in the UI. */
+export type AuthMethod = "api_key" | "sso";
 
 /** Security level for provider */
 export type SecurityLevel = "cloud" | "enterprise" | "highest" | "good";
@@ -30,6 +34,8 @@ export interface ProviderOption {
   description: string;
   qualityRank: number;
   securityLevel: SecurityLevel;
+  /** "sso" renders a Login-SSO button; "api_key" (default) renders credential inputs. */
+  authMethod?: AuthMethod;
   credentialFields: CredentialField[];
 }
 
@@ -115,7 +121,13 @@ export interface ThinkingTrace {
   bootstrap_model?: string | null;
   bootstrap_rationale?: string | null;
   agent_needs?: Record<string, string>;
-  assignments?: { agent: string; model: string; rationale: string }[];
+  assignments?: {
+    agent: string;
+    model: string;
+    rationale: string;
+    tier_source?: string;
+    score_breakdown?: string;
+  }[];
   benchmark?: ProviderBenchmark | null;
   chain_of_thought?: string[];
 }

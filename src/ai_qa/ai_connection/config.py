@@ -14,3 +14,12 @@ class LLMConfig(BaseModel):
     max_retries: int = Field(
         default=3, ge=0, description="Maximum number of retries for transient errors"
     )
+    timeout: float = Field(
+        default=600.0,
+        gt=0,
+        description=(
+            "Per-request timeout in seconds. Bounds slow/stalled provider responses so a "
+            "call can never hang forever. Generous by default because on-premises models "
+            "can take minutes to generate large structured outputs."
+        ),
+    )

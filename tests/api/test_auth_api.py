@@ -119,6 +119,7 @@ def test_login_and_me_flow(auth_client: TestClient) -> None:
     assert me_data["display_name"] == "Person One"
     assert me_data["role"] == "standard"
     assert me_data["is_active"] is True
+    assert me_data["timezone"] == "UTC"  # surfaced so the FE can localize timestamps
     assert "password_hash" not in me_data
 
 

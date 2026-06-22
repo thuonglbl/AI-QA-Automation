@@ -101,3 +101,42 @@ def test_user_secrets_encryption_key_valid_loads(tmp_path, monkeypatch):
     reload(cfg)
     settings = cfg.AppSettings()
     assert settings.user_secrets_encryption_key == _VALID_FERNET_KEY
+
+
+# ---------------------------------------------------------------------------
+# Story 14.3: execution_output_prefix validation (AC2 fail-fast)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_execution_output_prefix_accepts_clean_relative() -> None:
+    """A clean relative prefix is accepted and stripped."""
+    from ai_qa.config import validate_execution_output_prefix
+
+    assert validate_execution_output_prefix("  runs  ") == "runs"
+    assert validate_execution_output_prefix("runs/executions") == "runs/executions"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["", "   ", "/abs/path", "C:/win/path", r"\\unc\share", "runs/../etc", ".."],
+)
+def test_validate_execution_output_prefix_rejects_unsafe(bad: str) -> None:
+    """Empty, absolute, drive-letter/UNC, and '..' traversal prefixes are rejected."""
+    from ai_qa.config import validate_execution_output_prefix
+
+    with pytest.raises(ValueError):
+        validate_execution_output_prefix(bad)
+
+
+def test_appsettings_rejects_bad_execution_output_prefix(tmp_path, monkeypatch) -> None:
+    """AppSettings fails fast on a malformed EXECUTION_OUTPUT_PREFIX."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("USER_SECRETS_ENCRYPTION_KEY", _VALID_FERNET_KEY)
+    monkeypatch.setenv("EXECUTION_OUTPUT_PREFIX", "/absolute/bad")
+    from importlib import reload
+
+    import ai_qa.config as cfg
+
+    reload(cfg)
+    with pytest.raises(ValidationError):
+        cfg.AppSettings()

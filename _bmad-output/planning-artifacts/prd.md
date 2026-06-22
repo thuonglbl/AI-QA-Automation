@@ -271,7 +271,7 @@ This is a strategic response to competitive pressure: competitors are already ap
 
 **Runtime & Dependencies:**
 
-- Python 3.12+ with `uv` package manager
+- Python 3.14+ with `uv` package manager
 - Output: Python Playwright (latest version) test scripts
 - Core dependencies: browser-use >= 0.12.5, langchain-anthropic >= 1.3.1, python-dotenv >= 1.2.1
 - LLM: Claude Sonnet 4.6 via Anthropic API (temperature 0.0 for deterministic output)

@@ -41,6 +41,7 @@ class UserProfileResponse(BaseModel):
     display_name: str
     role: str
     is_active: bool
+    timezone: str = "UTC"
 
 
 def _session_payload(user: User) -> dict[str, Any]:
@@ -50,6 +51,7 @@ def _session_payload(user: User) -> dict[str, Any]:
         "name": user.display_name,
         "role": user.role,
         "is_active": user.is_active,
+        "timezone": user.timezone,
     }
 
 
@@ -60,6 +62,7 @@ def _profile_response(user: User) -> dict[str, Any]:
         display_name=user.display_name,
         role=user.role,
         is_active=user.is_active,
+        timezone=user.timezone,
     ).model_dump()
 
 
@@ -150,6 +153,7 @@ def get_auth_router(settings: AppSettings) -> APIRouter:
                 "email": user.email,
                 "name": user.name,
                 "role": user.role,
+                "timezone": getattr(user, "timezone", "UTC") or "UTC",
             }
         return {"authenticated": False}
 

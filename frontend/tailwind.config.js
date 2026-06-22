@@ -125,7 +125,7 @@ export default {
     },
   },
   plugins: [
-    require("tailwindcss-animate"),
+    // tailwindcss-animate replaced by tw-animate-css (imported in index.css for v4).
     require("@tailwindcss/typography")
   ],
 }

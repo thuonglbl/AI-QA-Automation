@@ -57,6 +57,12 @@ class ArtifactStorageFake:
         self.deleted.append(storage_path)
         self.contents.pop(storage_path, None)
 
+    def delete_prefix(self, prefix: str) -> None:
+        keys = [k for k in self.contents if k.startswith(prefix)]
+        for k in keys:
+            self.deleted.append(k)
+            self.contents.pop(k, None)
+
 
 @pytest.fixture
 def artifact_client() -> Generator[TestClient]:
@@ -406,197 +412,82 @@ def test_artifact_api_rejects_oversized_content(artifact_client: TestClient) -> 
     assert created.status_code == 422
 
 
-# --- [P2] Story 10.4: Artifact Delete ---
+# --- AC1/AC3: Cross-member Artifact Edit and Delete (Task 1.2 / 1.6) ---
 
 
-def test_artifact_delete_removes_consistently_from_metadata_and_storage(
+def test_cross_member_artifact_edit_and_delete_removes_consistently(
     artifact_client: TestClient,
 ) -> None:
-    """[P2] AC1: Artifact deletion removes consistently from metadata and storage.
+    """AC1/AC3: A project member can edit and delete an artifact created by another member.
 
-    When an artifact is deleted, both the metadata in the database and
-    the content in storage must be removed consistently.
+    Proves:
+    1. Authorization is by project membership, not creator ownership.
+    2. Editing appends a version and updates 'updated_by_user_id'.
+    3. Deleting returns 204, removes from GET routes, and cleans storage.
     """
-    member = _create_user(artifact_client, "member@example.com", STANDARD_ROLE)
-    project = _create_project(artifact_client, "Scoped")
-    agent_run = _create_agent_run(artifact_client, project, member)
-    _add_membership(artifact_client, project, member)
+    member_a = _create_user(artifact_client, "memberA@example.com", STANDARD_ROLE)
+    member_b = _create_user(artifact_client, "memberB@example.com", STANDARD_ROLE)
+    project = _create_project(artifact_client, "Shared")
+    _add_membership(artifact_client, project, member_a)
+    _add_membership(artifact_client, project, member_b)
 
-    # Create an artifact
+    # 1. Member A creates an artifact
     created = artifact_client.post(
         f"/api/projects/{project.id}/artifacts",
-        headers=_auth_headers(artifact_client, member),
-        json={
-            "kind": "markdown",
-            "name": "to-delete.md",
-            "content": "# Delete Me",
-            "agent_run_id": str(agent_run.id),
-        },
+        headers=_auth_headers(artifact_client, member_a),
+        json={"kind": "markdown", "name": "shared.md", "content": "# V1"},
     )
     assert created.status_code == 200
     artifact_id = created.json()["id"]
 
-    # Verify artifact exists in metadata
-    detail = artifact_client.get(
-        f"/api/projects/{project.id}/artifacts/{artifact_id}",
-        headers=_auth_headers(artifact_client, member),
-    )
-    assert detail.status_code == 200
-
-    # Verify artifact content exists in storage
     app = cast(FastAPI, artifact_client.app)
     storage: ArtifactStorageFake = app.state.test_artifact_storage
-    assert len(storage.contents) > 0
 
-    # Delete the artifact (endpoint would be implemented in Story 10.4)
-    # For now, verify the artifact can be accessed before deletion
-    assert detail.json()["id"] == artifact_id
-
-
-def test_artifact_delete_cascades_to_versions(
-    artifact_client: TestClient,
-) -> None:
-    """[P2] AC1: Deleting an artifact cascades to all its versions.
-
-    When an artifact is deleted, all associated versions must also be
-    removed to maintain referential integrity.
-    """
-    member = _create_user(artifact_client, "member@example.com", STANDARD_ROLE)
-    project = _create_project(artifact_client, "Scoped")
-    agent_run = _create_agent_run(artifact_client, project, member)
-    _add_membership(artifact_client, project, member)
-
-    # Create an artifact with multiple versions
-    created = artifact_client.post(
-        f"/api/projects/{project.id}/artifacts",
-        headers=_auth_headers(artifact_client, member),
-        json={
-            "kind": "markdown",
-            "name": "versioned.md",
-            "content": "# Version 1",
-            "agent_run_id": str(agent_run.id),
-        },
-    )
-    assert created.status_code == 200
-    artifact_id = created.json()["id"]
-
-    # Add a second version
-    versioned = artifact_client.post(
+    # 2. Member B edits the artifact
+    edited = artifact_client.post(
         f"/api/projects/{project.id}/artifacts/{artifact_id}/versions",
-        headers=_auth_headers(artifact_client, member),
-        json={"content": "# Version 2"},
+        headers=_auth_headers(artifact_client, member_b),
+        json={"content": "# V2"},
     )
-    assert versioned.status_code == 200
-    assert versioned.json()["current_version"] == 2
+    assert edited.status_code == 200
+    assert edited.json()["current_version"] == 2
 
-    # Verify artifact has 2 versions
+    # Check detail metadata
     detail = artifact_client.get(
         f"/api/projects/{project.id}/artifacts/{artifact_id}",
-        headers=_auth_headers(artifact_client, member),
+        headers=_auth_headers(artifact_client, member_b),
     )
     assert detail.status_code == 200
+    assert detail.json()["updated_by_user_id"] == str(member_b.id)
     assert len(detail.json()["versions"]) == 2
 
+    storage_paths_before = list(storage.contents.keys())
+    assert len(storage_paths_before) == 2  # V1 and V2
 
-def test_artifact_delete_requires_membership(
-    artifact_client: TestClient,
-) -> None:
-    """[P2] AC1: Artifact deletion requires project membership.
-
-    Only project members or admins should be able to delete artifacts.
-    """
-    member = _create_user(artifact_client, "member@example.com", STANDARD_ROLE)
-    outsider = _create_user(artifact_client, "outsider@example.com", STANDARD_ROLE)
-    project = _create_project(artifact_client, "Scoped")
-    _add_membership(artifact_client, project, member)
-
-    # Create an artifact as member
-    created = artifact_client.post(
-        f"/api/projects/{project.id}/artifacts",
-        headers=_auth_headers(artifact_client, member),
-        json={
-            "kind": "markdown",
-            "name": "protected.md",
-            "content": "# Protected",
-        },
-    )
-    assert created.status_code == 200
-    artifact_id = created.json()["id"]
-
-    # Outsider cannot access the artifact (simulating delete permission check)
-    outsider_response = artifact_client.get(
+    # 3. Member B deletes the artifact
+    deleted = artifact_client.delete(
         f"/api/projects/{project.id}/artifacts/{artifact_id}",
-        headers=_auth_headers(artifact_client, outsider),
+        headers=_auth_headers(artifact_client, member_b),
     )
-    assert outsider_response.status_code == 404
+    assert deleted.status_code == 204
 
-
-def test_artifact_delete_removes_from_listing(
-    artifact_client: TestClient,
-) -> None:
-    """[P2] AC1: Deleted artifacts are removed from artifact listing.
-
-    After deletion, the artifact should no longer appear in the
-    project's artifact list.
-    """
-    member = _create_user(artifact_client, "member@example.com", STANDARD_ROLE)
-    project = _create_project(artifact_client, "Scoped")
-    _add_membership(artifact_client, project, member)
-
-    # Create an artifact
-    created = artifact_client.post(
-        f"/api/projects/{project.id}/artifacts",
-        headers=_auth_headers(artifact_client, member),
-        json={
-            "kind": "markdown",
-            "name": "ephemeral.md",
-            "content": "# Ephemeral",
-        },
+    # 4. Assert subsequent GET -> 404
+    missing_detail = artifact_client.get(
+        f"/api/projects/{project.id}/artifacts/{artifact_id}",
+        headers=_auth_headers(artifact_client, member_a),
     )
-    assert created.status_code == 200
+    assert missing_detail.status_code == 404
 
-    # Verify artifact appears in listing
-    list_before = artifact_client.get(
-        f"/api/projects/{project.id}/artifacts",
-        headers=_auth_headers(artifact_client, member),
+    missing_content = artifact_client.get(
+        f"/api/projects/{project.id}/artifacts/{artifact_id}/content",
+        headers=_auth_headers(artifact_client, member_a),
     )
-    assert list_before.status_code == 200
-    assert len(list_before.json()) == 1
+    assert missing_content.status_code == 404
 
-
-def test_artifact_delete_storage_cleanup(
-    artifact_client: TestClient,
-) -> None:
-    """[P2] AC1: Artifact deletion cleans up storage.
-
-    When an artifact is deleted, its content must be removed from
-    the storage backend to prevent orphaned files.
-    """
-    member = _create_user(artifact_client, "member@example.com", STANDARD_ROLE)
-    project = _create_project(artifact_client, "Scoped")
-    _add_membership(artifact_client, project, member)
-
-    # Create an artifact
-    created = artifact_client.post(
-        f"/api/projects/{project.id}/artifacts",
-        headers=_auth_headers(artifact_client, member),
-        json={
-            "kind": "markdown",
-            "name": "cleanup-test.md",
-            "content": "# Cleanup Test",
-        },
-    )
-    assert created.status_code == 200
-
-    # Verify storage has content
-    app = cast(FastAPI, artifact_client.app)
-    storage: ArtifactStorageFake = app.state.test_artifact_storage
-    initial_count = len(storage.contents)
-    assert initial_count > 0
-
-    # Delete would remove from storage (implementation pending)
-    # For now, verify the storage tracking works
-    assert storage.deleted == []
+    # 5. Assert storage cleanup
+    assert len(storage.contents) == 0
+    for path in storage_paths_before:
+        assert path in storage.deleted
 
 
 # ---------------------------------------------------------------------------
@@ -706,13 +597,18 @@ def test_ac3_cross_project_member_gets_404_with_no_metadata_leak(
     artifact_id = created.json()["id"]
 
     other_headers = _auth_headers(artifact_client, other_member)
-    for method, path in [
-        ("get", f"/api/projects/{project_a.id}/artifacts"),
-        ("get", f"/api/projects/{project_a.id}/artifacts/{artifact_id}"),
-        ("get", f"/api/projects/{project_a.id}/artifacts/{artifact_id}/content"),
-        ("delete", f"/api/projects/{project_a.id}/artifacts/{artifact_id}"),
+    for method, path, kwargs in [
+        ("get", f"/api/projects/{project_a.id}/artifacts", {}),
+        ("get", f"/api/projects/{project_a.id}/artifacts/{artifact_id}", {}),
+        ("get", f"/api/projects/{project_a.id}/artifacts/{artifact_id}/content", {}),
+        ("delete", f"/api/projects/{project_a.id}/artifacts/{artifact_id}", {}),
+        (
+            "post",
+            f"/api/projects/{project_a.id}/artifacts/{artifact_id}/versions",
+            {"json": {"content": "v2"}},
+        ),
     ]:
-        r = getattr(artifact_client, method)(path, headers=other_headers)
+        r = getattr(artifact_client, method)(path, headers=other_headers, **kwargs)
         assert r.status_code == 404, f"{method} {path} returned {r.status_code}"
         assert r.json().get("detail") == "Resource not found"
         assert _no_storage_leak(r.json()), f"storage leak on {method} {path}: {r.json()}"
@@ -749,6 +645,59 @@ def test_ac3_artifact_response_does_not_include_storage_path(
         assert _no_storage_leak(r.json()), f"storage leak in {r.url}: {r.json()}"
 
 
+def test_ac2_non_creator_member_can_read_artifact_and_creator_fields_visible(
+    artifact_client: TestClient,
+) -> None:
+    """AC2 positive test (Story 10-3 Task 1.2): Project member B (not the creator)
+    successfully GETs and reads /content of an artifact created by member A
+    in the same project.  creator/updater metadata is visible in the detail response.
+    Access is granted by project membership, not creator ownership.
+    """
+    member_a = _create_user(artifact_client, "creator@example.com", STANDARD_ROLE)
+    member_b = _create_user(artifact_client, "reader@example.com", STANDARD_ROLE)
+    project = _create_project(artifact_client, "Shared")
+    _add_membership(artifact_client, project, member_a)
+    _add_membership(artifact_client, project, member_b)
+
+    # Member A creates the artifact
+    created = artifact_client.post(
+        f"/api/projects/{project.id}/artifacts",
+        headers=_auth_headers(artifact_client, member_a),
+        json={"kind": "requirements", "name": "spec.md", "content": "# Spec"},
+    )
+    assert created.status_code == 200
+    artifact_id = created.json()["id"]
+
+    # AC2: Member B (not the creator) can GET artifact detail
+    detail = artifact_client.get(
+        f"/api/projects/{project.id}/artifacts/{artifact_id}",
+        headers=_auth_headers(artifact_client, member_b),
+    )
+    assert detail.status_code == 200, f"Member B denied access to detail: {detail.json()}"
+    detail_body = detail.json()
+
+    # Creator/updater metadata is visible in the response (not a UUID → confirms field exposure)
+    assert detail_body["created_by_user_id"] == str(member_a.id), (
+        "created_by_user_id must be member A's ID"
+    )
+    assert detail_body["updated_by_user_id"] == str(member_a.id), (
+        "updated_by_user_id must be member A's ID on creation"
+    )
+
+    # AC2: Member B can also read the content
+    content = artifact_client.get(
+        f"/api/projects/{project.id}/artifacts/{artifact_id}/content",
+        headers=_auth_headers(artifact_client, member_b),
+    )
+    assert content.status_code == 200, f"Member B denied access to content: {content.json()}"
+    assert content.json()["content"] == "# Spec"
+    assert content.json()["content_encoding"] == "text"
+
+    # Confirm no storage path leaked in any response
+    assert _no_storage_leak(detail_body), f"Storage path leaked in detail: {detail_body}"
+    assert _no_storage_leak(content.json()), f"Storage path leaked in content: {content.json()}"
+
+
 def test_ac3_new_ownership_fields_present_and_thread_id_none_by_default(
     artifact_client: TestClient,
 ) -> None:
@@ -781,3 +730,40 @@ def test_ac3_new_ownership_fields_present_and_thread_id_none_by_default(
     assert versioned.status_code == 200
     v_body = versioned.json()
     assert v_body["updated_by_user_id"] == str(member.id)
+
+
+def test_execution_report_artifacts_are_membership_gated(artifact_client: TestClient) -> None:
+    """Story 14.5 AC3: the execution report (report.md + report.json) is a project-scoped,
+    membership-gated artifact — a member reads both; a non-member gets 404."""
+    member = _create_user(artifact_client, "rep-member@example.com", STANDARD_ROLE)
+    outsider = _create_user(artifact_client, "rep-outsider@example.com", STANDARD_ROLE)
+    project = _create_project(artifact_client, "ReportScoped", member)
+    _add_membership(artifact_client, project, member)
+    headers = _auth_headers(artifact_client, member)
+
+    report = artifact_client.post(
+        f"/api/projects/{project.id}/artifacts",
+        headers=headers,
+        json={"kind": "report", "name": "runs/r1/report.md", "content": "# Execution Report"},
+    )
+    report_json = artifact_client.post(
+        f"/api/projects/{project.id}/artifacts",
+        headers=headers,
+        json={"kind": "configuration", "name": "runs/r1/report.json", "content": "{}"},
+    )
+    assert report.status_code == 200
+    assert report_json.status_code == 200
+    report_id = report.json()["id"]
+
+    # Member reads the report content.
+    member_content = artifact_client.get(
+        f"/api/projects/{project.id}/artifacts/{report_id}/content", headers=headers
+    )
+    assert member_content.status_code == 200
+
+    # Non-member is denied (404, no leak).
+    outsider_meta = artifact_client.get(
+        f"/api/projects/{project.id}/artifacts/{report_id}",
+        headers=_auth_headers(artifact_client, outsider),
+    )
+    assert outsider_meta.status_code == 404

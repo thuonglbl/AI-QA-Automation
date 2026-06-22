@@ -58,8 +58,8 @@
 
 ### PRD Changes
 ```diff
-- - Backend uses Python 3.12+, `uv`, Hatchling, FastAPI, SQLAlchemy/Alembic, PostgreSQL, MinIO, Pydantic Settings, Ruff, mypy, pytest, and pytest-asyncio.
-+ - Backend uses Python 3.12+, `uv`, Hatchling, FastAPI, SQLAlchemy/Alembic, PostgreSQL, SeaweedFS, Pydantic Settings, Ruff, mypy, pytest, and pytest-asyncio.
+- - Backend uses Python 3.14+, `uv`, Hatchling, FastAPI, SQLAlchemy/Alembic, PostgreSQL, MinIO, Pydantic Settings, Ruff, mypy, pytest, and pytest-asyncio.
++ - Backend uses Python 3.14+, `uv`, Hatchling, FastAPI, SQLAlchemy/Alembic, PostgreSQL, SeaweedFS, Pydantic Settings, Ruff, mypy, pytest, and pytest-asyncio.
 - - MinIO stores project-level artifact bytes under `projects/{project_id}/requirements/`, `projects/{project_id}/test_cases/`, and `projects/{project_id}/test_scripts/`.
 + - SeaweedFS stores project-level artifact bytes under `projects/{project_id}/requirements/`, `projects/{project_id}/test_cases/`, and `projects/{project_id}/test_scripts/`.
 ```

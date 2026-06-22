@@ -345,7 +345,7 @@ async def navigate_with_retry(url: str):
 - [Source: architecture.md#Project Structure & Boundaries] - Module boundaries and file structure
 - [Source: architecture.md#Security Architecture] - Security requirements (read-only, SSO)
 - [Source: prd.md#Security] - NFR7 (SSO session reuse), NFR8 (read-only navigation)
-- [Source: prd.md#Technical Architecture] - browser-use >= 0.12.5, Python 3.12+
+- [Source: prd.md#Technical Architecture] - browser-use >= 0.12.5, Python 3.14+
 - [Source: 4-3-mary-agent-create-test-cases-with-per-item-review.md] - Agent orchestrator pattern reference
 - [Source: 4-1-llm-abstraction-layer-langchain-litellm.md] - LLM integration pattern reference
 - [Source: 1-3-custom-exception-hierarchy.md] - Exception hierarchy pattern

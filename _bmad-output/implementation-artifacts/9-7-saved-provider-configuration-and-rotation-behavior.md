@@ -291,7 +291,7 @@ frontend/e2e/story-9-7-saved-config.spec.ts          # CREATE
 
 ### Latest Tech Information
 
-- Python 3.12 + uv; FastAPI 0.115; SQLAlchemy 2.0 (`Mapped[...]`/`mapped_column`); Alembic 1.13. No new dependencies — JSON columns + a new table + existing patterns suffice.
+- Python 3.14 + uv; FastAPI 0.115; SQLAlchemy 2.0 (`Mapped[...]`/`mapped_column`); Alembic 1.13. No new dependencies — JSON columns + a new table + existing patterns suffice.
 - SQLAlchemy JSON column: `from sqlalchemy import JSON` (already imported in `db/models.py`); nullable `Mapped[dict[str, Any] | None]`. Assign a NEW dict on write so the change is flagged dirty.
 - Frontend: React 18.3 + TS 5.6 strict + Vite + Tailwind; `npm run typecheck` catches what Vite skips. Path alias `@` → `./src`.
 

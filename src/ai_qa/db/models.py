@@ -1,13 +1,16 @@
 """Core SQLAlchemy ORM models for project-scoped persistence."""
 
+from __future__ import annotations
+
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -19,6 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ai_qa.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from ai_qa.db.types import EncryptedText, UserSecretEncryptedText
 from ai_qa.secrets.models import UserSecret  # noqa: F401  # register UserSecret mapper
 from ai_qa.threads.models import AgentRun  # noqa: F401  # register AgentRun mapper
 
@@ -34,14 +38,17 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="standard")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     chrome_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # IANA timezone (e.g. "Asia/Ho_Chi_Minh") set by an admin at user creation; the
+    # frontend formats message timestamps in this zone. Defaults to UTC.
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
 
-    created_projects: Mapped[list["Project"]] = relationship(back_populates="created_by_user")
-    memberships: Mapped[list["ProjectMembership"]] = relationship(back_populates="user")
-    artifact_versions: Mapped[list["ArtifactVersion"]] = relationship(
+    created_projects: Mapped[list[Project]] = relationship(back_populates="created_by_user")
+    memberships: Mapped[list[ProjectMembership]] = relationship(back_populates="user")
+    artifact_versions: Mapped[list[ArtifactVersion]] = relationship(
         back_populates="created_by_user"
     )
-    audit_events: Mapped[list["AuditEvent"]] = relationship(back_populates="user")
-    secrets: Mapped[list["UserSecret"]] = relationship(
+    audit_events: Mapped[list[AuditEvent]] = relationship(back_populates="user")
+    secrets: Mapped[list[UserSecret]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -62,16 +69,111 @@ class Project(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # The API enforces at-least-one-provider on create/update, so API-created
     # projects always have a non-empty list. Direct DB writes bypass this guard.
     enabled_providers: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    # Named target environments for the app under test, e.g.
+    # ``[{"name": "Production", "url": "https://app.example.com"}]``. Project-wide and
+    # admin-managed; Sarah picks one when generating scripts and Jack (future) picks one
+    # to run against. All optional — empty list is valid. URLs are NOT secrets.
+    environments: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False, default=list)
+    # Role names *of the application under test* (e.g. ["Admin", "User", "Guest"]).
+    # Project-wide and admin-managed. DISTINCT from ``ProjectMembership.role`` /
+    # ``User.role`` (which gate pipeline access) — these label which login a test runs as.
+    # Together with ``environments`` they form the (environment × role) matrix a captured
+    # browser session is keyed by. All optional — empty list is valid.
+    app_roles: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    # How the app under test is logged into: "SSO" (corporate IdP — accounts store only an
+    # email/username; testers capture their own session) or "PASSWORD" (accounts store an
+    # encrypted password; backend can auto-capture). Project-wide, project_admin-managed.
+    login_type: Mapped[str] = mapped_column(String(20), nullable=False, default="SSO")
     created_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
     )
 
     created_by_user: Mapped[User | None] = relationship(back_populates="created_projects")
-    memberships: Mapped[list["ProjectMembership"]] = relationship(
+    memberships: Mapped[list[ProjectMembership]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
-    artifacts: Mapped[list["Artifact"]] = relationship(back_populates="project")
-    audit_events: Mapped[list["AuditEvent"]] = relationship(back_populates="project")
+    accounts: Mapped[list[ProjectAccount]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    artifacts: Mapped[list[Artifact]] = relationship(back_populates="project")
+    audit_events: Mapped[list[AuditEvent]] = relationship(back_populates="project")
+
+
+class ProjectAccount(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A project-level test-login identity for one (environment, role).
+
+    Managed by the project_admin (the identity catalog — WHO logs in, HOW). For an SSO
+    project this stores only ``login_identifier`` (email/username) with no password; for a
+    PASSWORD project it also holds an ``encrypted_password`` (project-shared, encrypted with
+    the instance ``db_encryption_key`` — NOT the per-user secrets key). The actual
+    proof-of-authentication (``storageState``) is the per-user :class:`CapturedSession`,
+    which this catalog parameterizes; the password is never returned to the frontend.
+    """
+
+    __tablename__ = "project_accounts"
+    # project_id already gets an index from ``index=True`` on its column below
+    # (ix_project_accounts_project_id); no separate explicit index needed.
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "environment", "role", name="uq_project_accounts_project_env_role"
+        ),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    environment: Mapped[str] = mapped_column(String(64), nullable=False)
+    role: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Email or username used to log in (always present; not secret).
+    login_identifier: Mapped[str] = mapped_column(String(320), nullable=False)
+    # Encrypted password — only for PASSWORD projects (NULL for SSO). TEXT-backed: the Fernet
+    # ciphertext expands past the plaintext length and must not overflow a varchar bound.
+    encrypted_password: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    project: Mapped[Project] = relationship(back_populates="accounts")
+
+
+class CapturedSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A per-user captured browser session for a project's (environment, role).
+
+    Holds a Playwright ``storageState`` blob (cookies + localStorage captured AFTER the
+    user logged in) — the reusable proof-of-authentication that Sarah (script debug) and
+    Jack (run, future) rehydrate via ``new_context(storage_state=...)``. The blob is a
+    LIVE credential: encrypted at rest with the per-user-secrets Fernet key, NEVER
+    returned to the frontend or written to logs/messages/artifacts. Keyed per user so
+    each tester captures and owns their own session (no shared store).
+    """
+
+    __tablename__ = "captured_sessions"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "project_id",
+            "environment",
+            "role",
+            name="uq_captured_sessions_user_project_env_role",
+        ),
+        Index("ix_captured_sessions_user_project", "user_id", "project_id"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    environment: Mapped[str] = mapped_column(String(64), nullable=False)
+    role: Mapped[str] = mapped_column(String(64), nullable=False)
+    # How the session was obtained: SSO_MANUAL | PASSWORD | API_TOKEN | SSO_TOTP.
+    auth_method: Mapped[str] = mapped_column(String(20), nullable=False, default="SSO_MANUAL")
+    # Encrypted Playwright storageState JSON — the single secret-bearing column.
+    encrypted_storage_state: Mapped[str] = mapped_column(UserSecretEncryptedText, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_validated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ProjectMembership(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -147,10 +249,19 @@ class Artifact(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
     current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    warnings: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    # Human-friendly title (e.g. Confluence page / Jira issue title) shown in the
+    # UI instead of the numeric id embedded in `name`. Nullable for legacy rows.
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Source id of this artifact's PARENT page (Confluence), for rendering a
+    # Confluence-like tree. Null for root pages and non-hierarchical sources (Jira).
+    parent_source_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     project: Mapped[Project] = relationship(back_populates="artifacts")
-    agent_run: Mapped[Optional["AgentRun"]] = relationship(back_populates="artifacts")
-    versions: Mapped[list["ArtifactVersion"]] = relationship(
+    agent_run: Mapped[AgentRun | None] = relationship(back_populates="artifacts")
+    versions: Mapped[list[ArtifactVersion]] = relationship(
         back_populates="artifact", cascade="all, delete-orphan"
     )
 
@@ -204,4 +315,94 @@ class AuditEvent(UUIDPrimaryKeyMixin, Base):
 
     user: Mapped[User | None] = relationship(back_populates="audit_events")
     project: Mapped[Project | None] = relationship(back_populates="audit_events")
-    agent_run: Mapped[Optional["AgentRun"]] = relationship(back_populates="audit_events")
+    agent_run: Mapped[AgentRun | None] = relationship(back_populates="audit_events")
+
+
+# Sentinel capability meaning "applies to every agent" (a global benchmark score).
+GLOBAL_CAPABILITY = "global"
+
+
+class ModelBenchmarkScore(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Operator-supplied quality score for a model id (admin dashboard).
+
+    Feeds Alice's Tier-0 model selection so admins can promote a brand-new model
+    the curated/heuristic tiers do not yet rank. ``capability`` is ``"global"``
+    for a score that applies to every agent, or a specific capability
+    (reasoning/vision/instruction/coding/fast) to target one agent.
+    """
+
+    __tablename__ = "model_benchmark_scores"
+    __table_args__ = (
+        UniqueConstraint(
+            "model_id", "capability", name="uq_model_benchmark_scores_model_capability"
+        ),
+        Index("ix_model_benchmark_scores_model_id", "model_id"),
+    )
+
+    model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    capability: Mapped[str] = mapped_column(String(50), nullable=False, default=GLOBAL_CAPABILITY)
+    # Float so admins can enter real benchmark numbers (e.g. SWE-bench 58.4) directly.
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+
+class TestExecutionResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Per-test result of a Jack execution run (Story 14.2/14.4).
+
+    One row per ``(test, browser)``. The Jack ``agent_run`` IS the execution run —
+    ``agent_run_id`` is the run id; the run-level summary lives on
+    ``AgentRun.execution_metadata``. Provenance links back to the source script /
+    test-case artifacts (``source_test_case_artifact_id`` is best-effort —
+    "where available"). ``error_message``/``stack_trace`` are SCRUBBED of secrets
+    by the runner before persistence (leak-canary convention).
+    """
+
+    __tablename__ = "test_execution_results"
+    __table_args__ = (Index("ix_test_execution_results_project_status", "project_id", "status"),)
+    # Not a pytest test class (name starts with "Test").
+    __test__ = False
+
+    agent_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    thread_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("threads.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source_script_artifact_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source_test_case_artifact_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True
+    )
+    test_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    browser: Mapped[str] = mapped_column(String(50), nullable=False, default="chromium")
+    # Application role this test ran AS (Slice 6 role-grouped runs). The captured-session
+    # role its script belongs to; NULL for role-less / single-session runs.
+    role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    failure_classification: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stack_trace: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class DiscoveredModelSnapshot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Last-seen snapshot of a model advertised by a provider.
+
+    Written on each successful Alice configuration run so the admin dashboard can
+    list models to score WITHOUT holding live gateway credentials.
+    """
+
+    __tablename__ = "discovered_models"
+    __table_args__ = (UniqueConstraint("model_id", name="uq_discovered_models_model_id"),)
+
+    model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    supports_vision: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

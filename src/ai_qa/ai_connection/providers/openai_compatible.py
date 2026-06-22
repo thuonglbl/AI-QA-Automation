@@ -392,11 +392,52 @@ class OpenAICompatibleAdapter(ProviderAdapter):
                 display_name = model_id
         else:
             display_name = model_id
+        caps = self._extract_capabilities(entry)
         return DiscoveredModel(
             id=model_id,
             display_name=display_name,
             provider=self.provider_id,
+            supports_vision=self._cap_bool(caps, "vision"),
+            supports_tools=self._cap_bool(caps, "function_calling", "tools"),
+            context_window=self._cap_int(entry, caps),
         )
+
+    @staticmethod
+    def _extract_capabilities(entry: dict[str, Any]) -> dict[str, Any]:
+        """Pull the capability map from either the top-level or OpenWebUI nested shape.
+
+        OpenAI returns nothing here; the on-prem OpenWebUI gateway nests it at
+        ``info.meta.capabilities``. Returns ``{}`` when absent so callers default
+        the capability fields to ``None`` (never fabricated).
+        """
+        caps = entry.get("capabilities")
+        if not isinstance(caps, dict):
+            info = entry.get("info")
+            meta = info.get("meta") if isinstance(info, dict) else None
+            caps = meta.get("capabilities") if isinstance(meta, dict) else None
+        return caps if isinstance(caps, dict) else {}
+
+    @staticmethod
+    def _cap_bool(caps: dict[str, Any], *keys: str) -> bool | None:
+        """Return the first boolean capability flag found, else None (absent)."""
+        for key in keys:
+            val = caps.get(key)
+            if isinstance(val, bool):
+                return val
+        return None
+
+    @staticmethod
+    def _cap_int(entry: dict[str, Any], caps: dict[str, Any]) -> int | None:
+        """Best-effort context-window read; None when the gateway does not advertise it."""
+        for source, key in (
+            (entry, "context_length"),
+            (caps, "context_length"),
+            (caps, "max_tokens"),
+        ):
+            val = source.get(key)
+            if isinstance(val, int) and not isinstance(val, bool):
+                return val
+        return None
 
 
 def _static_hint_models(provider_id: str) -> list[DiscoveredModel]:
@@ -507,6 +548,21 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
     def _candidate_endpoints(self, base_url: str) -> list[str]:
         root = base_url.rstrip("/")
         return [f"{root}/v1/models"]
+
+
+class ClaudeSSOAdapter(AnthropicAdapter):
+    """Claude via enterprise SSO login.
+
+    Behaves like :class:`AnthropicAdapter` (Anthropic Messages API, ``/v1/models``
+    discovery) but is reached after the OAuth/SSO browser login rather than a
+    manually entered api key. The credential passed in is the token obtained from
+    the SSO flow (an OAuth bearer token in real-OAuth mode, or the server-side
+    enterprise key in mock/demo mode); both authenticate the ``/v1/models`` probe
+    via the same header path as the api-key adapter.
+    """
+
+    provider_id: ClassVar[str] = "claude-sso"
+    provider_name: ClassVar[str] = "Claude (Anthropic) — SSO"
 
 
 class BrowserUseAdapter(OpenAICompatibleAdapter):

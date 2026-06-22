@@ -393,7 +393,7 @@ class ConnectionManager:
         self,
         server_url: str | None = None,
         auth_token: str | None = None,
-    ) -> AsyncGenerator[MCPConnection, None]:
+    ) -> AsyncGenerator[MCPConnection]:
         """Context manager for temporary connections.
 
         Example:

@@ -1,6 +1,7 @@
 """Tests for Alice Agent — AI Provider Selection & Configuration."""
 
 import json
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -115,10 +116,11 @@ class TestAliceInitialization:
 class TestProviderOptions:
     def test_get_provider_options_structure(self, alice: AliceAgent) -> None:
         options = alice.get_provider_options()
-        assert len(options) == 5
+        assert len(options) == 6
         provider_ids = [p["id"] for p in options]
         assert "browser-use-cloud" in provider_ids
         assert "claude" in provider_ids
+        assert "claude-sso" in provider_ids
         assert "openai" in provider_ids
         assert "gemini" in provider_ids
         assert "on-premises" in provider_ids
@@ -137,7 +139,10 @@ class TestProviderOptions:
         options = alice.get_provider_options()
         by_id = {p["id"]: p for p in options}
         assert by_id["browser-use-cloud"]["security_level"] == "cloud"
-        assert by_id["claude"]["security_level"] == "enterprise"
+        # Personal Claude (API key) is "good" secure like Gemini/ChatGPT; only the
+        # enterprise SSO option keeps "enterprise" (Strong secure).
+        assert by_id["claude"]["security_level"] == "good"
+        assert by_id["claude-sso"]["security_level"] == "enterprise"
         assert by_id["openai"]["security_level"] == "good"
         assert by_id["gemini"]["security_level"] == "good"
         assert by_id["on-premises"]["security_level"] == "highest"
@@ -172,6 +177,51 @@ class TestOnPremDefaults:
         with patch("ai_qa.secrets.service.get_user_secret", return_value="secret-on-prem-key"):
             defaults = alice.get_on_prem_defaults()
         assert "api_key" not in defaults
+
+
+class TestConfiguredProviders:
+    def test_empty_without_context(self) -> None:
+        """No DB/user context → no configured providers (and no crash)."""
+        agent = AliceAgent()
+        assert agent.get_configured_providers() == []
+
+    def test_lists_only_providers_with_a_stored_secret(self, alice: AliceAgent) -> None:
+        def fake_get(_db: object, _uid: object, secret_type: str) -> str | None:
+            return "stored-value" if secret_type in {"claude", "on_premises"} else None
+
+        with patch("ai_qa.secrets.service.get_user_secret", side_effect=fake_get):
+            configured = alice.get_configured_providers()
+        # secret_type "claude" → provider id "claude"; "on_premises" → "on-premises".
+        assert set(configured) == {"claude", "on-premises"}
+
+
+class TestStoredKeyReuse:
+    @pytest.mark.asyncio
+    @patch.object(AliceAgent, "_test_connection", return_value=_ok_connection())
+    @patch.object(AliceAgent, "_generate_configuration")
+    async def test_blank_key_reuses_stored_secret_without_rewrite(
+        self, mock_generate, mock_test, alice: AliceAgent, mock_user, mock_db
+    ) -> None:
+        """A blank api_key resolves the stored secret for ANY provider (skip-prompt
+        UX) and does NOT re-write it (reuse path)."""
+        mock_config = MagicMock()
+        mock_config.model_dump.return_value = {"dump": "data"}
+        mock_config.provider.endpoint = "http://test"
+        mock_generate.return_value = mock_config
+
+        input_data = {"provider": "gemini", "credentials": {}}
+        with (
+            patch("ai_qa.secrets.service.get_user_secret", return_value="stored-gemini-key"),
+            patch("ai_qa.secrets.service.set_user_secret") as mock_set,
+        ):
+            result = await alice.process(input_data, feedback=None)
+
+        assert result.success is True
+        # Reused key must not be persisted again.
+        mock_set.assert_not_called()
+        # The resolved stored key reached the connection test.
+        resolved_credentials = mock_test.call_args.args[1]
+        assert resolved_credentials.get("api_key") == "stored-gemini-key"
 
 
 class TestProcessWorkflow:
@@ -335,120 +385,211 @@ class TestConnectionAndFetch:
         assert result.error_category == "none"
 
 
-class TestBootstrapAndLLM:
+class TestBootstrapAndAssignment:
     def test_bootstrap_alice_model(self, alice: AliceAgent) -> None:
-        available = [{"id": "gpt-4o", "name": "GPT-4o"}, {"id": "random", "name": "Random"}]
+        # GLM-5.1 outranks DeepSeek-V3.2 for reasoning (the core selection fix).
+        available = [
+            {"id": "inference-deepseek-v32", "name": "DeepSeek V3.2"},
+            {"id": "inference-glm-51-754b", "name": "GLM 5.1"},
+        ]
         model, rationale = alice._bootstrap_alice_model(available)
-        assert model == "gpt-4o"
+        assert model == "inference-glm-51-754b"
         assert rationale != ""
 
-        available = [{"id": "random", "name": "Random"}]
+        # No ranked match -> first discovered model, with a fallback rationale.
+        available = [{"id": "random-model", "name": "Random"}]
         model, rationale = alice._bootstrap_alice_model(available)
-        assert model == "random"
+        assert model == "random-model"
 
         assert alice._bootstrap_alice_model([]) == ("", "")
 
-    @pytest.mark.asyncio
-    async def test_assign_models_via_llm_success(self, alice: AliceAgent) -> None:
-        mock_response = MagicMock()
-        mock_response.content = '```json\n{"assignments": {"bob": "gpt-4o", "mary": "gpt-4o-mini", "sarah": "gpt-4o-mini", "jack": "gpt-4o-mini"}, "reasoning": []}\n```'
+    def test_assign_models_picks_best_per_capability(self, alice: AliceAgent) -> None:
+        available = [
+            {"id": "inference-glm-51-754b", "name": "GLM 5.1"},
+            {"id": "inference-qwen3-vl-235b", "name": "Qwen3 VL"},
+            {"id": "inference-glm45-air-110b", "name": "GLM 4.5 Air"},
+            {"id": "inference-deepseek-v32", "name": "DeepSeek V3.2"},
+            {"id": "inference-mistral-v03-7b", "name": "Mistral"},
+        ]
+        mappings, reasoning = alice._assign_models("inference-glm-51-754b", available)
+        assert mappings["sarah"] == "inference-glm-51-754b"  # coding flagship
+        assert mappings["mary"] == "inference-glm-51-754b"  # instruction flagship
+        assert mappings["bob"] == "inference-qwen3-vl-235b"  # best vision model
+        assert mappings["jack"] == "inference-glm45-air-110b"  # fast tier
+        assert {r["agent"] for r in reasoning} == {"bob", "mary", "sarah", "jack"}
+        assert all(r["rationale"] for r in reasoning)
 
-        with patch("ai_qa.ai_connection.client.LLMClient", autospec=True) as mock_client_class:
-            mock_instance = mock_client_class.return_value
-            mock_instance.invoke.return_value = mock_response
-            available = [
-                {"id": "gpt-4o", "name": "GPT-4o"},
-                {"id": "gpt-4o-mini", "name": "GPT-4o Mini"},
-            ]
-            assignments, reasoning = await alice._assign_models_via_llm(
-                "openai", "http://valid.url", "key", "gpt-4o", available
-            )
-            assert assignments["bob"] == "gpt-4o"
-            assert assignments["mary"] == "gpt-4o-mini"
+    def test_assign_models_bob_requires_vision_model(self, alice: AliceAgent) -> None:
+        # GLM-5.1 is text-only: with NO vision model present, Bob falls back to
+        # the alice_model rather than receive a text-only flagship.
+        available = [{"id": "inference-glm-51-754b", "name": "GLM 5.1"}]
+        mappings, _ = alice._assign_models("inference-glm-51-754b", available)
+        assert mappings["bob"] == "inference-glm-51-754b"
+        # When a vision model exists, Bob prefers it over the flagship.
+        available.append({"id": "inference-qwen3-vl-235b", "name": "Qwen3 VL"})
+        mappings, _ = alice._assign_models("inference-glm-51-754b", available)
+        assert mappings["bob"] == "inference-qwen3-vl-235b"
 
-    @pytest.mark.asyncio
-    async def test_assign_models_via_llm_no_markdown_block(self, alice: AliceAgent) -> None:
-        mock_response = MagicMock()
-        mock_response.content = (
-            '{"assignments": {"bob": "gpt-4o"}, "reasoning": [{"agent": "bob", "rationale": "ok"}]}'
+    def test_assign_models_prefers_base_over_grc_variant(self, alice: AliceAgent) -> None:
+        available = [
+            {"id": "inference-qwen3-vl-235b-GRC", "name": "Qwen3 VL GRC"},
+            {"id": "inference-qwen3-vl-235b", "name": "Qwen3 VL"},
+        ]
+        mappings, _ = alice._assign_models("inference-qwen3-vl-235b", available)
+        assert mappings["bob"] == "inference-qwen3-vl-235b"
+
+    def test_assign_models_falls_back_to_alice_model(self, alice: AliceAgent) -> None:
+        # No ranked match for any capability -> every agent uses the (discovered)
+        # alice_model; an undiscovered model is never introduced (Story 9.4 AC3).
+        available = [{"id": "some-unknown-model", "name": "Unknown"}]
+        mappings, reasoning = alice._assign_models("some-unknown-model", available)
+        assert set(mappings.values()) == {"some-unknown-model"}
+        assert all(r["model"] == "some-unknown-model" for r in reasoning)
+
+
+class TestModelRankingHeuristic:
+    """Tier-2 parsed heuristic that ranks UNLISTED / brand-new model ids."""
+
+    @pytest.mark.parametrize(
+        "model_id,family,version,total_b,tags",
+        [
+            ("inference-glm-51-754b", "glm", (5, 1), 754, set()),
+            ("inference-qwen3-vl-235b", "qwen", (3,), 235, {"vl"}),
+            ("inference-deepseek-v32", "deepseek", (3, 2), None, set()),
+            ("inference-glm45-air-110b", "glm", (4, 5), 110, {"air"}),
+            ("inference-mistral-v03-7b", "mistral", (0, 3), 7, set()),
+            ("inference-glm-7-820b", "glm", (7,), 820, set()),  # hypothetical future id
+        ],
+    )
+    def test_parse_model_id_golden_table(self, model_id, family, version, total_b, tags) -> None:
+        from ai_qa.agents.alice import parse_model_id
+
+        p = parse_model_id(model_id)
+        assert p.family == family
+        assert p.version == version
+        assert p.total_b == total_b
+        assert p.tags == frozenset(tags)
+
+    def test_version_decimal_components_not_floats(self) -> None:
+        from ai_qa.agents.alice import _version_from_token
+
+        # 3.10 must sort ABOVE 3.5 as decimal components, not as a float (3.1 < 3.5).
+        v310 = _version_from_token("3.10")
+        v35 = _version_from_token("3.5")
+        assert v310 == (3, 10)
+        assert v35 == (3, 5)
+        assert v310 is not None and v35 is not None
+        assert v310 > v35  # ordering on the parsed tuples, not inline literals
+        assert _version_from_token("v32") == (3, 2)
+        assert _version_from_token("air") is None
+
+    def test_parse_is_fail_soft(self) -> None:
+        from ai_qa.agents.alice import parse_model_id
+
+        p = parse_model_id("")
+        assert p.family == "" and p.version == ()
+
+    def test_new_version_in_known_family_wins_via_parsed_tier(self, alice: AliceAgent) -> None:
+        # Neither id is in any curated list -> Tier 2 parses both. A glm model
+        # (high family prior + version 7) beats a higher-versioned granite, with
+        # ZERO code change to the curated lists.
+        pool = [
+            {"id": "inference-glm-7-820b", "name": "GLM 7"},
+            {"id": "inference-granite-9-8b", "name": "Granite 9"},
+        ]
+        from ai_qa.agents.alice import _select_model_for
+
+        pick = _select_model_for("sarah", pool)
+        assert pick is not None
+        assert pick["model"] == "inference-glm-7-820b"
+        assert pick["source"] == "parsed"
+
+    def test_curated_tier_is_version_aware(self) -> None:
+        from ai_qa.agents.alice import _select_best_model
+
+        # A single preference matching two siblings prefers the higher version.
+        chosen = _select_best_model(["x-glm-51-y", "x-glm-52-y"], ["glm-5"])
+        assert chosen == "x-glm-52-y"
+
+    def test_bob_vision_gate_uses_advertised_flag_or_name(self, alice: AliceAgent) -> None:
+        from ai_qa.agents.alice import _select_model_for
+
+        # Advertised vision flag promotes an otherwise-unknown id for Bob.
+        pick = _select_model_for(
+            "bob",
+            [{"id": "mystery-x", "supports_vision": True}, {"id": "plain-text-y"}],
         )
-        with patch("ai_qa.ai_connection.client.LLMClient", autospec=True) as mock_client_class:
-            mock_instance = mock_client_class.return_value
-            mock_instance.invoke.return_value = mock_response
-            available = [{"id": "gpt-4o", "name": "GPT-4o"}]
-            assignments, reasoning = await alice._assign_models_via_llm(
-                "openai", "http://valid.url", "key", "gpt-4o", available
-            )
-            assert assignments["bob"] == "gpt-4o"
-            assert reasoning[0]["rationale"] == "ok"
+        assert pick is not None and pick["model"] == "mystery-x"
 
-    @pytest.mark.asyncio
-    async def test_assign_models_via_llm_invalid_assignment(self, alice: AliceAgent) -> None:
-        mock_response = MagicMock()
-        mock_response.content = '{"assignments": {"bob": "not-exist"}, "reasoning": [{"agent": "bob", "rationale": "ok"}]}'
-        with patch("ai_qa.ai_connection.client.LLMClient", autospec=True) as mock_client_class:
-            mock_instance = mock_client_class.return_value
-            mock_instance.invoke.return_value = mock_response
-            available = [{"id": "gpt-4o", "name": "GPT-4o"}]
-            assignments, reasoning = await alice._assign_models_via_llm(
-                "openai", "http://valid.url", "key", "gpt-4o", available
-            )
-            assert assignments["bob"] == "gpt-4o"
-
-    @pytest.mark.asyncio
-    async def test_assign_models_via_llm_fallback(self, alice: AliceAgent) -> None:
-        with patch("ai_qa.ai_connection.client.LLMClient", autospec=True) as mock_client_class:
-            mock_instance = mock_client_class.return_value
-            mock_instance.invoke.side_effect = Exception("API error")
-            available = [{"id": "gpt-4o", "name": "GPT-4o"}]
-            assignments, reasoning = await alice._assign_models_via_llm(
-                "openai", "http://valid.url", "key", "gpt-4o", available
-            )
-            assert assignments["bob"] == "gpt-4o"
-            assert assignments["jack"] == "gpt-4o"
-            # The raw exception text must NOT leak into the user-facing rationale.
-            assert "API error" not in reasoning[0]["rationale"]
-            assert "Exception" not in reasoning[0]["rationale"]
-
-    @pytest.mark.asyncio
-    async def test_assign_models_via_llm_no_json(self, alice: AliceAgent) -> None:
-        mock_response = MagicMock()
-        mock_response.content = "Hello I am an AI, I failed to generate JSON."
-        with patch("ai_qa.ai_connection.client.LLMClient", autospec=True) as mock_client_class:
-            mock_instance = mock_client_class.return_value
-            mock_instance.invoke.return_value = mock_response
-            available = [{"id": "gpt-4o", "name": "GPT-4o"}]
-            assignments, reasoning = await alice._assign_models_via_llm(
-                "openai", "http://valid.url", "key", "gpt-4o", available
-            )
-            assert assignments["bob"] == "gpt-4o"
-
-    @pytest.mark.asyncio
-    async def test_assign_models_via_llm_rate_limit_surfaces_to_user(
-        self, alice: AliceAgent
-    ) -> None:
-        """A provider rate-limit / quota / billing error is surfaced verbatim
-        (PipelineError), not swallowed by the heuristic fallback."""
-        from ai_qa.exceptions import LLMRateLimitError
-
-        provider_msg = (
-            "LLM rate limit error: Error code: 400 - "
-            "Your credit balance is too low to access the Anthropic API."
+        # Name signal ("vl") works too, and a text-only flagship is NOT chosen for Bob.
+        pick = _select_model_for(
+            "bob",
+            [{"id": "inference-glm-7-820b"}, {"id": "inference-newvendor-vl-99b"}],
         )
-        with patch("ai_qa.ai_connection.client.LLMClient", autospec=True) as mock_client_class:
-            mock_instance = mock_client_class.return_value
-            mock_instance.invoke.side_effect = LLMRateLimitError(provider_msg)
-            available = [{"id": "claude-sonnet-4-5", "name": "Claude Sonnet"}]
-            with pytest.raises(PipelineError, match="credit balance is too low"):
-                await alice._assign_models_via_llm(
-                    "claude", "https://api.anthropic.com", "key", "claude-sonnet-4-5", available
-                )
+        assert pick is not None and "vl" in pick["model"]
+
+    def test_admin_score_overrides_all_tiers(self, alice: AliceAgent) -> None:
+        from ai_qa.agents.alice import _select_model_for
+
+        # An admin score outranks even a curated flagship for that agent.
+        pool = [
+            {"id": "inference-glm-51-754b", "name": "GLM 5.1"},
+            {"id": "inference-newcomer-9-700b", "name": "Newcomer"},
+        ]
+        pick = _select_model_for("sarah", pool, {"inference-newcomer-9-700b": 100.0})
+        assert pick is not None
+        assert pick["model"] == "inference-newcomer-9-700b"
+        assert pick["source"] == "admin"
+
+    def test_auto_promotes_to_newer_version_in_winning_family(self, alice: AliceAgent) -> None:
+        from ai_qa.agents.alice import _select_model_for
+
+        # glm-5.1 is the curated winner; a newer same-line glm-5.3 (in no list) is
+        # auto-selected because it is a newer version of the winning family+variant.
+        pool = [
+            {"id": "inference-glm-51-754b", "name": "GLM 5.1"},
+            {"id": "inference-glm-53-754b", "name": "GLM 5.3"},
+        ]
+        pick = _select_model_for("sarah", pool)
+        assert pick is not None
+        assert pick["model"] == "inference-glm-53-754b"
+
+    def test_admin_scored_family_promotes_to_newer_version(self, alice: AliceAgent) -> None:
+        from ai_qa.agents.alice import _select_model_for
+
+        # The exact requested behavior: glm-5.1 has the top admin score; an
+        # unbenchmarked newer glm-5.2 is auto-chosen as the newest of that family.
+        pool = [
+            {"id": "inference-glm-51-754b", "name": "GLM 5.1"},
+            {"id": "inference-glm-52-754b", "name": "GLM 5.2"},
+        ]
+        pick = _select_model_for("sarah", pool, {"inference-glm-51-754b": 100})
+        assert pick is not None
+        assert pick["model"] == "inference-glm-52-754b"
+        assert pick["source"] == "admin"
+
+    def test_promotion_does_not_cross_variant(self, alice: AliceAgent) -> None:
+        from ai_qa.agents.alice import _promote_to_newest_sibling
+
+        # A newer but DIFFERENT variant (-air) is a separate product line and must
+        # NOT replace the flagship winner...
+        out = _promote_to_newest_sibling(
+            "inference-glm-51-754b",
+            ["inference-glm-51-754b", "inference-glm-6-air-110b"],
+        )
+        assert out == "inference-glm-51-754b"
+        # ...but a newer SAME-variant sibling does.
+        out2 = _promote_to_newest_sibling(
+            "inference-glm-51-754b",
+            ["inference-glm-51-754b", "inference-glm-53-754b"],
+        )
+        assert out2 == "inference-glm-53-754b"
 
 
 class TestConfigurationAndPersistence:
     @pytest.mark.asyncio
     @patch("ai_qa.agents.alice.get_provider_adapter")
-    @patch.object(AliceAgent, "_assign_models_via_llm")
+    @patch.object(AliceAgent, "_assign_models")
     async def test_generate_configuration(
         self, mock_assign, mock_get_adapter, alice: AliceAgent
     ) -> None:
@@ -517,18 +658,13 @@ class TestConfigurationAndPersistence:
 
     @pytest.mark.asyncio
     @patch("ai_qa.agents.alice.get_provider_adapter")
-    async def test_generate_configuration_never_assigns_undiscovered_static_hint(
+    async def test_generate_configuration_never_assigns_undiscovered_model(
         self, mock_get_adapter, alice: AliceAgent
     ) -> None:
-        """AC3 (verify-before-assign, end-to-end): a static ranking-hint name that
-        the provider did NOT advertise must never be assigned.
-
-        Discovery deliberately EXCLUDES ``claude-opus-4-6`` (a real
-        ``_STATIC_MODEL_HINTS["claude"]`` entry). Even when the LLM tries to
-        assign that undiscovered hint to Bob, the real verify-before-assign guard
-        in ``_assign_models_via_llm`` (``valid_ids`` membership) falls back to a
-        discovered id — proving static hints never bypass discovery through the
-        full ``_generate_configuration`` path.
+        """AC3 (verify-before-assign, end-to-end): deterministic assignment only
+        ever picks from the DISCOVERED pool — an undiscovered model can never be
+        assigned to any agent. Here no discovered id matches any ranking keyword,
+        so every agent falls back to the (discovered) bootstrap model.
         """
         from ai_qa.ai_connection.providers import DiscoveredModel
 
@@ -544,29 +680,18 @@ class TestConfigurationAndPersistence:
         )
         mock_get_adapter.return_value = mock_adapter
 
-        # The LLM (incorrectly) tries to assign the undiscovered static hint to Bob.
-        llm_response = MagicMock()
-        llm_response.content = (
-            '{"assignments": {"bob": "claude-opus-4-6", "mary": "claude-sonnet-4-6", '
-            '"sarah": "claude-sonnet-4-6", "jack": "claude-3-5-haiku-latest"}, '
-            '"reasoning": [{"agent": "bob", "rationale": "x"}]}'
-        )
         provider_info = {
             "id": "claude",
             "name": "Claude (Anthropic)",
             "endpoint": "https://api.anthropic.com",
             "env_key": "ANTHROPIC_API_KEY",
         }
-        with patch("ai_qa.ai_connection.client.LLMClient", autospec=True) as mock_client_class:
-            mock_client_class.return_value.invoke.return_value = llm_response
-            config = await alice._generate_configuration(provider_info, {"api_key": "key12345"})
+        config = await alice._generate_configuration(provider_info, {"api_key": "key12345"})
 
         assigned = {agent.model for agent in config.agents.agents.values()}
-        # The undiscovered static hint is never assigned to ANY agent...
-        assert "claude-opus-4-6" not in assigned
-        # ...and every assigned model (alice + bob/mary/sarah/jack) is a discovered id.
+        # Every assigned model (alice + bob/mary/sarah/jack) is a discovered id.
         assert assigned <= discovered_ids
-        # Bob specifically fell back to a discovered id rather than the bad hint.
+        # Bob never receives an undiscovered id either.
         assert config.agents.agents["bob"].model in discovered_ids
 
     @pytest.mark.asyncio
@@ -574,37 +699,33 @@ class TestConfigurationAndPersistence:
     async def test_generate_configuration_bootstrap_prefers_ranked_discovered_id(
         self, mock_get_adapter, alice: AliceAgent
     ) -> None:
-        """AC3 (ranking hint, positive): among discovered ids, the static priority
-        keywords only *prefer* one discovered id over another — Alice's bootstrap
-        model is the discovered id matching a priority keyword (``sonnet``), never
-        an undiscovered name.
+        """The benchmark ranking only *prefers* one discovered id over another:
+        Alice's bootstrap model is the discovered id matching the highest-ranked
+        keyword (``glm-51`` -> GLM-5.1), never an undiscovered name.
         """
         from ai_qa.ai_connection.providers import DiscoveredModel
 
         mock_adapter = MagicMock()
         mock_adapter.list_models = AsyncMock(
             return_value=[
-                DiscoveredModel(id="random-small", display_name="Random", provider="claude"),
-                DiscoveredModel(id="my-sonnet-x", display_name="Sonnet X", provider="claude"),
+                DiscoveredModel(id="random-small", display_name="Random", provider="on-premises"),
+                DiscoveredModel(
+                    id="inference-glm-51-754b", display_name="GLM 5.1", provider="on-premises"
+                ),
             ]
         )
         mock_get_adapter.return_value = mock_adapter
 
-        # LLM fails to produce JSON -> every agent falls back to the bootstrap model.
-        llm_response = MagicMock()
-        llm_response.content = "no json here"
         provider_info = {
-            "id": "claude",
-            "name": "Claude (Anthropic)",
-            "endpoint": "https://api.anthropic.com",
-            "env_key": "ANTHROPIC_API_KEY",
+            "id": "on-premises",
+            "name": "On-Premises",
+            "endpoint": "https://ai.local",
+            "env_key": "ON_PREMISES_AI_SERVER_KEY",
         }
-        with patch("ai_qa.ai_connection.client.LLMClient", autospec=True) as mock_client_class:
-            mock_client_class.return_value.invoke.return_value = llm_response
-            config = await alice._generate_configuration(provider_info, {"api_key": "key12345"})
+        config = await alice._generate_configuration(provider_info, {"api_key": "key12345"})
 
-        # 'sonnet' priority keyword wins over the non-matching discovered id.
-        assert config.agents.agents["alice"].model == "my-sonnet-x"
+        # GLM-5.1 (ranked) wins over the non-matching discovered id.
+        assert config.agents.agents["alice"].model == "inference-glm-51-754b"
 
     def test_save_configuration(self, alice: AliceAgent, mock_thread, mock_db) -> None:
         config = AliceConfiguration(
@@ -874,7 +995,8 @@ class TestSavedConfigRoundTrip:
         }
         mock_project = MagicMock()
         mock_project.enabled_providers = []  # empty = all allowed
-        alice.project_context.artifact_service.db.get.return_value = mock_project
+        assert alice.project_context is not None
+        cast(MagicMock, alice.project_context.artifact_service).db.get.return_value = mock_project
 
         with (
             patch("ai_qa.userconfig.service.get_provider_config", return_value=saved),
@@ -938,7 +1060,10 @@ class TestSavedConfigRoundTrip:
                 return mock_thread
             return None
 
-        alice.project_context.artifact_service.db.get.side_effect = mock_get_with_project
+        assert alice.project_context is not None
+        cast(
+            MagicMock, alice.project_context.artifact_service
+        ).db.get.side_effect = mock_get_with_project
 
         with (
             patch("ai_qa.userconfig.service.get_provider_config", return_value=saved),
@@ -970,7 +1095,8 @@ class TestSavedConfigRoundTrip:
         }
         mock_project = MagicMock()
         mock_project.enabled_providers = []
-        alice.project_context.artifact_service.db.get.return_value = mock_project
+        assert alice.project_context is not None
+        cast(MagicMock, alice.project_context.artifact_service).db.get.return_value = mock_project
 
         with (
             patch("ai_qa.userconfig.service.get_provider_config", return_value=saved),

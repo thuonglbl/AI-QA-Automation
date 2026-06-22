@@ -5,6 +5,7 @@ This enables the conversational chat UI pattern where agents report progress,
 request review, and receive user feedback.
 """
 
+import asyncio
 import json
 import logging
 from collections.abc import Generator
@@ -12,19 +13,44 @@ from typing import Any, cast
 from uuid import UUID
 
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.session import SessionManager, UserSession
 from ai_qa.config import AppSettings
+from ai_qa.db.models import ProjectMembership
 from ai_qa.models import AgentMessage
 from ai_qa.pipelines.context import PipelineContext
 
 logger = logging.getLogger(__name__)
 
-# Active connections storage with user context and scopes
-# Key: connection_id, Value: (websocket, user_session, query_project_id, query_thread_id)
-active_connections: dict[str, tuple[WebSocket, UserSession | None, UUID | None, UUID | None]] = {}
+# Active connections storage with user context and scopes.
+# Key: connection_id
+# Value: (websocket, user_session, query_project_id, query_thread_id, member_project_ids)
+#
+# member_project_ids is a frozenset of project-ID *strings* for all projects the
+# connected user belongs to, loaded once at connect time from the database.
+# MVP caveat: a user added to a project *after* connecting will not receive that
+# project's artifact events until they reconnect (acceptable MVP behaviour).
+active_connections: dict[
+    str,
+    tuple[WebSocket, UserSession | None, UUID | None, UUID | None, frozenset[str]],
+] = {}
+
+# Per-agent serialization locks, keyed exactly like the agent registry
+# ((user_id, project_id, step) as strings). A pipeline action can take seconds to
+# minutes (LLM calls), so actions are dispatched as background tasks (below) instead
+# of being awaited inside the receive loop — otherwise one slow provider call freezes
+# the whole WebSocket connection. This lock guarantees that, even so, two actions
+# targeting the SAME agent instance never interleave on its shared in-memory state;
+# actions on different agents still run concurrently.
+_agent_action_locks: dict[tuple[str, str, int], asyncio.Lock] = {}
+
+# Strong references to in-flight action tasks. asyncio only keeps weak references to
+# scheduled tasks, so without this set a dispatched action could be garbage-collected
+# mid-run. The done-callback discards each task when it finishes.
+_inflight_action_tasks: set[asyncio.Task[None]] = set()
 
 
 def _get_user_from_websocket(websocket: WebSocket, settings: AppSettings) -> UserSession | None:
@@ -99,8 +125,34 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=4422, reason=exc.detail)
         return
 
+    # Load project memberships for the authenticated user once at connect time.
+    # This frozenset is used by broadcast_artifact_change to scope event delivery
+    # to only the projects this user belongs to.
+    member_project_ids: frozenset[str] = frozenset()
+    if user is not None and user.user_id is not None:
+        db_for_memberships = _db_session_from_websocket(websocket)
+        try:
+            rows = (
+                db_for_memberships.execute(
+                    select(ProjectMembership.project_id).where(
+                        ProjectMembership.user_id == UUID(user.user_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            member_project_ids = frozenset(str(pid) for pid in rows)
+        finally:
+            db_for_memberships.close()
+
     connection_id = str(id(websocket))
-    active_connections[connection_id] = (websocket, user, query_project_id, query_thread_id)
+    active_connections[connection_id] = (
+        websocket,
+        user,
+        query_project_id,
+        query_thread_id,
+        member_project_ids,
+    )
 
     # Notify frontend that auth succeeded
     await websocket.send_json(
@@ -132,16 +184,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             step = message.get("step")
 
             if msg_type in ("start", "approve", "reject") and step:
-                # Handle pipeline actions
-                try:
-                    await _handle_action(
-                        message, user, websocket, query_project_id, query_thread_id
-                    )
-                except Exception as e:
-                    logger.error("Error handling action %s: %s", msg_type, e)
-                    await websocket.send_json(
-                        {"type": "error", "message": f"Failed to process {msg_type}: {str(e)}"}
-                    )
+                # Dispatch as a background task so a slow (LLM-bound) action can never
+                # block this receive loop — the user can keep sending messages and the
+                # connection stays alive. Per-agent serialization + error reporting live
+                # in _dispatch_action; the receive loop only schedules the work.
+                action_task = asyncio.create_task(
+                    _dispatch_action(message, user, websocket, query_project_id, query_thread_id)
+                )
+                _inflight_action_tasks.add(action_task)
+                action_task.add_done_callback(_inflight_action_tasks.discard)
             elif msg_type == "navigate" and step:
                 # Handle navigation to different step
                 try:
@@ -236,6 +287,31 @@ async def _context_from_websocket(
         session.close()
 
 
+async def _dispatch_action(
+    message: dict[str, Any],
+    user: UserSession | None,
+    websocket: WebSocket,
+    query_project_id: UUID | None,
+    query_thread_id: UUID | None,
+) -> None:
+    """Run :func:`_handle_action` as a background task with isolated error handling.
+
+    Any failure is logged and reported to the client without bubbling up to the
+    receive loop, so a single bad/slow action can never crash or block the socket.
+    """
+    msg_type = message.get("type")
+    try:
+        await _handle_action(message, user, websocket, query_project_id, query_thread_id)
+    except Exception as e:
+        logger.error("Error handling action %s: %s", msg_type, e, exc_info=True)
+        try:
+            await websocket.send_json(
+                {"type": "error", "message": f"Failed to process {msg_type}: {e}"}
+            )
+        except Exception:
+            logger.debug("Could not deliver action error to client (socket closed)")
+
+
 async def _handle_action(
     message: dict[str, Any],
     user: UserSession | None,
@@ -266,32 +342,49 @@ async def _handle_action(
         create_run=msg_type == "start",
     )
     user_email = user.email if user else None
-    agent = _agent_for_context(step, context, user_email)
 
-    if agent is None:
-        logger.warning("No agent registered for step %d", step)
-        return
+    # Serialize all actions targeting the SAME agent instance (keyed exactly like the
+    # agent registry). Actions run as background tasks, so without this two messages
+    # for one agent (e.g. a slow clarify answer and the next one) could interleave on
+    # its shared in-memory state. Context binding happens INSIDE the lock via
+    # _agent_for_context, so a queued action can't rebind context under a running one.
+    lock_key = (
+        str(getattr(context, "user_id", None) or ""),
+        str(getattr(context, "project_id", None) or ""),
+        step,
+    )
+    lock = _agent_action_locks.get(lock_key)
+    if lock is None:
+        lock = _agent_action_locks[lock_key] = asyncio.Lock()
 
-    try:
-        if msg_type == "start":
-            input_data = message.get("inputData", {})
-            await agent.handle_start(input_data)
-        elif msg_type == "approve":
-            data = message.get("data", {})
-            await agent.handle_approve(data)
-        elif msg_type == "reject":
-            feedback = message.get("feedback", "")
-            await agent.handle_reject(feedback)
-    except Exception as e:
-        logger.error("Error handling %s for step %d: %s", msg_type, step, e, exc_info=True)
-        error_msg = AgentMessage(
-            sender="system",
-            agentName=None,
-            content=f"An unexpected error occurred: {str(e)}",
-            messageType="error",
-        )
-        await broadcast_message(error_msg)
-        # Don't raise here, let the connection stay open so the user can see the error and retry.
+    async with lock:
+        agent = _agent_for_context(step, context, user_email)
+
+        if agent is None:
+            logger.warning("No agent registered for step %d", step)
+            return
+
+        try:
+            if msg_type == "start":
+                input_data = message.get("inputData", {})
+                await agent.handle_start(input_data)
+            elif msg_type == "approve":
+                data = message.get("data", {})
+                await agent.handle_approve(data)
+            elif msg_type == "reject":
+                feedback = message.get("feedback", "")
+                data = message.get("data", {})
+                await agent.handle_reject(feedback, data)
+        except Exception as e:
+            logger.error("Error handling %s for step %d: %s", msg_type, step, e, exc_info=True)
+            error_msg = AgentMessage(
+                sender="system",
+                agentName=None,
+                content=f"An unexpected error occurred: {str(e)}",
+                messageType="error",
+            )
+            await broadcast_message(error_msg)
+            # Don't raise — keep the connection open so the user can see the error and retry.
 
 
 async def _handle_navigate(
@@ -367,7 +460,13 @@ async def broadcast_message(message: AgentMessage) -> None:
     json_message = message.model_dump_json(by_alias=True)
     disconnected = []
 
-    for conn_id, (connection, _user, q_project_id, q_thread_id) in active_connections.items():
+    for conn_id, (
+        connection,
+        _user,
+        q_project_id,
+        q_thread_id,
+        _member_project_ids,
+    ) in active_connections.items():
         # Match thread scope if both are present
         if msg_thread_id and q_thread_id and str(q_thread_id) != str(msg_thread_id):
             continue
@@ -412,9 +511,16 @@ async def broadcast_artifact_change(
     json_message = event.model_dump_json()
     disconnected = []
 
-    for conn_id, (connection, _user, q_project_id, _q_thread_id) in active_connections.items():
-        # Only send to clients connected to the same project
-        if q_project_id and str(q_project_id) != project_id:
+    for conn_id, (
+        connection,
+        _user,
+        _q_project_id,
+        _q_thread_id,
+        member_project_ids,
+    ) in active_connections.items():
+        # Only deliver to connections where the user is a member of the changed project.
+        # Membership is loaded once at connect time (see active_connections declaration).
+        if project_id not in member_project_ids:
             continue
 
         try:

@@ -3,6 +3,7 @@ export type ApiErrorKind =
   | "forbidden"
   | "not_found"
   | "validation"
+  | "conflict"
   | "network"
   | "server";
 
@@ -52,6 +53,8 @@ function safeMessage(kind: ApiErrorKind): string {
       return "The requested resource could not be found.";
     case "validation":
       return "Please check the form and try again.";
+    case "conflict":
+      return "This action conflicts with existing data. Please review and try again.";
     case "network":
       return "Network connection failed. Please try again.";
     default:
@@ -64,6 +67,7 @@ function kindForStatus(status: number): ApiErrorKind {
   if (status === 403) return "forbidden";
   if (status === 404) return "not_found";
   if (status === 422 || status === 400) return "validation";
+  if (status === 409) return "conflict";
   return "server";
 }
 
@@ -124,12 +128,22 @@ export async function apiFetch<T>(
       } catch (_e) {}
       window.dispatchEvent(new Event("auth-error"));
     }
-    throw new ApiError(
-      kind,
-      overrideMessage ?? safeMessage(kind),
-      response.status,
-      payload,
-    );
+    // For 409/422 the server detail is display-safe and more useful than the generic
+    // copy ("Project name already exists", "User already exists", …). Surface it unless
+    // the caller passed an explicit overrideMessage (which always wins).
+    let message = overrideMessage ?? safeMessage(kind);
+    if (
+      !overrideMessage &&
+      (kind === "conflict" || kind === "validation") &&
+      payload &&
+      typeof payload === "object" &&
+      "detail" in payload &&
+      typeof (payload as { detail?: unknown }).detail === "string" &&
+      (payload as { detail: string }).detail.trim() !== ""
+    ) {
+      message = (payload as { detail: string }).detail;
+    }
+    throw new ApiError(kind, message, response.status, payload);
   }
 
   return payload as T;

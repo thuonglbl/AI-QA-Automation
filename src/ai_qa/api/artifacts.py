@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -74,6 +74,45 @@ class ArtifactResponse(BaseModel):
     created_by_user_id: UUID | None = None
     updated_by_user_id: UUID | None = None
     thread_id: UUID | None = None
+    source_type: str | None = None
+    source_url: str | None = None
+    warnings: list[dict[str, Any]] | None = None
+    title: str | None = None
+    parent_source_id: str | None = None
+
+
+class ArtifactTreeEntry(ArtifactResponse):
+    """Artifact tree entry with resolved creator/updater display names.
+
+    Extends ``ArtifactResponse`` with optional resolved display-name fields.
+    Keeps all base fields so entries remain assignable to the frontend ``Artifact``
+    type (id, name, etc.) — required to keep 10-7/10-8 onSelectArtifact wiring.
+    Do NOT add display fields to ``ArtifactResponse`` itself (frozen contract).
+    """
+
+    created_by_display: str | None = None
+    updated_by_display: str | None = None
+
+
+class ArtifactTreeFolder(BaseModel):
+    """A single browse folder in the artifact tree."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    prefix: str | None
+    required: bool
+    is_empty: bool
+    entries: list[ArtifactTreeEntry]
+
+
+class ArtifactTreeResponse(BaseModel):
+    """Folder-structured artifact tree for a project."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: UUID
+    folders: list[ArtifactTreeFolder]
 
 
 class ArtifactDetailResponse(ArtifactResponse):
@@ -153,6 +192,9 @@ def _artifact_detail_response(artifact: Artifact) -> ArtifactDetailResponse:
         created_by_user_id=artifact.created_by_user_id,
         updated_by_user_id=artifact.updated_by_user_id,
         thread_id=artifact.thread_id,
+        source_type=artifact.source_type,
+        source_url=artifact.source_url,
+        warnings=artifact.warnings,
         versions=[ArtifactVersionSummary.model_validate(version) for version in versions],
     )
 
@@ -172,6 +214,63 @@ def _content_response(artifact: Artifact, content: bytes) -> ArtifactContentResp
             content=base64.b64encode(content).decode("ascii"),
             content_encoding="base64",
         )
+
+
+@router.get("/tree", response_model=ArtifactTreeResponse)
+async def get_artifact_tree(
+    project_id: UUID,
+    project: Project = ProjectAccessDependency,
+    storage: ArtifactStorage = ArtifactStorageDependency,
+    db: Session = DbSessionDependency,
+) -> ArtifactTreeResponse:
+    """Return the folder-structured artifact tree with resolved creator/updater names.
+
+    Always includes the 4 browse folders (requirements, test_cases, test_scripts,
+    reports) even when empty. Entries are grouped by logical folder — fixing the
+    silent drop of sibling kinds (raw_html, playwright_script) from the flat list.
+    Creator/updater display names are resolved server-side (only display_name, no email).
+    Non-members receive 404 (no project path leak).
+    """
+    if project.id != project_id:
+        raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND_DETAIL)
+    try:
+        raw_folders = ArtifactService(db, storage).list_artifact_tree(project_id=project.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    folders = [
+        ArtifactTreeFolder(
+            name=f["name"],
+            prefix=f["prefix"],
+            required=f["required"],
+            is_empty=f["is_empty"],
+            entries=[
+                ArtifactTreeEntry(
+                    id=e["id"],
+                    project_id=e["project_id"],
+                    agent_run_id=e["agent_run_id"],
+                    kind=e["kind"],
+                    name=e["name"],
+                    current_version=e["current_version"],
+                    created_at=e["created_at"],
+                    updated_at=e["updated_at"],
+                    created_by_user_id=e["created_by_user_id"],
+                    updated_by_user_id=e["updated_by_user_id"],
+                    thread_id=e["thread_id"],
+                    created_by_display=e["created_by_display"],
+                    updated_by_display=e["updated_by_display"],
+                    source_type=e["source_type"],
+                    source_url=e["source_url"],
+                    warnings=e["warnings"],
+                    title=e["title"],
+                    parent_source_id=e["parent_source_id"],
+                )
+                for e in f["entries"]
+            ],
+        )
+        for f in raw_folders
+    ]
+    return ArtifactTreeResponse(project_id=project.id, folders=folders)
 
 
 @router.get("", response_model=list[ArtifactResponse])
@@ -352,6 +451,9 @@ __all__ = [
     "ArtifactCreateRequest",
     "ArtifactDetailResponse",
     "ArtifactResponse",
+    "ArtifactTreeEntry",
+    "ArtifactTreeFolder",
+    "ArtifactTreeResponse",
     "ArtifactVersionCreateRequest",
     "ArtifactVersionSummary",
     "router",

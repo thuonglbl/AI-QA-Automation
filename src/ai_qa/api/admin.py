@@ -1,5 +1,7 @@
 """Admin-only project and user management API routes."""
 
+from __future__ import annotations
+
 import asyncio
 import os
 import shutil
@@ -14,23 +16,38 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from starlette.background import BackgroundTask
 
+from ai_qa.admin.model_sync import ModelSyncResult, sync_models_and_benchmarks
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.rbac import require_admin
 from ai_qa.auth.password import hash_password
 from ai_qa.auth.service import (
+    ADMIN_ROLE,
+    PROJECT_ADMIN_ROLE,
+    STANDARD_ROLE,
     DuplicateUserError,
     get_user_by_email,
     normalize_email,
 )
-from ai_qa.db.models import Project, ProjectMembership, User
+from ai_qa.config import AppSettings
+from ai_qa.db.models import (
+    DiscoveredModelSnapshot,
+    ModelBenchmarkScore,
+    Project,
+    ProjectMembership,
+    User,
+)
 
 DbSessionDependency = Depends(get_db_session_dependency)
 AdminDependency = Depends(require_admin)
-ProjectMembershipRole = Literal["member", "owner"]
-AdminUserRole = Literal["admin", "standard"]
+# "project_admin" lets a member administer their project (config/accounts/membership).
+ProjectMembershipRole = Literal["member", "owner", "project_admin"]
+# A platform admin may only create project_admin / standard users — NOT another "admin"
+# (the platform admin is provisioned solely by bootstrap_admin). Omitting "admin" here
+# makes an attempt fail validation at the API boundary.
+AdminUserRole = Literal["project_admin", "standard"]
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -61,9 +78,22 @@ class AdminUserResponse(BaseModel):
     display_name: str
     role: str
     is_active: bool
+    timezone: str = "UTC"
     created_at: datetime
     updated_at: datetime
     project_memberships: list[AdminUserProjectMembershipResponse] = Field(default_factory=list)
+
+
+class Environment(BaseModel):
+    """One named target environment for the app under test (name + URL).
+
+    Both fields are length-bounded but NOT min-length-constrained here: incomplete rows
+    (a name with no URL yet, or vice-versa) are dropped by ``ProjectCreateRequest``'s
+    cleaning validator rather than rejected, so admins can add/edit rows freely.
+    """
+
+    name: str = Field(max_length=64)
+    url: str = Field(max_length=512)
 
 
 class ProjectCreateRequest(BaseModel):
@@ -74,6 +104,8 @@ class ProjectCreateRequest(BaseModel):
     confluence_base_url: str | None = Field(default=None, max_length=512)
     jira_base_url: str | None = Field(default=None, max_length=512)
     enabled_providers: list[str] = Field(default_factory=list)
+    environments: list[Environment] = Field(default_factory=list)
+    app_roles: list[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -83,6 +115,45 @@ class ProjectCreateRequest(BaseModel):
         if not normalized:
             raise ValueError("Project name is required")
         return normalized
+
+    @field_validator("environments")
+    @classmethod
+    def normalize_environments(cls, value: list[Environment]) -> list[Environment]:
+        """Trim entries, drop incomplete rows, and reject duplicate names.
+
+        All environments are optional (an empty list is valid). A row is kept only when
+        BOTH name and URL are non-blank; duplicates (case-insensitive name) are an error.
+        """
+        cleaned: list[Environment] = []
+        seen: set[str] = set()
+        for env in value:
+            name = env.name.strip()
+            url = env.url.strip()
+            if not name or not url:
+                continue
+            key = name.lower()
+            if key in seen:
+                raise ValueError(f"Duplicate environment name: {name!r}")
+            seen.add(key)
+            cleaned.append(Environment(name=name, url=url))
+        return cleaned
+
+    @field_validator("app_roles")
+    @classmethod
+    def normalize_app_roles(cls, value: list[str]) -> list[str]:
+        """Trim role names, drop blanks, reject case-insensitive duplicates."""
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for role in value:
+            name = role.strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                raise ValueError(f"Duplicate role name: {name!r}")
+            seen.add(key)
+            cleaned.append(name)
+        return cleaned
 
     @field_validator("description")
     @classmethod
@@ -94,23 +165,13 @@ class ProjectCreateRequest(BaseModel):
         return normalized or None
 
     @model_validator(mode="after")
-    def at_least_one_link(self) -> "ProjectCreateRequest":
-        """Require at least one of confluence_base_url or jira_base_url."""
-        conf = (self.confluence_base_url or "").strip()
-        jira = (self.jira_base_url or "").strip()
-        if not conf and not jira:
-            raise ValueError(
-                "No link to extract requirement. Please provide Confluence URL, Jira URL, or both."
-            )
-        self.confluence_base_url = conf or None
-        self.jira_base_url = jira or None
-        return self
-
-    @model_validator(mode="after")
-    def at_least_one_provider(self) -> "ProjectCreateRequest":
-        """Require at least one enabled provider."""
-        if not self.enabled_providers:
-            raise ValueError("No provider to execute. Please enable at least one provider.")
+    def normalize_links(self) -> ProjectCreateRequest:
+        """Normalize blank links to None. The platform admin now creates a project with
+        only name + description; the Confluence/Jira links, providers, environments,
+        app_roles and the "at least one link / provider" invariants are owned by the
+        project_admin config endpoint (``PUT /project-admin/projects/{id}/config``)."""
+        self.confluence_base_url = (self.confluence_base_url or "").strip() or None
+        self.jira_base_url = (self.jira_base_url or "").strip() or None
         return self
 
 
@@ -125,6 +186,10 @@ class AdminUserCreateRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
     role: AdminUserRole = "standard"
     initial_password: str = Field(min_length=8, max_length=1024)
+    timezone: str = Field(default="UTC", min_length=1, max_length=64)
+    # A project_admin is linked to a project at creation via a ProjectMembership(role=
+    # "project_admin"). Required for project_admin, forbidden for standard (see validator).
+    project_id: UUID | None = Field(default=None)
 
     @field_validator("email")
     @classmethod
@@ -135,6 +200,19 @@ class AdminUserCreateRequest(BaseModel):
             raise ValueError("Email is required")
         return normalized
 
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        """Reject anything that is not a valid IANA timezone name."""
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        candidate = value.strip()
+        try:
+            ZoneInfo(candidate)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"Invalid timezone: {value!r}") from exc
+        return candidate
+
     @field_validator("display_name")
     @classmethod
     def display_name_must_not_be_blank(cls, value: str) -> str:
@@ -143,6 +221,61 @@ class AdminUserCreateRequest(BaseModel):
         if not normalized:
             raise ValueError("Display name is required")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_project_link(self) -> AdminUserCreateRequest:
+        """A project_admin must be linked to a project; a standard user must not be."""
+        if self.role == PROJECT_ADMIN_ROLE and self.project_id is None:
+            raise ValueError("A project is required when creating a project admin.")
+        if self.role != PROJECT_ADMIN_ROLE and self.project_id is not None:
+            raise ValueError("A standard user cannot be linked to a project at creation.")
+        return self
+
+
+class AdminUserUpdateRequest(BaseModel):
+    """Admin-managed user update request.
+
+    ``role`` is the same ``Literal["project_admin", "standard"]`` as create — it can
+    never carry ``"admin"``, so promoting a user to platform admin is rejected at the
+    schema boundary (422). ``project_id`` is only meaningful for a standard→project_admin
+    transition; it is forbidden when the target role is ``standard``.
+    """
+
+    display_name: str = Field(min_length=1, max_length=255)
+    role: AdminUserRole
+    timezone: str = Field(min_length=1, max_length=64)
+    is_active: bool
+    new_password: str | None = Field(default=None, min_length=8, max_length=1024)
+    project_id: UUID | None = Field(default=None)
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_must_not_be_blank(cls, value: str) -> str:
+        """Normalize and reject blank display names."""
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Display name is required")
+        return normalized
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        """Reject anything that is not a valid IANA timezone name."""
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        candidate = value.strip()
+        try:
+            ZoneInfo(candidate)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"Invalid timezone: {value!r}") from exc
+        return candidate
+
+    @model_validator(mode="after")
+    def validate_project_link(self) -> AdminUserUpdateRequest:
+        """A standard user cannot be linked to a project."""
+        if self.role != PROJECT_ADMIN_ROLE and self.project_id is not None:
+            raise ValueError("A standard user cannot be linked to a project.")
+        return self
 
 
 class AdminProjectResponse(BaseModel):
@@ -156,6 +289,9 @@ class AdminProjectResponse(BaseModel):
     confluence_base_url: str | None
     jira_base_url: str | None
     enabled_providers: list[str]
+    environments: list[Environment] = Field(default_factory=list)
+    app_roles: list[str] = Field(default_factory=list)
+    login_type: str = "SSO"
     created_by_user_id: UUID | None
     created_at: datetime
     updated_at: datetime
@@ -189,6 +325,7 @@ def _to_admin_user_response(user: User) -> AdminUserResponse:
         display_name=user.display_name,
         role=user.role,
         is_active=user.is_active,
+        timezone=user.timezone,
         created_at=user.created_at,
         updated_at=user.updated_at,
         project_memberships=[
@@ -211,7 +348,17 @@ async def list_users(
     db: Session = DbSessionDependency,
 ) -> list[AdminUserResponse]:
     """List users for active admins without exposing password hashes or secrets."""
-    users = list(db.execute(select(User).order_by(User.email)).scalars().unique())
+    # Eager-load memberships → project so building each user's project_memberships
+    # (with project_name) does not trigger per-row lazy loads (N+1).
+    users = list(
+        db.execute(
+            select(User)
+            .options(selectinload(User.memberships).selectinload(ProjectMembership.project))
+            .order_by(User.email)
+        )
+        .scalars()
+        .unique()
+    )
     return [_to_admin_user_response(user) for user in users]
 
 
@@ -221,9 +368,22 @@ async def create_user(
     _admin: User = AdminDependency,
     db: Session = DbSessionDependency,
 ) -> AdminUserResponse:
-    """Create an active user from the admin dashboard."""
+    """Create an active user from the admin dashboard.
+
+    A ``project_admin`` is linked to an existing project in the SAME transaction via a
+    ``ProjectMembership(role="project_admin")`` — both rows roll back together if the
+    commit fails. The link is many-to-many: no uniqueness is enforced here, so a project
+    may have several project_admins (further assignments use the membership endpoints).
+    """
     if get_user_by_email(db, request.email) is not None:
         raise HTTPException(status_code=409, detail="User already exists")
+
+    # Validate the project up front (the request model guarantees project_id is set for
+    # a project_admin) so a missing project fails before any insert.
+    if request.role == PROJECT_ADMIN_ROLE:
+        assert request.project_id is not None
+        if db.get(Project, request.project_id) is None:
+            raise HTTPException(status_code=404, detail="Project not found")
 
     user = User(
         email=request.email,
@@ -231,9 +391,20 @@ async def create_user(
         password_hash=hash_password(request.initial_password),
         role=request.role,
         is_active=True,
+        timezone=request.timezone,
     )
     db.add(user)
     try:
+        if request.role == PROJECT_ADMIN_ROLE:
+            assert request.project_id is not None
+            db.flush()  # assign user.id without committing the transaction
+            db.add(
+                ProjectMembership(
+                    project_id=request.project_id,
+                    user_id=user.id,
+                    role=PROJECT_ADMIN_ROLE,
+                )
+            )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -245,16 +416,104 @@ async def create_user(
     return _to_admin_user_response(user)
 
 
+@router.put("/users/{user_id}", response_model=AdminUserResponse)
+async def update_user(
+    user_id: UUID,
+    request: AdminUserUpdateRequest,
+    admin: User = AdminDependency,
+    db: Session = DbSessionDependency,
+) -> AdminUserResponse:
+    """Update a user from the admin dashboard.
+
+    The platform admin account is immutable (no edit, no demote; promotion to admin is
+    impossible at the schema boundary), and an admin cannot deactivate its own account.
+    Role flips maintain the project_admin membership linkage (many-to-many):
+    standard→project_admin links/updates a membership on the chosen project;
+    project_admin→standard removes all of the user's project_admin memberships.
+    """
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    if target.role == ADMIN_ROLE:
+        raise HTTPException(
+            status_code=403, detail="The platform admin account cannot be modified."
+        )
+    if target.id == admin.id and not request.is_active:
+        raise HTTPException(status_code=403, detail="You cannot deactivate your own account.")
+
+    old_role, new_role = target.role, request.role
+    if old_role == STANDARD_ROLE and new_role == PROJECT_ADMIN_ROLE:
+        if request.project_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail="A project is required to make this user a project admin.",
+            )
+        new_project_id = request.project_id
+        if db.get(Project, new_project_id) is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        # One membership row per (project, user) — promote an existing row in place or
+        # add a new one, so the unique constraint is never violated (idempotent).
+        membership = db.execute(
+            select(ProjectMembership).where(
+                ProjectMembership.project_id == new_project_id,
+                ProjectMembership.user_id == target.id,
+            )
+        ).scalar_one_or_none()
+        if membership is None:
+            db.add(
+                ProjectMembership(
+                    project_id=new_project_id,
+                    user_id=target.id,
+                    role=PROJECT_ADMIN_ROLE,
+                )
+            )
+        else:
+            membership.role = PROJECT_ADMIN_ROLE
+    elif old_role == PROJECT_ADMIN_ROLE and new_role == STANDARD_ROLE:
+        db.query(ProjectMembership).filter(
+            ProjectMembership.user_id == target.id,
+            ProjectMembership.role == PROJECT_ADMIN_ROLE,
+        ).delete(synchronize_session=False)
+
+    target.display_name = request.display_name
+    target.timezone = request.timezone
+    target.is_active = request.is_active
+    target.role = new_role
+    if request.new_password:
+        target.password_hash = hash_password(request.new_password)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="Could not save the user due to a data conflict."
+        ) from exc
+    db.refresh(target)
+    return _to_admin_user_response(target)
+
+
 @router.delete("/users/{user_id}", status_code=204)
 async def delete_user(
     user_id: UUID,
-    _admin: User = AdminDependency,
+    admin: User = AdminDependency,
     db: Session = DbSessionDependency,
 ) -> None:
-    """Delete a user from the admin dashboard."""
-    deleted = db.query(User).filter(User.id == user_id).delete(synchronize_session=False)
-    if deleted == 0:
+    """Delete a user from the admin dashboard.
+
+    The platform admin account is immutable and an admin cannot delete itself. FK
+    cascades (memberships, secrets, captured sessions) clean up the user's rows.
+    """
+    target = db.get(User, user_id)
+    if target is None:
         raise HTTPException(status_code=404, detail="Resource not found")
+    if target.role == ADMIN_ROLE:
+        raise HTTPException(
+            status_code=403, detail="The platform admin account cannot be modified."
+        )
+    if target.id == admin.id:
+        raise HTTPException(status_code=403, detail="You cannot delete your own account.")
+
+    db.query(User).filter(User.id == user_id).delete(synchronize_session=False)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -282,6 +541,8 @@ async def create_project(
         confluence_base_url=request.confluence_base_url,
         jira_base_url=request.jira_base_url,
         enabled_providers=request.enabled_providers,
+        environments=[env.model_dump() for env in request.environments],
+        app_roles=request.app_roles,
         created_by_user_id=admin.id,
     )
     db.add(project)
@@ -289,7 +550,17 @@ async def create_project(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Project name already exists") from exc
+        # Only claim a duplicate when a same-name row genuinely exists; other integrity
+        # violations (e.g. a NOT-NULL constraint) must not masquerade as a name clash.
+        duplicate = db.execute(
+            select(Project).where(Project.name == request.name)
+        ).scalar_one_or_none()
+        detail = (
+            "Project name already exists"
+            if duplicate is not None
+            else "Could not save the project due to a data conflict."
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
     db.refresh(project)
     return project
 
@@ -317,11 +588,23 @@ async def update_project(
     project.confluence_base_url = request.confluence_base_url
     project.jira_base_url = request.jira_base_url
     project.enabled_providers = request.enabled_providers
+    project.environments = [env.model_dump() for env in request.environments]
+    project.app_roles = request.app_roles
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Project name already exists") from exc
+        # Distinguish a real duplicate-name race from any other integrity violation
+        # (exclude this project's own row from the re-check).
+        duplicate = db.execute(
+            select(Project).where(Project.name == request.name, Project.id != project_id)
+        ).scalar_one_or_none()
+        detail = (
+            "Project name already exists"
+            if duplicate is not None
+            else "Could not save the project due to a data conflict."
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
     db.refresh(project)
     return project
 
@@ -432,105 +715,192 @@ async def remove_project_membership(
     return None
 
 
-class E2ETestRunResponse(BaseModel):
-    """Result summary returned after an E2E test run."""
+class E2ERunStatusResponse(BaseModel):
+    """Current state of the (asynchronous) E2E test run.
 
-    exit_code: int
-    passed: bool
-    report_available: bool
-    stdout: str
-    stderr: str
-
-
-@router.post("/tests/e2e", response_model=E2ETestRunResponse)
-async def run_e2e_tests(
-    request: Request,
-    _admin: User = AdminDependency,
-) -> E2ETestRunResponse:
-    """Trigger a Playwright E2E test run in headed mode with slow motion.
-
-    Only admins can invoke this endpoint. Runs the full Playwright suite
-    synchronously and returns a structured result. Use the companion
-    GET /admin/tests/e2e/report endpoint to download the HTML report.
+    A full Playwright suite takes minutes; holding the HTTP request open that long
+    is severed by reverse proxies (504). So the run executes in the background and
+    the frontend polls this state. ``exit_code``/``passed`` are null until the run
+    completes.
     """
-    if not _FRONTEND_DIR.is_dir():
-        return E2ETestRunResponse(
-            exit_code=-1,
-            passed=False,
-            report_available=False,
-            stdout="",
-            stderr=f"Frontend directory not found: {_FRONTEND_DIR}",
-        )
 
-    # Determine the npx executable path relative to the frontend directory
-    npx_cmd = shutil.which("npx")
-    if not npx_cmd:
-        return E2ETestRunResponse(
-            exit_code=-1,
-            passed=False,
-            report_available=False,
-            stdout="",
-            stderr="npx not found. Ensure Node.js and Playwright are installed.",
-        )
+    status: Literal["idle", "running", "completed"]
+    exit_code: int | None = None
+    passed: bool | None = None
+    report_available: bool = False
+    stdout: str = ""
+    stderr: str = ""
 
-    def run_process_sync() -> tuple[bytes, bytes, int]:
-        result = subprocess.run(
-            [npx_cmd, "playwright", "test", "--headed", "--workers=1"],
-            cwd=str(_FRONTEND_DIR),
-            capture_output=True,
-            timeout=900,
-            env={
-                **os.environ,
-                "PLAYWRIGHT_SLOW_MO": "500",
-                "FORCE_COLOR": "0",
-                "PLAYWRIGHT_HTML_REPORT_OPEN": "never",
-                "CI": "1",
-            },
-        )
-        return result.stdout, result.stderr, result.returncode
 
+# In-process run state. The deploy runs a single uvicorn worker, so a module-level
+# holder is shared across requests; the background task reference is kept to stop
+# it being garbage-collected mid-run.
+_e2e_state = E2ERunStatusResponse(status="idle")
+_e2e_task: asyncio.Task[None] | None = None
+
+
+def _set_e2e_state(
+    status: Literal["idle", "running", "completed"],
+    *,
+    exit_code: int | None = None,
+    passed: bool | None = None,
+    report_available: bool = False,
+    stdout: str = "",
+    stderr: str = "",
+) -> None:
+    _e2e_state.status = status
+    _e2e_state.exit_code = exit_code
+    _e2e_state.passed = passed
+    _e2e_state.report_available = report_available
+    _e2e_state.stdout = stdout
+    _e2e_state.stderr = stderr
+
+
+def _build_e2e_command_and_env(npx_cmd: str) -> tuple[list[str], dict[str, str]]:
+    """Build the Playwright command + environment for the in-app runner.
+
+    The runner always drives servers that are ALREADY running (locally uvicorn +
+    Vite; on a deployed server this backend container + the Nginx frontend), so
+    Playwright must never boot its own pair (``E2E_DISABLE_WEBSERVER=1``) — that
+    was the local "port 8000 already used" failure. Headed mode + slow motion only
+    make sense locally; a deployed server (``E2E_SERVER_MODE=1``) is headless with
+    no X display, needs the container sandbox disabled, and ignores the deployed
+    app's (often self-signed) TLS cert.
+    """
+    server_mode = os.getenv("E2E_SERVER_MODE") == "1"
+    headed = not server_mode and os.getenv("E2E_HEADED", "1") != "0"
+
+    cmd = [npx_cmd, "playwright", "test", "--workers=1"]
+    if headed:
+        cmd.append("--headed")
+
+    run_env = {
+        **os.environ,
+        "FORCE_COLOR": "0",
+        "PLAYWRIGHT_HTML_REPORT_OPEN": "never",
+        "PLAYWRIGHT_SLOW_MO": "500" if headed else "0",
+        "E2E_DISABLE_WEBSERVER": "1",
+    }
+    if server_mode:
+        # setdefault lets an operator override either via the container env.
+        run_env.setdefault("E2E_NO_SANDBOX", "1")
+        run_env.setdefault("PLAYWRIGHT_IGNORE_HTTPS_ERRORS", "1")
+    return cmd, run_env
+
+
+def _run_e2e_subprocess(cmd: list[str], run_env: dict[str, str]) -> tuple[bytes, bytes, int]:
+    result = subprocess.run(
+        cmd,
+        cwd=str(_FRONTEND_DIR),
+        capture_output=True,
+        timeout=900,
+        env=run_env,
+    )
+    return result.stdout, result.stderr, result.returncode
+
+
+async def _run_e2e_background(cmd: list[str], run_env: dict[str, str]) -> None:
+    """Run the suite off the event loop and record the outcome in ``_e2e_state``."""
     try:
         try:
-            stdout_bytes, stderr_bytes, returncode = await asyncio.to_thread(run_process_sync)
-            stdout = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
-            stderr = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
+            stdout_bytes, stderr_bytes, returncode = await asyncio.to_thread(
+                _run_e2e_subprocess, cmd, run_env
+            )
         except subprocess.TimeoutExpired as exc:
-            return E2ETestRunResponse(
+            _set_e2e_state(
+                "completed",
                 exit_code=-1,
                 passed=False,
-                report_available=False,
                 stdout=exc.stdout.decode(errors="replace") if exc.stdout else "",
                 stderr="E2E test run timed out after 15 minutes.",
             )
+            return
+        stdout = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
+        stderr = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
+        report_dir = _FRONTEND_DIR / "playwright-report"
+        _set_e2e_state(
+            "completed",
+            exit_code=returncode,
+            passed=returncode == 0,
+            report_available=(report_dir / "index.html").exists(),
+            stdout=stdout[-8000:] if stdout else "",  # cap at 8 KB
+            stderr=stderr[-4000:] if stderr else "",
+        )
     except Exception:
         import traceback
 
-        return E2ETestRunResponse(
+        _set_e2e_state(
+            "completed",
             exit_code=-1,
             passed=False,
-            report_available=False,
-            stdout="",
             stderr=f"Error executing npx:\n{traceback.format_exc()}",
         )
+    finally:
+        # Guarantee the state never stays "running" once the task exits — even via
+        # an unexpected path (e.g. CancelledError at loop shutdown). Otherwise a
+        # stuck "running" would block every future run until a process restart.
+        if _e2e_state.status == "running":
+            _set_e2e_state(
+                "completed",
+                exit_code=-1,
+                passed=False,
+                stderr="E2E run ended without producing a result.",
+            )
 
-    # Resolve the HTML report path generated by Playwright (playwright-report/index.html)
-    report_dir = _FRONTEND_DIR / "playwright-report"
-    report_available = (report_dir / "index.html").exists()
 
-    return E2ETestRunResponse(
-        exit_code=returncode,
-        passed=returncode == 0,
-        report_available=report_available,
-        stdout=stdout[-8000:] if stdout else "",  # cap at 8 KB
-        stderr=stderr[-4000:] if stderr else "",
-    )
+@router.post("/tests/e2e", status_code=202, response_model=E2ERunStatusResponse)
+async def run_e2e_tests(
+    request: Request,
+    _admin: User = AdminDependency,
+) -> E2ERunStatusResponse:
+    """Start a Playwright E2E run in the background and return immediately.
+
+    Only admins can invoke this. The suite takes minutes, so this returns at once
+    (HTTP 202) and the run proceeds in the background — poll
+    GET /admin/tests/e2e/status for progress/result, then
+    GET /admin/tests/e2e/report for the HTML report. A second request while a run
+    is in progress is a no-op that just returns the running state.
+    """
+    global _e2e_task
+    # Only refuse a new run if a previous one is genuinely still alive; if the task
+    # died/was cancelled without updating the state, recover and start fresh.
+    if _e2e_state.status == "running" and _e2e_task is not None and not _e2e_task.done():
+        return _e2e_state.model_copy()
+
+    if not _FRONTEND_DIR.is_dir():
+        _set_e2e_state("completed", stderr=f"Frontend directory not found: {_FRONTEND_DIR}")
+        return _e2e_state.model_copy()
+
+    npx_cmd = shutil.which("npx")
+    if not npx_cmd:
+        _set_e2e_state(
+            "completed", stderr="npx not found. Ensure Node.js and Playwright are installed."
+        )
+        return _e2e_state.model_copy()
+
+    cmd, run_env = _build_e2e_command_and_env(npx_cmd)
+    _set_e2e_state("running")
+    _e2e_task = asyncio.create_task(_run_e2e_background(cmd, run_env))
+    return _e2e_state.model_copy()
+
+
+@router.get("/tests/e2e/status", response_model=E2ERunStatusResponse)
+async def get_e2e_status(_admin: User = AdminDependency) -> E2ERunStatusResponse:
+    """Return the current/last E2E run state. Poll while ``status == 'running'``."""
+    return _e2e_state.model_copy()
 
 
 @router.get("/tests/e2e/report/view/{file_path:path}")
 async def view_e2e_report(
     file_path: str,
+    _admin: User = AdminDependency,
 ) -> FileResponse:
-    """Serve the Playwright HTML report files directly in the browser."""
+    """Serve the Playwright HTML report files directly in the browser.
+
+    Admin-only: the report bundles Playwright traces, screenshots, videos, and
+    captured request/response data from E2E runs against real DB projects. The
+    HTML opens in a browser tab and authenticates via the session cookie.
+    """
     import mimetypes
 
     report_dir = _FRONTEND_DIR / "playwright-report"
@@ -602,3 +972,217 @@ async def download_e2e_report(
         background=BackgroundTask(os.remove, tmp.name),
         headers={"Cache-Control": "no-cache"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Model benchmark overrides — operator Tier-0 scores for Alice model selection
+# ---------------------------------------------------------------------------
+
+ModelCapability = Literal["global", "reasoning", "vision", "instruction", "coding", "fast"]
+_DEFAULT_CAPABILITY: ModelCapability = "global"
+
+
+class ModelScoreResponse(BaseModel):
+    """A persisted operator benchmark score."""
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+    id: UUID
+    model_id: str
+    capability: str
+    score: float
+    note: str | None
+    updated_by_user_id: UUID | None
+    updated_at: datetime
+
+
+class ModelScoreUpsertRequest(BaseModel):
+    """Create/replace a benchmark score for a (model_id, capability)."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_id: str = Field(min_length=1, max_length=255)
+    capability: ModelCapability = _DEFAULT_CAPABILITY
+    score: float = Field(ge=0, le=100)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ModelScoreDeleteRequest(BaseModel):
+    """Identify a benchmark score to delete."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_id: str = Field(min_length=1, max_length=255)
+    capability: ModelCapability = _DEFAULT_CAPABILITY
+
+
+class DiscoveredModelResponse(BaseModel):
+    """A discovered model with its selection provenance for the admin dashboard."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_id: str
+    display_name: str | None
+    supports_vision: bool | None
+    last_seen_at: datetime
+    tier_source: str  # admin | curated | parsed
+    unbenchmarked: bool
+    scores: list[ModelScoreResponse] = Field(default_factory=list)
+
+
+def _is_curated_model(model_id: str) -> bool:
+    """True if the model id matches any curated benchmark preference substring."""
+    from ai_qa.agents.alice import _AGENT_CAPABILITY_RANK
+
+    low = model_id.lower()
+    return any(pref in low for ranking in _AGENT_CAPABILITY_RANK.values() for pref in ranking)
+
+
+@router.get("/discovered-models", response_model=list[DiscoveredModelResponse])
+async def list_discovered_models(
+    _admin: User = AdminDependency,
+    db: Session = DbSessionDependency,
+) -> list[DiscoveredModelResponse]:
+    """List the last-discovered model pool with selection provenance + scores.
+
+    A model is flagged ``unbenchmarked`` when it has no operator score AND matches
+    no curated benchmark list — i.e. it would be selected only by the parsed
+    heuristic. These are the models an admin should consider scoring.
+    """
+    snapshots = list(
+        db.execute(select(DiscoveredModelSnapshot).order_by(DiscoveredModelSnapshot.model_id))
+        .scalars()
+        .unique()
+    )
+    scores = list(db.execute(select(ModelBenchmarkScore)).scalars().unique())
+    scores_by_model: dict[str, list[ModelBenchmarkScore]] = {}
+    for score in scores:
+        scores_by_model.setdefault(score.model_id, []).append(score)
+
+    out: list[DiscoveredModelResponse] = []
+    for snap in snapshots:
+        model_scores = scores_by_model.get(snap.model_id, [])
+        if model_scores:
+            source = "admin"
+        elif _is_curated_model(snap.model_id):
+            source = "curated"
+        else:
+            source = "parsed"
+        out.append(
+            DiscoveredModelResponse(
+                model_id=snap.model_id,
+                display_name=snap.display_name,
+                supports_vision=snap.supports_vision,
+                last_seen_at=snap.last_seen_at,
+                tier_source=source,
+                unbenchmarked=(source == "parsed"),
+                scores=[ModelScoreResponse.model_validate(s) for s in model_scores],
+            )
+        )
+    return out
+
+
+@router.get("/model-scores", response_model=list[ModelScoreResponse])
+async def list_model_scores(
+    _admin: User = AdminDependency,
+    db: Session = DbSessionDependency,
+) -> list[ModelScoreResponse]:
+    """List all operator benchmark scores."""
+    rows = list(
+        db.execute(
+            select(ModelBenchmarkScore).order_by(
+                ModelBenchmarkScore.model_id, ModelBenchmarkScore.capability
+            )
+        )
+        .scalars()
+        .unique()
+    )
+    return [ModelScoreResponse.model_validate(row) for row in rows]
+
+
+@router.put("/model-scores", response_model=ModelScoreResponse)
+async def upsert_model_score(
+    request: ModelScoreUpsertRequest,
+    _admin: User = AdminDependency,
+    db: Session = DbSessionDependency,
+) -> ModelBenchmarkScore:
+    """Create or replace the benchmark score for a (model_id, capability)."""
+    existing = db.execute(
+        select(ModelBenchmarkScore).where(
+            ModelBenchmarkScore.model_id == request.model_id,
+            ModelBenchmarkScore.capability == request.capability,
+        )
+    ).scalar_one_or_none()
+
+    if existing is None:
+        existing = ModelBenchmarkScore(
+            model_id=request.model_id,
+            capability=request.capability,
+            score=request.score,
+            note=request.note,
+            updated_by_user_id=_admin.id,
+        )
+        db.add(existing)
+    else:
+        existing.score = request.score
+        existing.note = request.note
+        existing.updated_by_user_id = _admin.id
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.execute(
+            select(ModelBenchmarkScore).where(
+                ModelBenchmarkScore.model_id == request.model_id,
+                ModelBenchmarkScore.capability == request.capability,
+            )
+        ).scalar_one()
+        existing.score = request.score
+        existing.note = request.note
+        existing.updated_by_user_id = _admin.id
+        db.commit()
+
+    db.refresh(existing)
+    return existing
+
+
+@router.delete("/model-scores", status_code=204)
+async def delete_model_score(
+    request: ModelScoreDeleteRequest,
+    _admin: User = AdminDependency,
+    db: Session = DbSessionDependency,
+) -> None:
+    """Delete the benchmark score for a (model_id, capability)."""
+    deleted = (
+        db.query(ModelBenchmarkScore)
+        .filter(
+            ModelBenchmarkScore.model_id == request.model_id,
+            ModelBenchmarkScore.capability == request.capability,
+        )
+        .delete(synchronize_session=False)
+    )
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Score not found")
+    db.commit()
+    return None
+
+
+@router.post("/models/sync", response_model=ModelSyncResult)
+async def sync_models(
+    request: Request,
+    _admin: User = AdminDependency,
+    db: Session = DbSessionDependency,
+) -> ModelSyncResult:
+    """Discover provider models and sync their benchmark scores in one action.
+
+    Connects to each provider with its server-side ``TEST_<PROVIDER>_KEY``, lists the
+    LLM models (skipping embedding/tts/stt families), detects vision support, and
+    persists them to ``discovered_models``; then pulls per-capability scores from
+    llm-stats.com into ``model_benchmark_scores`` (overwriting any prior scores).
+
+    Admin-only. Runs synchronously (mirrors the E2E runner) and returns a per-provider
+    + totals summary. Never leaks the server keys.
+    """
+    settings = getattr(request.app.state, "settings", None) or AppSettings()
+    return await sync_models_and_benchmarks(db, settings, triggered_by_user_id=_admin.id)

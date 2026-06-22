@@ -116,11 +116,12 @@ def test_enforce_project_id_immutability(auth_client: TestClient) -> None:
 def test_thread_messages_api(auth_client: TestClient, user_thread: str) -> None:
     # 1. Add message
     msg_res = auth_client.post(
-        f"/api/threads/{user_thread}/messages", json={"role": "user", "content": "Hello thread!"}
+        f"/api/threads/{user_thread}/messages",
+        json={"sender": "user", "content": "Hello thread!"},
     )
     assert msg_res.status_code == 201
     data = msg_res.json()
-    assert data["role"] == "user"
+    assert data["sender"] == "user"
     assert data["content"] == "Hello thread!"
     assert data["thread_id"] == user_thread
 
@@ -163,7 +164,7 @@ def test_get_messages_returns_404_for_unknown_thread(auth_client: TestClient) ->
 def test_add_message_returns_404_for_unknown_thread(auth_client: TestClient) -> None:
     fake_id = str(uuid.uuid4())
     res = auth_client.post(
-        f"/api/threads/{fake_id}/messages", json={"role": "user", "content": "hello"}
+        f"/api/threads/{fake_id}/messages", json={"sender": "user", "content": "hello"}
     )
     assert res.status_code == 404
 
@@ -250,7 +251,7 @@ def test_get_user_threads_api(auth_client: TestClient, user_thread: str) -> None
 def test_get_thread_details_api(auth_client: TestClient, user_thread: str) -> None:
     # 1. Add some details
     auth_client.post(
-        f"/api/threads/{user_thread}/messages", json={"role": "user", "content": "Hello"}
+        f"/api/threads/{user_thread}/messages", json={"sender": "user", "content": "Hello"}
     )
     auth_client.post(f"/api/threads/{user_thread}/runs", json={"status": "running"})
 

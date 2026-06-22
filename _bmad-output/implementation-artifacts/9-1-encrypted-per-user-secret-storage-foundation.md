@@ -221,7 +221,7 @@ Already-pinned dependencies (no upgrades needed for this story):
 
 - `cryptography` (transitive, via `python-jose[cryptography]>=3.3`) provides `cryptography.fernet.Fernet` — already used by `db/types.py`. Fernet keys are 32 url-safe base64-encoded bytes; generate with `Fernet.generate_key()`. `Fernet(badkey)` raises `ValueError` — use that for validation.
 - `sqlalchemy>=2.0` (typed `Mapped[...]` / `mapped_column`), `alembic>=1.13`, `psycopg[binary]>=3.1`, `pydantic-settings>=2.4.0`. Use SQLAlchemy 2.0 declarative typing consistent with existing models.
-- Python 3.12+, `uv` package manager, `ruff` (target py312, line-length 100), `mypy` strict.
+- Python 3.14+, `uv` package manager, `ruff` (target py314, line-length 100), `mypy` strict.
 
 ## Dev Agent Record
 

@@ -56,7 +56,7 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 - **MCP Server dependency:** Single integration point for Confluence (and Jira in M1) — already deployed and stable
 - **browser-use framework:** Open-source dependency (>=0.12.5), still maturing — architecture should allow fallback to Playwright native AI ecosystem
 - **Claude Enterprise license:** PoC LLM, already approved — M1 migrates to on-prem DeepSeek/Qwen
-- **Python 3.12+ / uv:** Runtime and package manager — aligns with browser-use ecosystem
+- **Python 3.14+ / uv:** Runtime and package manager — aligns with browser-use ecosystem
 - **Existing SSO infrastructure:** Browser sessions reuse active SSO login — no additional auth system needed
 - **Gatling coexistence:** Playwright scripts must coexist with existing Gatling suites, no migration required
 
@@ -100,8 +100,8 @@ Python CLI Pipeline Tool — backend automation pipeline for AI-powered QA test 
 
 **Language & Runtime:**
 
-- Backend: Python 3.12+ with uv package manager, type hints throughout, verified by mypy
-- Frontend: TypeScript + React 18+ with Vite build tool
+- Backend: Python 3.14+ with uv package manager, type hints throughout, verified by mypy
+- Frontend: TypeScript + React 19+ with Vite build tool
 
 **Project Layout:**
 
@@ -116,7 +116,7 @@ Python CLI Pipeline Tool — backend automation pipeline for AI-powered QA test 
 
 **Frontend Framework:**
 
-- React 18+ with TypeScript — conversational chat UI
+- React 19+ with TypeScript — conversational chat UI
 - Shadcn/ui — copy-paste component library (Radix UI primitives + Tailwind CSS)
 - Vite — fast build tool, minimal config
 - react-markdown + react-syntax-highlighter + mermaid — rich content rendering in chat bubbles (mermaid required for UX-DR5 diagram support)
@@ -137,7 +137,7 @@ Python CLI Pipeline Tool — backend automation pipeline for AI-powered QA test 
 **Linting & Formatting:**
 
 - Ruff — replaces black, isort, flake8 in a single fast tool
-- Target: Python 3.12, line-length 100
+- Target: Python 3.14, line-length 100
 
 **Type Checking:**
 
@@ -249,7 +249,7 @@ Frontend: npm (managed separately from uv)
 
 - **Decision:** Conversational chat UI (React) + FastAPI REST/WebSocket backend
 - **UI Pattern:** Direction D from UX spec — chat-style interaction with named AI agents
-- **Frontend stack:** React 18+ / TypeScript / Shadcn/ui / Tailwind CSS / Vite
+- **Frontend stack:** React 19+ / TypeScript / Shadcn/ui / Tailwind CSS / Vite
 - **Backend API:** FastAPI with WebSocket for real-time chat message streaming
 - **Communication:** WebSocket for live agent messages (Processing updates, Review presentations), REST for actions (Start, Approve, Reject, Continue)
 - **Rationale:** Manual QA testers cannot use CLI. Conversational UI is the most natural pattern for non-technical users (Teams-like). FastAPI is Python-native, async, and integrates seamlessly with existing pipeline code
@@ -540,7 +540,7 @@ from ai_qa.exceptions import LLMError
 ai-qa-automation/
 ├── pyproject.toml                  # Project metadata, dependencies, tool configs
 ├── uv.lock                         # Dependency lockfile
-├── .python-version                 # Python 3.12+
+├── .python-version                 # Python 3.14+
 ├── .env                            # Secrets (gitignored)
 ├── .env.example                    # Template for .env
 ├── config.yaml                     # Runtime config (gitignored)
@@ -901,7 +901,7 @@ cd frontend && npm run lint        # ESLint + TypeScript check
 
 **Decision Compatibility:**
 
-- Python 3.12 + uv + Hatchling + src layout — fully compatible
+- Python 3.14 + uv + Hatchling + src layout — fully compatible
 - LangChain + browser-use + LiteLLM proxy — browser-use uses LangChain natively, no conflicts
 - MCP SDK + Pydantic Settings + tenacity — independent, no version conflicts
 - FastAPI + async agents — native async support, WebSocket for real-time chat
@@ -1008,7 +1008,7 @@ cd frontend && npm run lint        # ESLint + TypeScript check
 #### ✅ Architectural Decisions
 
 - [x] Critical decisions documented (LLM, MCP, Pipeline, Config)
-- [x] Technology stack fully specified (Python 3.12+, uv, LangChain, etc.)
+- [x] Technology stack fully specified (Python 3.14+, uv, LangChain, etc.)
 - [x] Integration patterns defined (MCP SDK, LangChain ChatModel)
 - [x] Performance considerations addressed (async, retry, timeouts)
 

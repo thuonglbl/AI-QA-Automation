@@ -18,15 +18,15 @@ Usage:
 """
 
 # Standard library
-import ast
-import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 # Local
 from ai_qa.agents.base import AgentState, BaseAgent
+from ai_qa.ai_connection.model_filter import is_non_generative_model
 from ai_qa.ai_connection.providers import (
     ConnectionResult,
     get_provider_adapter,
@@ -34,7 +34,7 @@ from ai_qa.ai_connection.providers import (
     resolve_base_url,
 )
 from ai_qa.config import AppSettings
-from ai_qa.exceptions import LLMRateLimitError, PipelineError, PipelineSilentAbortError
+from ai_qa.exceptions import PipelineError, PipelineSilentAbortError
 from ai_qa.models import (
     AgentModelConfig,
     AgentsConfig,
@@ -49,13 +49,50 @@ logger = logging.getLogger(__name__)
 # Provider Configuration
 # =============================================================================
 
+# Display order is authoritative: the frontend renders providers in this exact
+# array order. ``quality_rank`` only drives the badge label, not the ordering.
+# ``auth_method`` tells the frontend how to collect credentials:
+#   - "api_key": render the credential text input(s) from ``credential_fields``
+#   - "sso":     render a "Login SSO" button that runs the OAuth browser flow
 PROVIDER_OPTIONS: list[dict[str, Any]] = [
+    {
+        "id": "on-premises",
+        "name": "On-Premises",
+        "description": "Internal infrastructure · Company API key",
+        "quality_rank": 5,
+        "security_level": "highest",
+        "auth_method": "api_key",
+        "credential_fields": [
+            {
+                "name": "api_key",
+                "label": "API Key",
+                "type": "password",
+                "required": True,
+                "placeholder": "Enter your on-premises API key...",
+            },
+        ],
+        "endpoint_setting": "on_premises_api_base_url",
+        "env_key": "ON_PREMISES_AI_SERVER_KEY",
+    },
+    {
+        "id": "claude-sso",
+        "name": "Anthropic / Claude (SSO)",
+        "description": "Cloud · Enterprise SSO login",
+        "quality_rank": 2,
+        "security_level": "enterprise",
+        "auth_method": "sso",
+        # No manual credential — the OAuth browser login flow obtains the token.
+        "credential_fields": [],
+        "endpoint_setting": "claude_api_base_url",
+        "env_key": "",
+    },
     {
         "id": "browser-use-cloud",
         "name": "Browser Use Cloud",
         "description": "Cloud · Personal API key",
         "quality_rank": 1,
         "security_level": "cloud",
+        "auth_method": "api_key",
         "credential_fields": [
             {"name": "api_key", "label": "API Key", "type": "password", "required": True}
         ],
@@ -65,9 +102,10 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
     {
         "id": "claude",
         "name": "Anthropic / Claude",
-        "description": "Cloud · Enterprise API key or SSO",
+        "description": "Cloud · Personal API key",
         "quality_rank": 2,
-        "security_level": "enterprise",
+        "security_level": "good",
+        "auth_method": "api_key",
         "credential_fields": [
             {
                 "name": "api_key",
@@ -86,6 +124,7 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
         "description": "Cloud · Personal API key",
         "quality_rank": 3,
         "security_level": "good",
+        "auth_method": "api_key",
         "credential_fields": [
             {
                 "name": "api_key",
@@ -104,6 +143,7 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
         "description": "Cloud · Personal API key",
         "quality_rank": 4,
         "security_level": "good",
+        "auth_method": "api_key",
         "credential_fields": [
             {
                 "name": "api_key",
@@ -115,24 +155,6 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
         ],
         "endpoint_setting": "openai_api_base_url",
         "env_key": "OPENAI_API_KEY",
-    },
-    {
-        "id": "on-premises",
-        "name": "On-Premises",
-        "description": "Internal infrastructure · Company API key",
-        "quality_rank": 5,
-        "security_level": "highest",
-        "credential_fields": [
-            {
-                "name": "api_key",
-                "label": "API Key",
-                "type": "password",
-                "required": True,
-                "placeholder": "Enter your on-premises API key...",
-            },
-        ],
-        "endpoint_setting": "on_premises_api_base_url",
-        "env_key": "ON_PREMISES_AI_SERVER_KEY",
     },
 ]
 
@@ -160,6 +182,402 @@ AGENT_PROMPT_TEMPLATES: dict[str, str] = {
     "sarah": "script_generation_v1",
     "jack": "execution_analysis_v1",
 }
+
+# --- Benchmark-informed model ranking (2026) --------------------------------
+#
+# Per-capability ordered preferences of case-insensitive id SUBSTRINGS, matched
+# against the *discovered* model pool (never an undiscovered name — see AC3 in
+# Story 9.4). The first preference that matches a discovered id wins, so these
+# lists encode "best available for this capability" rather than a fixed model.
+#
+# Ordering is grounded in 2026 open-model benchmarks (full sources in the
+# investigation case file `model-selection-and-scrollbar-investigation.md`):
+#   - GLM-5.1 (754B, MIT) is the strongest open reasoning/coding/agentic model
+#     in the on-prem pool (SOTA SWE-Bench Pro; aligned with Claude Opus 4.6).
+#     It is TEXT-ONLY, so it must NOT appear in the vision ranking.
+#   - Qwen3-VL-235B is the best open vision-language model in the pool.
+#   - DeepSeek-V3.2 is a strong runner-up; GPT-OSS-120B is now mid-pack.
+#
+# Forward-looking names (e.g. "glm-6", "deepseek-v4", "glm-5.2") are listed
+# AHEAD of currently-available ones so a newer on-prem model is preferred the
+# moment it is published, with no code change. Models update fast — update
+# these lists (not call sites) when the benchmark landscape shifts.
+
+_REASONING_RANK: list[str] = [
+    "glm-6",
+    "deepseek-v4",
+    "glm-5.2",
+    "glm-52",
+    "glm-5.1",
+    "glm-51",
+    "glm-5",
+    "qwen3.5",
+    "deepseek-v3",
+    "qwen3-vl-235b",
+    "llama4-maverick",
+    "qwq-32b",
+    "glm45-air",
+    "apertus-70b",
+    "gemma4-31b",
+    "qwen3-8b",
+]
+
+_CODING_RANK: list[str] = [
+    "glm-6",
+    "deepseek-v4",
+    "glm-5.2",
+    "glm-52",
+    "qwen3-coder",
+    "glm-5.1",
+    "glm-51",
+    "glm-5",
+    "deepseek-v3",
+    "qwen3.5",
+    "qwen3-vl-235b",
+    "glm45-air",
+    "qwq-32b",
+    "llama4-maverick",
+]
+
+_INSTRUCTION_RANK: list[str] = [
+    "glm-6",
+    "deepseek-v4",
+    "glm-5.2",
+    "glm-52",
+    "glm-5.1",
+    "glm-51",
+    "glm-5",
+    "qwen3.5",
+    "deepseek-v3",
+    "qwen3-vl-235b",
+    "llama4-maverick",
+    "glm45-air",
+    "gemma4-31b",
+    "granite-33",
+]
+
+# Vision rank: MULTIMODAL families ONLY. Never list a text-only flagship
+# (GLM-5.1, DeepSeek, GPT-OSS) here — Bob must be able to read images/diagrams.
+_VISION_RANK: list[str] = [
+    "qwen3.5-vl",
+    "qwen3-vl-235b",
+    "qwen3-vl",
+    "glm-5v",
+    "glm-5.1v",
+    "glm-4.6v",
+    "llama4-maverick",
+    "llama4-scout",
+    "gemma4-31b",
+    "gemma-12b",
+    "granite-vision",
+]
+
+# Fast tier: strong-but-lighter modern models for summarization/execution
+# analysis. Prefers a capable mid-tier over the heaviest flagships.
+_FAST_RANK: list[str] = [
+    "glm45-air",
+    "qwen3.5-30b",
+    "gemma4-31b",
+    "qwq-32b",
+    "qwen3-8b",
+    "gemma-12b",
+    "granite-33",
+    "mistral-v03",
+    "apertus-70b",
+]
+
+_AGENT_CAPABILITY_RANK: dict[str, list[str]] = {
+    "alice": _REASONING_RANK,
+    "bob": _VISION_RANK,
+    "mary": _INSTRUCTION_RANK,
+    "sarah": _CODING_RANK,
+    "jack": _FAST_RANK,
+}
+
+# Agent -> capability name used to look up per-capability admin benchmark scores.
+# "global" admin scores (the default) apply to every agent.
+_AGENT_CAPABILITY_NAME: dict[str, str] = {
+    "alice": "reasoning",
+    "bob": "vision",
+    "mary": "instruction",
+    "sarah": "coding",
+    "jack": "fast",
+}
+
+
+def _merge_scores(rows: list[tuple[str, str, float]], capability: str) -> dict[str, float]:
+    """Flatten admin score rows for one capability into ``{model_id: score}``.
+
+    A ``"global"`` score applies to every agent; a capability-specific score
+    overrides the global one for that capability.
+    """
+    merged: dict[str, float] = {}
+    for model_id, cap, score in rows:
+        if cap == "global":
+            merged[model_id] = score
+    for model_id, cap, score in rows:
+        if cap == capability:
+            merged[model_id] = score
+    return merged
+
+
+# Benchmark-grounded, secret-free rationale templates ({model} is substituted
+# with the chosen discovered id). Surfaced in the configuration-review UI.
+_AGENT_RATIONALE: dict[str, str] = {
+    "alice": (
+        "'{model}' — strongest general-reasoning model in the discovered pool "
+        "(2026 open-model benchmarks); drives configuration and orchestration."
+    ),
+    "bob": (
+        "'{model}' — best vision-language model in the discovered pool; required "
+        "for multimodal image/diagram extraction from Confluence & Jira."
+    ),
+    "mary": (
+        "'{model}' — flagship instruction-following with structured-output / "
+        "function-calling support; best fit for precise test-case generation."
+    ),
+    "sarah": (
+        "'{model}' — top open coding & agentic model in the discovered pool "
+        "(state-of-the-art SWE-Bench Pro, 2026); best for script generation and tools."
+    ),
+    "jack": (
+        "'{model}' — strong, lower-latency model for fast summarization and execution analysis."
+    ),
+}
+
+
+@dataclass(frozen=True)
+class ParsedModel:
+    """Structured view of a model id, used to heuristically rank UNLISTED ids."""
+
+    family: str
+    version: tuple[int, ...]
+    total_b: int | None
+    active_b: int | None
+    tags: frozenset[str]
+
+
+# Cross-family quality priors (2026). Used ONLY to rank ids that match no curated
+# preference (Tier 2). WITHIN a family the parsed version decides; this map only
+# orders ACROSS families. An unknown family sits just above the weakest known one
+# so a new-vendor model is selectable but cannot leapfrog a known flagship on a
+# version number alone. This small map is the only piece needing human upkeep.
+_FAMILY_PRIOR: dict[str, int] = {
+    "deepseek": 90,
+    "glm": 90,
+    "qwen": 88,
+    "llama": 72,
+    "mistral": 70,
+    "gemma": 68,
+    "granite": 52,
+    "apertus": 50,
+}
+_FAMILY_PRIOR_UNKNOWN = 55  # just above the weakest known family
+
+_PREFIX_STRIP = ("inference-", "on-premises-", "anthropic/")
+_SIZE_RE = re.compile(r"^a?(\d+(?:\.\d+)?)b$")  # 754b, 235b, 7b, 1.7b, a22b
+_ACTIVE_RE = re.compile(r"^a\d")  # a22b / a3b -> active-param count
+# Vision NAME signals, used in UNION with the gateway's advertised flag (which the
+# operator says is unreliable). Deliberately specific to avoid matching a text-only
+# version token like "-v3" / "-v32".
+_VISION_NAME_HINTS = ("vl", "vision", "multimodal", "maverick", "scout", "pixtral", "llava")
+_VISION_FAMILY_HINTS = ("gemma",)
+
+
+def _version_from_token(token: str) -> tuple[int, ...] | None:
+    """Parse a version token to an int tuple, or None if not version-like.
+
+    Pinned by the golden-table test: a leading 'v' is stripped ('v32'->'32'); a
+    dotted token splits on '.' as decimal components ('5.2'->(5,2), '3.10'->(3,10));
+    a bare multi-digit run is read PER-DIGIT ('51'->(5,1), '45'->(4,5)) to match the
+    on-prem glued convention (glm-51 == GLM 5.1); a single digit is (n,).
+    """
+    tok = token[1:] if token[:1] == "v" and token[1:2].isdigit() else token
+    if not tok or not all(c.isdigit() or c == "." for c in tok):
+        return None
+    if "." in tok:
+        parts = [int(p) for p in tok.split(".") if p != ""]
+        return tuple(parts) if parts else None
+    if len(tok) == 1:
+        return (int(tok),)
+    return tuple(int(c) for c in tok)
+
+
+def parse_model_id(model_id: str) -> ParsedModel:
+    """Parse a model id into family/version/size/tags. Fail-soft (never raises).
+
+    On any ambiguity returns an empty family/version so the model lands in the
+    neutral 'unknown' bucket rather than being mis-ranked.
+    """
+    s = model_id.lower().strip()
+    for pre in _PREFIX_STRIP:
+        if s.startswith(pre):
+            s = s[len(pre) :]
+            break
+    try:
+        family = ""
+        version: tuple[int, ...] = ()
+        total_b: int | None = None
+        active_b: int | None = None
+        tags: set[str] = set()
+        for tok in s.replace("/", "-").split("-"):
+            if not tok:
+                continue
+            size_m = _SIZE_RE.match(tok)
+            if size_m:
+                val = int(float(size_m.group(1)))
+                if _ACTIVE_RE.match(tok):
+                    active_b = val
+                elif total_b is None or val >= total_b:
+                    total_b = val
+                else:
+                    active_b = val
+                continue
+            if not family:
+                head = "".join(c for c in tok if c.isalpha())
+                tail = tok[len(head) :]
+                if head:
+                    family = head
+                    if tail and not version:
+                        glued = _version_from_token(tail)
+                        if glued:
+                            version = glued
+                    continue
+            parsed_v = _version_from_token(tok)
+            if parsed_v is not None and not version:
+                version = parsed_v
+            elif tok.isalpha():
+                tags.add(tok)
+        return ParsedModel(family, version, total_b, active_b, frozenset(tags))
+    except Exception:
+        return ParsedModel("", (), None, None, frozenset())
+
+
+def _model_score_key(parsed: ParsedModel) -> tuple[int, tuple[int, ...], int]:
+    """Comparable ranking key: (family prior, padded version, size). Higher is better."""
+    prior = _FAMILY_PRIOR.get(parsed.family, _FAMILY_PRIOR_UNKNOWN) if parsed.family else 0
+    ver = (parsed.version + (0, 0, 0))[:3]
+    size = parsed.active_b or parsed.total_b or 0
+    return (prior, ver, size)
+
+
+def _has_vision_signal(model: dict[str, Any]) -> bool:
+    """Vision = advertised capability OR a vision name signal (union; flag unreliable)."""
+    if model.get("supports_vision") is True:
+        return True
+    low = str(model.get("id", "")).lower()
+    tokens = set(low.replace("/", "-").split("-"))
+    if tokens & set(_VISION_NAME_HINTS):
+        return True
+    return any(h in low for h in _VISION_FAMILY_HINTS)
+
+
+def _breakdown(parsed: ParsedModel) -> str:
+    """Human-readable score explanation for the configuration-review trace."""
+    prior = _FAMILY_PRIOR.get(parsed.family, _FAMILY_PRIOR_UNKNOWN) if parsed.family else 0
+    ver = ".".join(str(x) for x in parsed.version) if parsed.version else "?"
+    if parsed.active_b:
+        size = f"{parsed.active_b}b-active"
+    elif parsed.total_b:
+        size = f"{parsed.total_b}b"
+    else:
+        size = "?"
+    return f"family={parsed.family or 'unknown'}(prior {prior}) version={ver} size={size}"
+
+
+def _select_best_model(available_ids: list[str], ranking: list[str]) -> str | None:
+    """Tier 1 (curated): first ranking substring that matches a discovered id.
+
+    Among matches for a preference, prefers the highest parsed VERSION (so a newer
+    sibling auto-wins) then a non-GRC base variant. Returns ``None`` when no
+    preference matches the pool.
+    """
+    lowered = [(mid, mid.lower()) for mid in available_ids]
+    for preference in ranking:
+        matches = [mid for mid, low in lowered if preference in low]
+        if not matches:
+            continue
+        non_grc = [mid for mid in matches if "grc" not in mid.lower()] or matches
+        return max(non_grc, key=lambda mid: _model_score_key(parse_model_id(mid)))
+    return None
+
+
+def _promote_to_newest_sibling(winner_id: str, eligible_ids: list[str]) -> str:
+    """Within the winner's family AND variant (tags), return the newest-version id.
+
+    Lets a top-ranked/scored family automatically adopt a brand-new point release
+    (e.g. ``glm-5.1`` -> ``glm-5.2``) with no admin score and no code change. A
+    DIFFERENT variant (e.g. an ``-air`` / ``-vl`` tag) is not the same product
+    line, so it is never promoted in. Only versions strictly newer than the
+    winner win, so this never downgrades.
+    """
+    winner = parse_model_id(winner_id)
+    if not winner.family:
+        return winner_id
+    best_id = winner_id
+    best_key = _model_score_key(winner)
+    for mid in eligible_ids:
+        parsed = parse_model_id(mid)
+        if parsed.family == winner.family and parsed.tags == winner.tags:
+            key = _model_score_key(parsed)
+            if key > best_key:
+                best_id, best_key = mid, key
+    return best_id
+
+
+def _select_model_for(
+    agent: str,
+    models: list[dict[str, Any]],
+    admin_scores: dict[str, float] | None = None,
+) -> dict[str, Any] | None:
+    """Pick the best discovered model for an agent (3-tier, deterministic, offline).
+
+    Tier 0 admin score (operator override from the admin dashboard) -> Tier 1
+    curated benchmark preference list -> Tier 2 parsed family/version/size
+    heuristic (this is what ranks a BRAND-NEW unlisted id sensibly with zero code
+    change). Bob is restricted to vision-capable models; the gate is SOFT —
+    it degrades to the full pool (flagged) when nothing looks multimodal. Returns
+    ``{model, source, breakdown, degraded}`` or ``None`` when the pool is empty.
+    """
+    admin = admin_scores or {}
+    if not models:
+        return None
+
+    eligible = models
+    degraded = False
+    if agent == "bob":
+        vision = [m for m in models if _has_vision_signal(m)]
+        if vision:
+            eligible = vision
+        else:
+            degraded = True
+    eligible_ids = [str(m["id"]) for m in eligible]
+
+    # Tier 0: operator-supplied scores (admin dashboard) win outright.
+    scored = [(mid, admin[mid]) for mid in eligible_ids if mid in admin]
+    if scored:
+        chosen, score = max(scored, key=lambda kv: (kv[1], _model_score_key(parse_model_id(kv[0]))))
+        source, base_breakdown = "admin", f"admin score={score}"
+    else:
+        # Tier 1: curated benchmark preference list (version-aware).
+        curated = _select_best_model(eligible_ids, _AGENT_CAPABILITY_RANK[agent])
+        if curated:
+            chosen, source = curated, "curated"
+            base_breakdown = _breakdown(parse_model_id(curated))
+        else:
+            # Tier 2: parsed heuristic for ids that match no curated preference.
+            chosen = max(eligible_ids, key=lambda mid: _model_score_key(parse_model_id(mid)))
+            source, base_breakdown = "parsed", _breakdown(parse_model_id(chosen))
+
+    # Auto-upgrade within the winning family+variant to the newest version, so a
+    # top-scored/curated family pulls in a brand-new point release (glm-5.1 ->
+    # glm-5.2) automatically. A per-agent hard override (caller) bypasses this.
+    upgraded = _promote_to_newest_sibling(chosen, eligible_ids)
+    if upgraded != chosen:
+        base_breakdown = f"{base_breakdown} → auto-upgraded from {chosen} to a newer version"
+        chosen = upgraded
+
+    return {"model": chosen, "source": source, "breakdown": base_breakdown, "degraded": degraded}
 
 
 class AliceAgent(BaseAgent):
@@ -288,6 +706,7 @@ class AliceAgent(BaseAgent):
                 "description": p.get("description", ""),
                 "quality_rank": p["quality_rank"],
                 "security_level": p["security_level"],
+                "auth_method": p.get("auth_method", "api_key"),
                 "credential_fields": p["credential_fields"],
             }
             for p in PROVIDER_OPTIONS
@@ -319,6 +738,26 @@ class AliceAgent(BaseAgent):
                 "api_key_configured": bool(stored),
             }
         return {"server_url": "", "api_key_configured": False}
+
+    def get_configured_providers(self) -> list[str]:
+        """Provider ids that already have a stored secret for the current user.
+
+        The frontend uses this to SKIP the credential prompt and reuse the stored
+        key (auto-connect). Never returns any secret value — only which providers
+        have one on file. Returns ``[]`` when there is no DB/user context.
+        """
+        if not (self.project_context and self.project_context.artifact_service):
+            return []
+        db = self.project_context.artifact_service.db
+        from ai_qa.secrets import PROVIDER_SECRET_TYPE_MAP
+        from ai_qa.secrets.service import get_user_secret
+
+        configured: list[str] = []
+        for provider in PROVIDER_OPTIONS:
+            secret_type = PROVIDER_SECRET_TYPE_MAP.get(provider["id"])
+            if secret_type and get_user_secret(db, self.project_context.user_id, secret_type):
+                configured.append(provider["id"])
+        return configured
 
     # -------------------------------------------------------------------------
     # BaseAgent Interface
@@ -385,24 +824,32 @@ class AliceAgent(BaseAgent):
             except Exception as e:
                 logger.warning("Failed to save initial provider info to DB: %s", e)
 
-        # For on-prem with blank api_key, resolve the stored secret BEFORE the connection
-        # test so the adapter receives the real key (Task 10 fix — ordering bug).
+        # When the api_key is blank, resolve the user's STORED secret BEFORE the
+        # connection test so the adapter receives the real key. This powers the
+        # "key on file -> skip the prompt and auto-connect" UX for every provider
+        # (on-premises blank-reuse, Claude SSO token from the OAuth callback, and
+        # any provider whose key was entered on a previous run). ``_original_api_key``
+        # stays blank for a reused key, so the persist block below never re-writes it
+        # (Task 10 ordering fix preserved).
         _original_api_key = credentials.get("api_key", "").strip()
-        if provider_info["id"] == "on-premises" and not _original_api_key:
-            if self.project_context and self.project_context.artifact_service:
-                try:
-                    from ai_qa.secrets import SECRET_TYPE_ON_PREMISES
-                    from ai_qa.secrets.service import get_user_secret
+        if not _original_api_key and self.project_context and self.project_context.artifact_service:
+            try:
+                from ai_qa.secrets import PROVIDER_SECRET_TYPE_MAP
+                from ai_qa.secrets.service import get_user_secret
 
+                _secret_type = PROVIDER_SECRET_TYPE_MAP.get(provider_info["id"])
+                if _secret_type:
                     _stored = get_user_secret(
                         self.project_context.artifact_service.db,
                         self.project_context.user_id,
-                        SECRET_TYPE_ON_PREMISES,
+                        _secret_type,
                     )
                     if _stored:
                         credentials = {**credentials, "api_key": _stored}
-                except Exception as _pre_e:
-                    logger.warning("Failed to resolve stored on-prem key for test: %s", _pre_e)
+            except Exception as _pre_e:
+                logger.warning(
+                    "Failed to resolve stored key for %s: %s", provider_info["id"], _pre_e
+                )
 
         # Test connection
         await self._send_connection_test_status(
@@ -657,12 +1104,13 @@ class AliceAgent(BaseAgent):
                 message_type="info",
             )
             await self.send_message(
-                content="Please select your AI provider:",
+                content="",
                 message_type="info",
                 metadata={
                     "type": "provider_options",
                     "options": self.get_provider_options(),
                     "on_prem_defaults": self.get_on_prem_defaults(),
+                    "configured_providers": self.get_configured_providers(),
                 },
             )
             return
@@ -753,21 +1201,17 @@ class AliceAgent(BaseAgent):
                     message_type="error",
                 )
         else:
-            # No provider selected yet - show greeting and provider options
+            # No provider selected yet — show the provider options. The card panel
+            # carries its own heading, so no greeting/"select a provider" chat text
+            # (content="" keeps the bubble empty; the panel renders from metadata).
             await self.send_message(
-                content="Hi! I'm Alice. Let's set up your AI provider so we can get started with test automation. "
-                "I'll help you choose the best provider for your needs and configure the models for each agent.",
-                message_type="text",
-            )
-
-            # Send provider options
-            await self.send_message(
-                content="Please select your AI provider:",
+                content="",
                 message_type="info",
                 metadata={
                     "type": "provider_options",
                     "options": self.get_provider_options(),
                     "on_prem_defaults": self.get_on_prem_defaults(),
+                    "configured_providers": self.get_configured_providers(),
                 },
             )
 
@@ -853,7 +1297,7 @@ class AliceAgent(BaseAgent):
 
         await self.transition_to(AgentState.DONE)
 
-    async def handle_reject(self, feedback: str) -> None:
+    async def handle_reject(self, feedback: str, data: dict[str, Any] | None = None) -> None:
         """Reject the model assignment review and return to provider configuration.
 
         Does NOT persist any approved configuration. Only creates a conversational
@@ -869,12 +1313,13 @@ class AliceAgent(BaseAgent):
         await self.transition_to(AgentState.START)
         # Re-show provider options so the user can reconfigure
         await self.send_message(
-            content="Please select your AI provider:",
+            content="",
             message_type="info",
             metadata={
                 "type": "provider_options",
                 "options": self.get_provider_options(),
                 "on_prem_defaults": self.get_on_prem_defaults(),
+                "configured_providers": self.get_configured_providers(),
             },
         )
 
@@ -883,38 +1328,25 @@ class AliceAgent(BaseAgent):
     # -------------------------------------------------------------------------
 
     def _assign_fallback_models(self, models_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        # Per-agent capability preferences (ordered keyword hints).
-        # Uses first matching hint (deterministic) — no randomization.
-        fallback_models = {
-            "Alice": ["claude-3-5-sonnet", "gpt-4o", "pro", "sonnet"],
-            "Bob": ["opus", "gpt-4o", "gpt-5", "pro", "vision", "sonnet"],
-            "Mary": ["sonnet", "gpt-4", "pro", "flash"],
-            "Sarah": ["opus", "coder", "sonnet", "gpt-4", "pro"],
-            "Jack": ["haiku", "mini", "flash", "lite", "sonnet"],
-        }
+        """Best-effort per-agent picks for the all-models-unavailable error trace.
 
-        reasoning = []
-        for agent, candidates in fallback_models.items():
-            assigned_model = None
-            for candidate in candidates:
-                if any(candidate in m["id"].lower() for m in models_list):
-                    assigned_model = next(
-                        m["id"] for m in models_list if candidate in m["id"].lower()
-                    )
-                    break
-
-            # Fallback to the first available model if no hint matched
-            if not assigned_model and models_list:
-                assigned_model = models_list[0]["id"]
-
-            if not assigned_model:
-                assigned_model = "Unavailable"
-
+        Reuses the benchmark ranking table so the display stays consistent with
+        the normal deterministic assignment. Only reached when every discovered
+        model is unsupported/unavailable (the pipeline aborts afterwards), so the
+        picks are informational. Falls back to the first listed model, then to
+        ``"Unavailable"`` when nothing was discovered at all.
+        """
+        model_ids = [str(m["id"]) for m in models_list]
+        reasoning: list[dict[str, Any]] = []
+        for agent in ["alice", "bob", "mary", "sarah", "jack"]:
+            chosen = _select_best_model(model_ids, _AGENT_CAPABILITY_RANK[agent])
+            if not chosen:
+                chosen = model_ids[0] if model_ids else "Unavailable"
             reasoning.append(
                 {
-                    "agent": agent,
+                    "agent": agent.capitalize(),
                     "purpose": AGENT_PURPOSES.get(agent, ""),
-                    "model": assigned_model,
+                    "model": chosen,
                     "reasoning": "Fallback selection due to empty or rate-limited models.",
                 }
             )
@@ -1010,40 +1442,22 @@ class AliceAgent(BaseAgent):
         available_models: list[dict[str, Any]] = []
         unavailable_models: list[dict[str, Any]] = []
 
-        unsupported_keywords = [
-            "embed",
-            "tts",
-            "whisper",
-            "audio",
-            "dall-e",
-            "babbage",
-            "davinci",
-            "instruct",
-            "realtime",
-            "moderation",
-            "text-search",
-            "text-similarity",
-            "code-search",
-            "edit",
-        ]
-
         for dm in discovered:
-            # Match whole words or prefixed segments to avoid false positives
-            # e.g., "embedding" should match "text-embedding-ada-002" but not "my-embedding-model"
-            is_unsupported = any(
-                kw == dm.id.lower()
-                or dm.id.lower().startswith(kw + "-")
-                or dm.id.lower().endswith("-" + kw)
-                or f"-{kw}-" in dm.id.lower()
-                for kw in unsupported_keywords
-            )
-
-            if is_unsupported:
+            # Skip non-generative families (embeddings / tts / stt / rerankers /
+            # OCR / ASR …) via the shared classifier so Alice's pool and the admin
+            # "Sync models and benchmarks" action agree on what counts as a chat model.
+            if is_non_generative_model(dm.id):
                 unavailable_models.append(
                     {"id": dm.id, "name": dm.display_name, "status": "not support / outdated"}
                 )
             else:
-                available_models.append({"id": dm.id, "name": dm.display_name})
+                available_models.append(
+                    {
+                        "id": dm.id,
+                        "name": dm.display_name,
+                        "supports_vision": dm.supports_vision,
+                    }
+                )
 
         if not available_models:
             # Emit trace to show the models that were discovered but unavailable
@@ -1071,78 +1485,28 @@ class AliceAgent(BaseAgent):
             await self.transition_to(AgentState.ERROR)
             raise PipelineSilentAbortError()
 
-        # 2. Bootstrap Alice model
-        alice_model, alice_rationale = self._bootstrap_alice_model(available_models)
+        # Persist the discovered pool so the admin dashboard can list/score models
+        # without holding live gateway credentials (best-effort, never blocks).
+        self._snapshot_discovered_models(available_models)
+
+        # 2. Bootstrap Alice model (admin scores are the highest selection tier).
+        admin_score_rows = self._load_admin_score_rows()
+        alice_model, alice_rationale = self._bootstrap_alice_model(
+            available_models, admin_score_rows
+        )
         if not alice_model:
             raise PipelineError(
                 "No available model to proceed. Please check your subscription then create a new thread to continue."
             )
 
-        # 3. Assign models via LLM
-        try:
-            model_mappings, reasoning = await self._assign_models_via_llm(
-                provider_id, endpoint, api_key, alice_model, available_models
-            )
-        except PipelineError as e:
-            error_str = str(e)
-            formatted_message = error_str
-
-            # Try to format the ugly Litellm JSON error nicely
-            if "LLM rate limit error" in error_str or "Error code:" in error_str:
-                # Move all available models to unavailable models
-                for m in available_models:
-                    unavailable_models.append(
-                        {"id": m["id"], "name": m["name"], "status": "rate limit"}
-                    )
-                available_models.clear()
-
-                match = re.search(r"Error code: \d+ - (.*)", error_str)
-                if match:
-                    try:
-                        parsed = ast.literal_eval(match.group(1).strip())
-                        if isinstance(parsed, list) and len(parsed) > 0:
-                            parsed = parsed[0]
-                        if (
-                            isinstance(parsed, dict)
-                            and "error" in parsed
-                            and "message" in parsed["error"]
-                        ):
-                            formatted_message = f"Rate Limit Error: {parsed['error']['message']}"
-                    except Exception:
-                        msg_match = re.search(r"'message':\s*'([^']+)'", error_str)
-                        if msg_match:
-                            formatted_message = f"Rate Limit Error: {msg_match.group(1)}"
-
-            # Determine if it's a rate limit error to provide specific guidance
-            if "Rate Limit Error:" in formatted_message:
-                what_happened = f"[What happened] {formatted_message}"
-                what_to_do = "[What to do] Please check your provider subscription plan and billing details, or create a new thread using a different API key."
-                chain_of_thought = [what_happened, what_to_do]
-            else:
-                chain_of_thought = [f"[What happened] {formatted_message}"]
-
-            fallback_assignments = self._assign_fallback_models(unavailable_models)
-            trace_payload: dict[str, Any] = {
-                "connection_status": "success",
-                "available_models": available_models,
-                "unavailable_models": unavailable_models,
-                "bootstrap_model": alice_model,
-                "bootstrap_rationale": alice_rationale,
-                "agent_needs": AGENT_PURPOSES,
-                "assignments": fallback_assignments,
-                "chain_of_thought": chain_of_thought,
-            }
-            await self.send_message(
-                content="Finished model assignment reasoning.",
-                message_type="info",
-                metadata={"type": "thinking_trace", "trace": trace_payload},
-            )
-
-            await self.transition_to(AgentState.ERROR)
-            raise PipelineSilentAbortError() from e
+        # 3. Assign per-agent models deterministically from the benchmark
+        #    ranking table (no LLM, no network — fully reproducible).
+        model_mappings, reasoning = self._assign_models(
+            alice_model, available_models, admin_score_rows
+        )
 
         # 4. Emit thinking trace
-        trace_payload = {
+        trace_payload: dict[str, Any] = {
             "connection_status": "success",
             "available_models": available_models,
             "unavailable_models": unavailable_models,
@@ -1257,7 +1621,7 @@ class AliceAgent(BaseAgent):
             tested_at = datetime.fromisoformat(provider_data.get("tested_at", "1970-01-01"))
             age_days = (datetime.now(UTC) - tested_at).days
             return age_days < 30
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return False
 
     def _get_model_assignments_display(self) -> list[dict[str, str]]:
@@ -1277,7 +1641,7 @@ class AliceAgent(BaseAgent):
         if reasoning:
             for r in reasoning:
                 if isinstance(r, dict) and "agent" in r and "rationale" in r:
-                    reasoning_map[str(r["agent"])] = str(r["rationale"])
+                    reasoning_map[r["agent"]] = r["rationale"]
 
         assignments = []
         for agent_name, agent_config in config.agents.agents.items():
@@ -1296,8 +1660,16 @@ class AliceAgent(BaseAgent):
             )
         return assignments
 
-    def _bootstrap_alice_model(self, available_models: list[dict[str, Any]]) -> tuple[str, str]:
-        """Bootstrap Alice's reasoning model using keyword heuristics.
+    def _bootstrap_alice_model(
+        self,
+        available_models: list[dict[str, Any]],
+        admin_score_rows: list[tuple[str, str, float]] | None = None,
+    ) -> tuple[str, str]:
+        """Bootstrap Alice's reasoning model from the benchmark ranking table.
+
+        Picks the highest-ranked *discovered* model for general reasoning
+        (``_REASONING_RANK``); falls back to the first discovered model when no
+        ranked preference matches the pool.
 
         Returns:
             tuple of (model_id, rationale)
@@ -1305,208 +1677,128 @@ class AliceAgent(BaseAgent):
         if not available_models:
             return "", ""
 
-        model_ids = [m["id"] for m in available_models]
-
-        # Priority keywords for high-quality reasoning
-        priorities = [
-            "gpt-5",
-            "opus",
-            "gpt-4",
-            "pro-3",
-            "pro",
-            "sonnet",
-            "deepseek-v4",
-            "deepseek-v3",
-            "deepseek-coder",
-            "kimi",
-            "glm",
-            "qwen-72",
-            "llama-3-70",
-        ]
-
-        for p in priorities:
-            for m_id in model_ids:
-                if p in str(m_id).lower():
-                    return str(m_id), f"Chosen based on capability priority keyword '{p}'."
+        admin = _merge_scores(admin_score_rows or [], _AGENT_CAPABILITY_NAME["alice"])
+        pick = _select_model_for("alice", available_models, admin)
+        if pick:
+            return pick["model"], _AGENT_RATIONALE["alice"].format(model=pick["model"])
 
         # Fallback to first available
-        return str(model_ids[0]), "Fallback to first available model."
+        return str(available_models[0]["id"]), "Fallback to first available model."
 
-    async def _assign_models_via_llm(
+    def _load_admin_score_rows(self) -> list[tuple[str, str, float]]:
+        """Operator-supplied benchmark scores (admin dashboard), highest selection tier.
+
+        Reads ``model_benchmark_scores`` via the agent's DB session and returns
+        ``[(model_id, capability, score)]``. Resilient: returns ``[]`` when no real
+        session/context is available (e.g. unit tests with a mocked context) or on
+        any query error, so selection degrades to the curated/heuristic tiers.
+        """
+        ctx = self.project_context
+        service = ctx.artifact_service if ctx else None
+        db = service.db if service else None
+        if db is None:
+            return []
+        try:
+            from sqlalchemy import select
+
+            from ai_qa.db.models import ModelBenchmarkScore
+
+            result = db.execute(
+                select(
+                    ModelBenchmarkScore.model_id,
+                    ModelBenchmarkScore.capability,
+                    ModelBenchmarkScore.score,
+                )
+            ).all()
+        except Exception as exc:  # pragma: no cover - defensive, mocked DBs etc.
+            logger.warning("Could not load admin model scores: %s", type(exc).__name__)
+            return []
+        # A real query yields a list of Row tuples; a mocked session does not.
+        if not isinstance(result, list):
+            return []
+        return [(str(r[0]), str(r[1]), float(r[2])) for r in result]
+
+    def _snapshot_discovered_models(self, available_models: list[dict[str, Any]]) -> None:
+        """Upsert the current discovered pool into ``discovered_models`` (best-effort).
+
+        Lets the admin dashboard list models to score without live credentials.
+        Never raises — a snapshot failure must not abort a configuration run.
+        """
+        ctx = self.project_context
+        service = ctx.artifact_service if ctx else None
+        db = service.db if service else None
+        if db is None:
+            return
+        try:
+            from sqlalchemy import select
+
+            from ai_qa.db.models import DiscoveredModelSnapshot
+
+            now = datetime.now(UTC)
+            for model in available_models:
+                model_id = str(model["id"])
+                row = db.execute(
+                    select(DiscoveredModelSnapshot).where(
+                        DiscoveredModelSnapshot.model_id == model_id
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    db.add(
+                        DiscoveredModelSnapshot(
+                            model_id=model_id,
+                            display_name=str(model.get("name") or model_id),
+                            supports_vision=model.get("supports_vision"),
+                            last_seen_at=now,
+                        )
+                    )
+                else:
+                    row.display_name = str(model.get("name") or model_id)
+                    row.supports_vision = model.get("supports_vision")
+                    row.last_seen_at = now
+            db.commit()
+        except Exception as exc:  # pragma: no cover - best-effort, never blocks config
+            logger.warning("Could not snapshot discovered models: %s", type(exc).__name__)
+            try:
+                db.rollback()
+            except Exception:
+                logger.debug("Rollback after snapshot failure also failed.")
+
+    def _assign_models(
         self,
-        provider_id: str,
-        endpoint: str,
-        api_key: str,
         alice_model: str,
         available_models: list[dict[str, Any]],
+        admin_score_rows: list[tuple[str, str, float]] | None = None,
     ) -> tuple[dict[str, str], list[dict[str, str]]]:
-        """Assign models for Bob, Mary, Sarah, Jack via an LLM call."""
-        from langchain_core.messages import HumanMessage, SystemMessage
+        """Deterministically assign per-agent models from the discovered pool.
 
-        from ai_qa.ai_connection.client import LLMClient
-        from ai_qa.ai_connection.config import LLMConfig
+        Uses the benchmark ranking table (``_AGENT_CAPABILITY_RANK``) to pick the
+        best discovered model for each agent's primary capability — no LLM call,
+        no network, fully reproducible. Bob is matched against a vision-only
+        ranking so it can never receive a text-only flagship. Any agent with no
+        ranked match falls back to ``alice_model`` (itself a discovered id), so an
+        undiscovered model is never assigned (Story 9.4 AC3).
 
-        config = LLMConfig(
-            provider=provider_id,
-            model_name=alice_model,
-            temperature=0.0,
-            base_url=endpoint,
-            api_key=api_key,
-            max_retries=1,
-        )
-        try:
-            client = LLMClient(config)
-
-            system_prompt = """You are Alice, an AI configuration assistant. Your job is to assign the best available models to four specialized agents based on their needs:
-- Bob: Needs strong reasoning, long-context extraction, tool-compatible output, AND vision capability (multimodal) for image captioning from Confluence pages. MUST be a vision-capable model.
-- Mary: Needs structured-output and instruction-following.
-- Sarah: Needs coding and tool capabilities.
-- Jack: Needs fast, lower-cost summarization/execution-analysis.
-
-Available Models:
-{models_list}
-
-IMPORTANT: Bob's model MUST support vision/multimodal input. Prefer models with known vision support (e.g., gpt-4o, gemini-1.5-pro, claude-3-5-sonnet, etc.).
-
-Respond with a JSON object exactly in this format:
-{{
-  "assignments": {{
-    "bob": "model_id",
-    "mary": "model_id",
-    "sarah": "model_id",
-    "jack": "model_id"
-  }},
-  "reasoning": [
-    {{"agent": "bob", "rationale": "reason..."}},
-    {{"agent": "mary", "rationale": "reason..."}},
-    {{"agent": "sarah", "rationale": "reason..."}},
-    {{"agent": "jack", "rationale": "reason..."}}
-  ]
-}}
-"""
-            sys_msg = SystemMessage(
-                content=system_prompt.format(
-                    models_list=", ".join([m["id"] for m in available_models])
-                )
-            )
-            human_msg = HumanMessage(content="Please assign models and provide your reasoning.")
-
-            response = client.invoke([sys_msg, human_msg])
-            response_text = str(response.content)
-
-            # Extract JSON
-            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
-            if not json_match:
-                # Fallback to greedy search if no markdown block
-                json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
-
-            if json_match:
-                data = json.loads(
-                    json_match.group(1) if json_match.groups() else json_match.group(0)
-                )
-                if isinstance(data, dict):
-                    assignments = data.get("assignments") or {}
-                    reasoning = data.get("reasoning") or []
-
-                    # Validate models against available_models
-                    valid_ids = {str(m["id"]) for m in available_models}
-                    final_assignments = {}
-                    final_reasoning = []
-
-                    for agent in ["bob", "mary", "sarah", "jack"]:
-                        assigned_model = str(assignments.get(agent, ""))
-                        if assigned_model in valid_ids:
-                            final_assignments[agent] = assigned_model
-                            agent_reason = next(
-                                (
-                                    r
-                                    for r in reasoning
-                                    if isinstance(r, dict) and r.get("agent") == agent
-                                ),
-                                None,
-                            )
-                            rationale = (
-                                str(agent_reason.get("rationale"))
-                                if agent_reason
-                                else "LLM chose this model."
-                            )
-                            final_reasoning.append(
-                                {"agent": agent, "model": assigned_model, "rationale": rationale}
-                            )
-                        else:
-                            final_assignments[agent] = alice_model
-                            final_reasoning.append(
-                                {
-                                    "agent": agent,
-                                    "model": alice_model,
-                                    "rationale": f"LLM assigned invalid model '{assigned_model}'. Fallback to {alice_model}.",
-                                }
-                            )
-
-                    return final_assignments, final_reasoning
-            else:
-                logger.warning("LLM response did not contain JSON block.")
-                error_msg = "No JSON found in LLM response."
-        except LLMRateLimitError as e:
-            # Surface the provider's rate-limit / quota / billing message verbatim
-            # so the user knows to upgrade their plan or top up credits. These
-            # provider messages never contain the api_key (AC2: secret-free).
-            raise PipelineError(str(e)) from e
-        except (json.JSONDecodeError, KeyError) as e:
-            # Expected parsing errors - log technical detail, keep out of user-facing text
-            logger.warning("Failed LLM assignment (parsing): %s", e)
-            error_msg = type(e).__name__
-        except Exception as e:
-            # Other unexpected errors - log full detail but fall back to heuristic
-            # assignment so the user can still proceed. The raw error is logged
-            # and intentionally not surfaced to the user-facing rationale.
-            logger.warning("Failed LLM assignment (unexpected): %s", e)
-            error_msg = type(e).__name__
-
-        # Fallback assignment: the LLM-driven assignment was unavailable (e.g. the
-        # provider has no chat-completions endpoint, or a transient error). Pick a
-        # sensible model per agent from the DISCOVERED set so assignments are
-        # differentiated and never reference an undiscovered model (AC3). The raw
-        # error is logged above and intentionally not surfaced to the user.
-        logger.info("Applying fallback model assignment (reason: %s)", error_msg)
-        model_ids = [str(m["id"]) for m in available_models]
-
-        def _pick(keywords: list[str]) -> str:
-            for kw in keywords:
-                for mid in model_ids:
-                    if kw in mid.lower():
-                        return mid
-            return alice_model
-
-        # Per-agent capability preferences (ordered keyword hints).
-        fallback_models = {
-            "Alice": _pick(["claude-3-5-sonnet", "gpt-4o", "pro", "sonnet"]),
-            "bob": _pick(["opus", "gpt-4o", "gpt-5", "pro", "vision", "sonnet"]),
-            "mary": _pick(["sonnet", "gpt-4", "pro", "flash"]),
-            "sarah": _pick(["opus", "coder", "sonnet", "gpt-4", "pro"]),
-            "jack": _pick(["haiku", "mini", "flash", "lite", "sonnet"]),
-        }
-
-        fallback_reasons = {
-            "alice": "Chosen for general reasoning and configuration capabilities.",
-            "bob": "Chosen for vision-capability, strong reasoning, and long-context processing.",
-            "mary": "Chosen for structured output and instruction-following capabilities.",
-            "sarah": "Chosen for strong coding and tool execution capabilities.",
-            "jack": "Chosen for fast, cost-effective summarization.",
-        }
-
-        mappings = {}
-        reasoning = []
+        Returns:
+            tuple of (mappings, reasoning) keyed by agent (bob/mary/sarah/jack).
+        """
+        rows = admin_score_rows or []
+        mappings: dict[str, str] = {}
+        reasoning: list[dict[str, str]] = []
         for agent in ["bob", "mary", "sarah", "jack"]:
-            chosen = fallback_models.get(agent) or alice_model
+            admin = _merge_scores(rows, _AGENT_CAPABILITY_NAME[agent])
+            pick = _select_model_for(agent, available_models, admin)
+            chosen = pick["model"] if pick else alice_model
             mappings[agent] = chosen
+            rationale = _AGENT_RATIONALE[agent].format(model=chosen)
+            if pick and pick.get("degraded"):
+                rationale += " (no vision-capable model in the pool — using best general model.)"
             reasoning.append(
                 {
                     "agent": agent,
                     "model": chosen,
-                    "rationale": fallback_reasons.get(
-                        agent, "Chosen based on discovered model capabilities."
-                    ),
+                    "rationale": rationale,
+                    "tier_source": str(pick["source"]) if pick else "fallback",
+                    "score_breakdown": str(pick["breakdown"]) if pick else "",
                 }
             )
         return mappings, reasoning

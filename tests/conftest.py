@@ -11,6 +11,7 @@ Scope guidelines:
   - "session" scope: expensive setup done once (e.g., loading config from env)
 """
 
+from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -20,6 +21,43 @@ import pytest
 from ai_qa.db.models import User
 from ai_qa.models import AgentMessage, StageResult
 from ai_qa.pipelines.context import PipelineContext
+
+# --- Cross-test isolation of process-global mutable state -------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_module_globals() -> Generator[None]:
+    """Reset module-level mutable registries between tests (per-test isolation).
+
+    Several modules keep process-global dicts that accumulate across the suite and
+    were not consistently torn down, so a test could observe state left by an
+    earlier one depending on collection order:
+
+    * ``ai_qa.api.websocket.active_connections`` — populated whenever a test opens a
+      real WebSocket. A connection that is not cleanly disconnected lingers and is
+      then iterated by the ``broadcast_*`` helpers in *later* tests (e.g. the
+      artifact-create path calls ``broadcast_artifact_change``), making those tests
+      depend on which WebSocket tests ran before them.
+    * ``ai_qa.api.routes._user_agents`` / ``_project_user_agents`` — per-user and
+      per-(user, project) agent caches that only grow as tests drive the pipeline.
+
+    Clearing them around every test makes each test independent of ordering. Cleared
+    on both entry and exit so a test starts clean regardless of who ran before it and
+    leaves nothing behind. ``_active_agents`` is left alone: it is bounded (steps 1-5)
+    and re-registered by every ``create_app`` call, and some tests seed it directly.
+    """
+
+    def _clear() -> None:
+        from ai_qa.api import routes, websocket
+
+        websocket.active_connections.clear()
+        routes._user_agents.clear()
+        routes._project_user_agents.clear()
+
+    _clear()
+    yield
+    _clear()
+
 
 # --- Context Fixtures ---
 
@@ -36,14 +74,22 @@ def mock_db() -> MagicMock:
         if model is User:
             return user
         if model is Thread:
-            thread = Thread(id=ident, provider_name="claude", provider_base_url="")
+            thread = Thread(
+                id=ident,
+                provider_name="claude",
+                provider_base_url="",
+                agent_configs={"bob": {"model": "claude-sonnet"}},
+            )
             return thread
-        return MagicMock()
+        from unittest.mock import DEFAULT
+
+        return DEFAULT
 
     db.get.side_effect = mock_db_get
-    # A fresh user has no stored UserSecret rows; the secret accessor uses
-    # db.scalar(select(...)), so default it to None to mirror real behavior.
-    db.scalar.return_value = None
+    # Default scalar to a configured UserSecret mock so get_secret_status returns
+    # configured=True for the happy-path gate in BobAgent._check_preconditions.
+    # Individual tests that need configured=False can override db.scalar.return_value.
+    db.scalar.return_value = MagicMock(configured=True, updated_at=None)
     return db
 
 

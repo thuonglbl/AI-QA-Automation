@@ -250,84 +250,36 @@ def test_admin_can_create_project_and_standard_user_cannot(admin_client: TestCli
     assert blank.status_code == 422
 
 
-def test_admin_create_project_requires_at_least_one_link_and_one_provider(
+def test_admin_create_project_no_longer_enforces_link_or_provider(
     admin_client: TestClient,
 ) -> None:
-    """Test that project creation enforces at-least-one-link and at-least-one-provider rules.
+    """Admin now creates a bare project (name + description only).
 
-    FR16b: At least one of Confluence or Jira Base URL must be provided.
-    FR16c: At least one AI provider must be enabled.
+    The at-least-one-link / at-least-one-provider invariants MOVED to the project_admin
+    config endpoint (``PUT /project-admin/projects/{id}/config``, covered in
+    test_project_admin_rbac.py). So at the admin endpoint these create cleanly now.
     """
     admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
 
-    # No links at all → rejected with "No link to extract requirement"
-    no_links = admin_client.post(
+    # No links, no providers — previously 422, now allowed (a bare project).
+    bare = admin_client.post(
         "/api/admin/projects",
         headers=_auth_headers(admin_client, admin),
-        json={"name": "No Links", "enabled_providers": ["claude"]},
+        json={"name": "Bare"},
     )
-    # Both links blank → rejected with "No link to extract requirement"
+    # Blank links are normalized to None rather than rejected.
     blank_links = admin_client.post(
         "/api/admin/projects",
         headers=_auth_headers(admin_client, admin),
-        json={
-            "name": "Blank Links",
-            "confluence_base_url": "",
-            "jira_base_url": "",
-            "enabled_providers": ["claude"],
-        },
-    )
-    # No providers → rejected with "No provider to execute"
-    no_providers = admin_client.post(
-        "/api/admin/projects",
-        headers=_auth_headers(admin_client, admin),
-        json={"name": "No Providers", "confluence_base_url": "https://mcp"},
-    )
-    # Empty providers list → rejected with "No provider to execute"
-    empty_providers = admin_client.post(
-        "/api/admin/projects",
-        headers=_auth_headers(admin_client, admin),
-        json={
-            "name": "Empty Providers",
-            "confluence_base_url": "https://mcp",
-            "enabled_providers": [],
-        },
-    )
-    # Only Jira URL (no Confluence) → allowed
-    jira_only = admin_client.post(
-        "/api/admin/projects",
-        headers=_auth_headers(admin_client, admin),
-        json={
-            "name": "Jira Only",
-            "jira_base_url": "https://jira.company.com",
-            "enabled_providers": ["claude"],
-        },
-    )
-    # Both URLs → allowed
-    both_links = admin_client.post(
-        "/api/admin/projects",
-        headers=_auth_headers(admin_client, admin),
-        json={
-            "name": "Both Links",
-            "confluence_base_url": "https://mcp",
-            "jira_base_url": "https://jira.company.com",
-            "enabled_providers": ["claude", "gemini"],
-        },
+        json={"name": "Blank Links", "confluence_base_url": "", "jira_base_url": ""},
     )
 
-    assert no_links.status_code == 422
-    assert "No link to extract requirement" in no_links.json()["detail"]
-    assert blank_links.status_code == 422
-    assert "No link to extract requirement" in blank_links.json()["detail"]
-    assert no_providers.status_code == 422
-    assert "No provider to execute" in no_providers.json()["detail"]
-    assert empty_providers.status_code == 422
-    assert "No provider to execute" in empty_providers.json()["detail"]
-    assert jira_only.status_code == 200
-    assert jira_only.json()["jira_base_url"] == "https://jira.company.com"
-    assert jira_only.json()["confluence_base_url"] is None
-    assert both_links.status_code == 200
-    assert both_links.json()["enabled_providers"] == ["claude", "gemini"]
+    assert bare.status_code == 200
+    assert bare.json()["enabled_providers"] == []
+    assert bare.json()["confluence_base_url"] is None
+    assert blank_links.status_code == 200
+    assert blank_links.json()["confluence_base_url"] is None
+    assert blank_links.json()["jira_base_url"] is None
 
 
 def test_admin_project_list_exposes_jira_url_and_enabled_providers(
@@ -372,9 +324,10 @@ def test_admin_project_list_exposes_jira_url_and_enabled_providers(
     )
     assert both_links.status_code == 200
 
-    # List all projects
+    # List all projects (the project-list endpoint lives on the projects router,
+    # not the admin router; admins receive every project).
     list_response = admin_client.get(
-        "/api/admin/projects",
+        "/api/projects",
         headers=_auth_headers(admin_client, admin),
     )
     assert list_response.status_code == 200
@@ -384,12 +337,7 @@ def test_admin_project_list_exposes_jira_url_and_enabled_providers(
     confluence_proj = next(p for p in projects if p["name"] == "Confluence Only")
     assert confluence_proj["confluence_base_url"] == "https://confluence.example.com"
     assert confluence_proj["jira_base_url"] is None
-    assert sorted(confluence_proj["enabled_providers"]) == [
-        "browser-use-cloud",
-        "claude",
-        "gemini",
-        "openai",
-    ]
+    assert sorted(confluence_proj["enabled_providers"]) == ["claude", "gemini"]
 
     jira_proj = next(p for p in projects if p["name"] == "Jira Only")
     assert jira_proj["confluence_base_url"] is None
@@ -712,12 +660,32 @@ def test_admin_can_create_user_with_approved_role_without_leaking_password_hash(
 ) -> None:
     admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
 
+    # A project_admin must be linked to an existing project at creation (Story 15.3).
+    project = admin_client.post(
+        "/api/admin/projects",
+        headers=_auth_headers(admin_client, admin),
+        json={"name": "PAdmin Workspace"},
+    )
+    project_id = project.json()["id"]
+
     created = admin_client.post(
         "/api/admin/users",
         headers=_auth_headers(admin_client, admin),
         json={
-            "email": "  new.admin@example.com  ",
-            "display_name": "  New Admin  ",
+            "email": "  new.padmin@example.com  ",
+            "display_name": "  New PAdmin  ",
+            "role": "project_admin",
+            "initial_password": "initial-secret",
+            "project_id": project_id,
+        },
+    )
+    # An admin may NOT mint another platform admin — role "admin" is not creatable.
+    admin_rejected = admin_client.post(
+        "/api/admin/users",
+        headers=_auth_headers(admin_client, admin),
+        json={
+            "email": "another.admin@example.com",
+            "display_name": "Another Admin",
             "role": ADMIN_ROLE,
             "initial_password": "initial-secret",
         },
@@ -726,7 +694,7 @@ def test_admin_can_create_user_with_approved_role_without_leaking_password_hash(
         "/api/admin/users",
         headers=_auth_headers(admin_client, admin),
         json={
-            "email": "new.admin@example.com",
+            "email": "new.padmin@example.com",
             "display_name": "Duplicate",
             "role": STANDARD_ROLE,
             "initial_password": "initial-secret",
@@ -755,12 +723,16 @@ def test_admin_can_create_user_with_approved_role_without_leaking_password_hash(
 
     assert created.status_code == 200
     user = created.json()
-    assert user["email"] == "new.admin@example.com"
-    assert user["display_name"] == "New Admin"
-    assert user["role"] == ADMIN_ROLE
+    assert user["email"] == "new.padmin@example.com"
+    assert user["display_name"] == "New PAdmin"
+    assert user["role"] == "project_admin"
     assert user["is_active"] is True
-    assert user["project_memberships"] == []
+    assert any(
+        m["role"] == "project_admin" and m["project_id"] == project_id
+        for m in user["project_memberships"]
+    )
     assert "password_hash" not in user
+    assert admin_rejected.status_code == 422  # admins cannot create another admin
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"] == "User already exists"
     assert short_password.status_code == 422
@@ -987,6 +959,54 @@ def test_deleted_project_disappears_from_affected_member_project_list(
     )
     assert member_list_after.status_code == 200
     assert not any(p["id"] == project_id for p in member_list_after.json())
+
+
+def test_e2e_report_view_requires_admin(admin_client: TestClient) -> None:
+    """The Playwright HTML report viewer must not be publicly readable.
+
+    The report bundles traces, screenshots, videos, and captured request/response
+    data from E2E runs against real DB projects. ``view_e2e_report`` is now gated by
+    ``AdminDependency`` and the path is no longer whitelisted in
+    ``AuthMiddleware.PUBLIC_PATHS``. This pins both enforcement layers:
+
+    * ``.html`` paths are blocked at the auth middleware (not in its ``is_static``
+      suffix list), so anonymous callers get 401.
+    * ``.png`` report assets ARE waved through the middleware's ``is_static`` rule,
+      so the endpoint-level ``AdminDependency`` is the sole guard — anonymous 401,
+      non-admin 403.
+    * An admin passes auth (proving the session/token path still works); the
+      missing-file 404 confirms RBAC let the request reach the handler.
+    """
+    admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
+    standard = _create_user(admin_client, "standard@example.com", STANDARD_ROLE)
+
+    # Anonymous: blocked at the middleware for the HTML entrypoint.
+    anon_html = admin_client.get("/api/admin/tests/e2e/report/view/index.html")
+    assert anon_html.status_code == 401
+    assert anon_html.json() == {"detail": "Not authenticated"}
+
+    # Anonymous: a static-suffixed asset bypasses the middleware but the endpoint
+    # dependency still rejects it. This is the regression that the public whitelist hid.
+    anon_asset = admin_client.get("/api/admin/tests/e2e/report/view/trace/screenshot.png")
+    assert anon_asset.status_code == 401
+    assert anon_asset.json() == {"detail": "Not authenticated"}
+
+    # Authenticated non-admin: forbidden, and the body leaks nothing beyond the detail.
+    standard_html = admin_client.get(
+        "/api/admin/tests/e2e/report/view/index.html",
+        headers=_auth_headers(admin_client, standard),
+    )
+    assert standard_html.status_code == 403
+    assert standard_html.json() == {"detail": "Forbidden"}
+
+    # Admin passes RBAC and reaches the handler: 200 if a report exists in this tree,
+    # 404 if not. The point is that auth no longer blocks a legitimate admin — so the
+    # status must be anything BUT 401/403.
+    admin_html = admin_client.get(
+        "/api/admin/tests/e2e/report/view/index.html",
+        headers=_auth_headers(admin_client, admin),
+    )
+    assert admin_html.status_code not in (401, 403)
 
 
 def test_anonymous_caller_cannot_create_project_and_response_is_secret_free(

@@ -1,5 +1,50 @@
 # Deferred Work
 
+## Deferred from: code review of 16-12-fix-sarah-browser-use-chrome-driven-script-generation (2026-06-22)
+
+- `_generate_scripts` constructs `ScriptGenerator(llm_config=self.config)` without calling `_ensure_llm_ready` internally — works correctly in production (always reached via `_begin_generation` which already resolved); design choice per spec call-site list. [src/ai_qa/agents/sarah.py:416]
+- `handle_reject` → `_regenerate_current_script`: `PipelineError` from `_ensure_llm_ready` propagates through `process()`'s generic catch → `errors=["Failed to generate scripts: {PipelineError msg}"]` → double-wrapped by `_format_error_message` in handle_reject — garbled UX-DR12 message; spec-approved design ("runs inside process()'s try/except"). [src/ai_qa/agents/sarah.py:580]
+- `handle_reject` exception path (line 1219) sends `f"Failed to regenerate script: {e}"` directly without `_format_error_message` — pre-existing behavior unrelated to this story. [src/ai_qa/agents/sarah.py:1219]
+
+## Deferred from: code review of Epic 15 stories 15-1 through 15-5 (2026-06-21)
+
+- [15-1] Downgrade migration fills `confluence_base_url = ''` for NULL rows — by design (mirrors f3a9c8b21d47); `normalize_links` converts `""` → `None`; rarely executed path.
+- [15-3] `DuplicateUserError` catch branch in `create_user` is dead code — pre-existing; auth service raises `DuplicateUserError` only from `create_user_from_form`, not from ORM model construction.
+- [15-4] No test for unknown/`other` role in sort comparator — `?? 3` fallback is correct; unknown roles impossible in current user model.
+- [15-4] Status badge test checks text only, not icon — impractical to test SVG icons in JSDOM/Vitest; text verification satisfies AC3 accessibility intent.
+- [15-5] `project_admin → project_admin` same-role update silently ignores `project_id` — not covered by AC2 ("role change between project_admin and standard"); alternative via existing membership endpoints.
+- [15-5] `cancelEditingUser` does not reset `editUserRole`/`editUserTimezone`/`editUserIsActive` — stale values not visible (guarded by `editingUserId === null`); `startEditingUser` resets all before re-display.
+- [15-5] N+1 queries on `create_user`/`update_user` response: `_to_admin_user_response` accesses `membership.project.name` without `selectinload` — performance, not correctness; admin-only + low volume.
+- [15-5] Self-deactivation guard in `update_user` / self-delete guard in `delete_user` are dead code (immutability guard fires first) — defense-in-depth for future multi-admin design; 403 behavior tested via immutability guard.
+- [15-5] `_to_admin_user_response` would `AttributeError` if `membership.project` is `None` — theoretical; `ondelete=CASCADE` prevents orphan memberships.
+- [15-5] No test for demoting project_admin with mixed-role memberships (verifying non-`project_admin` rows survive) — correct behavior by design; filter-delete targets only `role == project_admin` rows.
+- [15-5] No confirmation dialog before `handleDeleteUser` — UX enhancement; same pattern as `handleDeleteProject` (pre-existing).
+- [15-5] No project picker for existing project_admin (cannot re-assign to a different project via the UI) — out of scope for AC2; alternative via membership endpoints.
+- [15-5] `AdminUserUpdateRequest` model validator does not require `project_id` for standard→project_admin transition — design decision; endpoint runtime check is correct.
+- [15-5] No test for promoting a standard user with an existing non-`project_admin` membership on the target project — idempotent upsert by design (per dev notes; avoids `uq_project_memberships_project_user` IntegrityError).
+
+## Deferred from: code review of Epic 14 + project-admin RBAC (2026-06-21)
+
+- ✅ RESOLVED 2026-06-21 — [HIGH, pre-existing] Unauthenticated E2E report file server — `GET /admin/tests/e2e/report/view/{file_path}` [src/ai_qa/api/admin.py:634-661] had no auth dependency (sibling `download_e2e_report` requires admin) and was explicitly whitelisted public in `AuthMiddleware.PUBLIC_PATHS` [src/ai_qa/api/auth/middleware.py:47]. Path-traversal was guarded, but any unauthenticated caller could read the entire `playwright-report/` directory (Playwright traces, screenshots, request/response data, and app URLs captured during E2E runs against real DB projects). Verified pre-existing — NOT introduced by the Epic 14 changeset. **Fix applied:** added `_admin: User = AdminDependency` to `view_e2e_report` + removed `/api/admin/tests/e2e/report/view` from `PUBLIC_PATHS` (report opens in a browser tab, authenticates via the session cookie). The route-level dependency is the sole guard for static-suffixed report assets (`.png`/`.js`/`.css`) that bypass the middleware `is_static` rule. Negative test: `tests/api/test_admin_rbac_api.py::test_e2e_report_view_requires_admin`. Gate green (ruff/format/mypy clean, 1711 passed). Full triage: `code-review-findings-2026-06-21.md` (W1).
+
+## Deferred from: code review of fix-cross-thread-conversation-bleed (2026-06-18)
+
+- Project-only (no-`threadId`) conversation no longer auto-restores agent panels [frontend/src/App.tsx history-restore effect] — the restore effect was re-keyed from `selectedProject?.id` to `loadedThreadId`, which is null on the legacy `/projects/{id}/conversation` load branch. Chat text restores but Alice/Bob/Mary/Sarah panels won't replay for a project-only load. Dormant: the app bootstraps exactly one starter thread per project, so an active conversation always has a `threadId`. Generalizing to a combined `threadId ?? projectId` key was rejected here because it would reintroduce the stale-`isLoaded` read race the thread-keyed design avoids. If the project-only path is ever revived, expose a race-free `loadedKey` from `usePipelineState` set on both load branches.
+- Cross-project thread switch double-fetches `GET /threads/{id}` [frontend/src/hooks/usePipelineState.ts load effect deps `[projectId, threadId]`; frontend/src/App.tsx:503 passes `projectId: selectedProjectId`] — on a cross-project switch `threadId` changes a render before `selectedProjectId` catches up, so the load effect runs twice (stale then fresh projectId). Correct (thread branch ignores projectId; `cancelled` guard prevents stale hydration) but redundant. Pre-existing, not introduced by this fix. Collapse to one fetch by passing `activeProjectId` (derived synchronously from the active thread) or dropping `projectId` from the thread-branch deps.
+
+## Deferred from: code review of 11-2-bob-confluence-url-intake-and-pipeline-trigger (2026-06-12)
+
+- Capability checks added to `handle_start` violate spec — The diff adds an MCP capability check block before `transition_to(PROCESSING)` that decrypts secrets and connects to MCP, violating the explicit "Do NOT" rule for `handle_start`. — deferred (Reason: chưa cần thiết lúc này)
+
+- Frontend Jira input block is copy-pasted verbatim — deferred, pre-existing (UI component refactor out of scope).
+- Out-of-scope Quality Detection code leaked — deferred, pre-existing (Story 11.5 code `_detect_quality_issues`, `_run_quality_detection`, `_has_quality_warnings` merged early).
+- `_load_project` uses lazy import inside instance method — deferred, pre-existing.
+
+## Deferred from: code review of 10-2-artifact-list-and-empty-folder-browsing (2026-06-11)
+
+- Pagination page not reset on equal-length item swap [frontend/src/components/conversations/ProjectSidebar.tsx:95] — `SubFolder`'s `useEffect(() => setPage(1), [items.length])` misses content swaps where the item count is unchanged (e.g. a realtime add+delete in the same refresh window), leaving the user on a stale page. Pre-existing `SubFolder` behavior, not introduced by this story. Re-key the effect on item identity (e.g. a join of ids) when hardening realtime pagination.
+- Frontend silently drops backend folder names absent from `FOLDER_CONFIG` [frontend/src/components/conversations/ProjectSidebar.tsx:455] — `renderArtifactFolder` returns `null` for any folder name not in `FOLDER_CONFIG`. Dormant today (backend `browse_order` keys match the frontend config exactly) but reintroduces the "silent drop" class this story fixed if the backend later adds a 5th browse folder without a matching frontend entry. Add a shared source of truth or a visible fallback bucket.
+
 ## Deferred from: code review of 9-7-saved-provider-configuration-and-rotation-behavior (2026-06-10)
 
 - `save_provider_config` has no defense-in-depth guard against accidental secret leakage [`src/ai_qa/userconfig/service.py:28`] — mirrors `secrets/service.py` pattern (caller discipline); no confirmed leak. Add assert guards when tightening AC1 cross-cutting enforcement.
@@ -129,3 +174,33 @@
 - `created_by_user_id`/`updated_by_user_id` are stamped from `owner_user_id` with no project-membership validation at the service layer (unlike `_validate_thread`/`_validate_agent_run`). [src/ai_qa/artifacts/service.py:64] — deferred, defense-in-depth; the only current writer (create API) already passes an authorized member via `ProjectAccessDependency`.
 - `create_version` unconditionally sets `updated_by_user_id = created_by_user_id`, so a caller passing `None` wipes a previously-known updater. [src/ai_qa/artifacts/service.py:136] — deferred, not reachable with None from the current API path.
 - Migration is not SQLite-batch-safe: `op.create_foreign_key`/`op.drop_constraint` are unsupported on SQLite without `render_as_batch=True` in `env.py`. [alembic/versions/604f28c24393_add_artifact_ownership_and_thread_.py] — deferred, production target is PostgreSQL and tests build schema via `metadata.create_all`, not Alembic.
+
+## Deferred from: code review of 11-7-requirements-artifact-save (2026-06-12)
+
+> Most items below belong to Story 11.8 / decision D8 (single-artifact-per-page), whose code was merged into the 11.7 working tree during review. Flag them to the live 11.8 dev process.
+
+- Side-car `save_metadata` is not deduped — duplicate `configuration` metadata rows accumulate on retry/re-approve while `save_requirement` (D8) dedupes the requirement. [src/ai_qa/agents/bob.py:1153] — deferred to 11.8
+- No `"deleted"` change event for the dedupe-removed row — realtime artifact-sync clients may keep a stale entry; `delete_artifact` emits no event. [src/ai_qa/pipelines/artifact_adapter.py:97] — deferred to 11.8
+- `not_requirement` skip leaves the orphan draft — `delete_draft_requirement` runs only on the approved branch, so a skipped page keeps its `{page_id}.md` draft, violating D8's one-artifact-per-page intent. [src/ai_qa/agents/bob.py:1128-1152] — deferred to 11.8
+- No test for D8 dedupe / re-approval / the zero-approved-row window — the existing AC3 failure test makes `save_requirement` itself raise (before any commit), so the post-delete-commit failure path is uncovered. — deferred to 11.8
+- `output_files_saved` count drift — re-approving an already-resolved page increments the counter again (can exceed the unique page count); an all-skipped run hands "Saved 0 approved requirements" to Mary. [src/ai_qa/agents/bob.py:1165,1183] — deferred
+- `source_type` defaults to `"confluence"` when the page dict lacks it (mislabels a Jira-origin page that lost its type); `source_url` is persisted as `""` not NULL. Spec-sanctioned defensive default — revisit only if a source can legitimately lack `source_type`. [src/ai_qa/agents/bob.py:1139-1140] — deferred
+- `source_type` `String(50)` has no length guard — an over-long value fails at PostgreSQL commit (handled as a save failure) but passes SQLite tests. [src/ai_qa/db/models.py:152] — deferred
+- `warnings=[]` vs NULL semantic untested on Postgres — the `[]`=approved-no-issues vs NULL=draft distinction is load-bearing and only verified on SQLite. [src/ai_qa/db/models.py:154] — deferred
+- Duplicate `page_id` in `self.pages` breaks the DONE invariant (`len(_resolved_page_ids) >= len(self.pages)` can never be reached). [src/ai_qa/agents/bob.py:1183] — deferred
+
+## Deferred from: code review of 11-8-technical-debt-sweep-and-hardening (2026-06-12)
+
+> D6/CI (non-functional) is a Decision-needed item in the 11.8 story, not deferred. The items below are the LOW-severity deferrals.
+
+- D2 AdminDashboard timer test deviates from the prescribed Vitest fake timers to a `window.setTimeout` spy that hard-codes the component's `delay === 3000` and asserts the callback effect rather than the timing boundary. Functional + deterministic + component untouched, but a maintainability/spec-deviation smell. [frontend/src/components/admin/AdminDashboard.test.tsx:169-206] — deferred
+- `test_coverage_tracking_active` asserts only that pytest-cov is loaded (`hasplugin("pytest_cov")`), not that coverage is enforced — passes even under `--no-cov`; the test name overstates the guarantee. [tests/unit/test_infrastructure.py:73-77] — deferred
+- Latent test-ordering flakiness: `test_broadcast_artifact_change_filtered_by_project` + `test_websocket_connection_invalid_uuid` failed in one adversarial full-suite run but pass in isolation and in the canonical run (1188 passed). Possible shared-state leak exposed by D4's collection-order change; CI-flake risk, not a hard red. [tests/api/test_artifact_events.py] — deferred
+- D7 story-10-7 comment fixes are source-accurate and behaviour-preserving but remain uncommitted (whole Epic-11 tree is uncommitted); the DoD "E2E fixes committed" claim is unmet. No behavioural risk. [frontend/e2e/story-10-7-artifact-refresh.spec.ts] — deferred
+
+## Deferred from: code review of spec-fix-stuck-thread-startup-recovery (2026-06-22)
+
+- Startup reconciliation (`reconcile_interrupted_work`) is global/unscoped — only safe for a SINGLE app worker. Current deployment IS single-worker (Dockerfile.backend:69 runs one uvicorn; local `--reload` fully joins the old worker before booting the new), so it is safe today. Under `--workers N` or multiple replicas sharing one DB, a booting worker would reset another live worker's `processing`/`running` rows. An `updated_at` age-filter is NOT a valid fix (a legitimately long on-prem LLM call has a stale `updated_at` and would be falsely reset) — needs a per-worker lease/heartbeat before multi-worker is adopted. [src/ai_qa/threads/service.py reconcile_interrupted_work] — deferred (becomes High if multi-worker is ever adopted)
+- Recovery is only visible after a manual page reload — the reconciler updates the DB but does not push a status/refresh event over the WebSocket, and `useWebSocket` reconnect does not re-fetch thread state. A user watching the spinner when the worker dies keeps seeing it (or a reconnect notice) until reload. Consider re-reading thread status on WS (re)subscribe or emitting a recovery event. [frontend/src/hooks/useWebSocket.ts, usePipelineState.ts] — deferred (Medium)
+- `invoke_vision` reuses the full `config.timeout` (600s) as its per-call bound, so a page with N images against a stalled vision endpoint can serialize N×up-to-600s within one extraction step. Give vision a shorter dedicated ceiling and/or a cumulative per-page caption budget. [src/ai_qa/ai_connection/client.py invoke_vision] — deferred (Low)
+- `wait_for`-cancelled `ainvoke` may not eagerly close the shared httpx connection (pool leak under repeated timeouts). Pre-existing pattern (Bob's clarify loop does the same); httpcore generally closes on cancellation. Revisit if timeout frequency rises. [src/ai_qa/ai_connection/client.py, src/ai_qa/pipelines/requirement_formatter.py] — deferred (Low)

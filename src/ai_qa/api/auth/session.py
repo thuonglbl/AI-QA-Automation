@@ -3,6 +3,8 @@
 Manages JWT session tokens, user context, and session storage.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -24,6 +26,7 @@ class UserSession:
     given_name: str | None = None
     family_name: str | None = None
     groups: list[str] = field(default_factory=list)
+    timezone: str = "UTC"
     access_token: str | None = None
     expires_at: datetime | None = None
 
@@ -46,11 +49,12 @@ class UserSession:
             "given_name": self.given_name,
             "family_name": self.family_name,
             "groups": self.groups,
+            "timezone": self.timezone,
             "exp": int(self.expires_at.timestamp()) if self.expires_at else None,
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "UserSession":
+    def from_dict(cls, data: dict[str, Any]) -> UserSession:
         """Create session from decoded JWT dictionary."""
         exp_timestamp = data.get("exp")
         expires_at = None
@@ -66,6 +70,7 @@ class UserSession:
             given_name=data.get("given_name"),
             family_name=data.get("family_name"),
             groups=data.get("groups", []),
+            timezone=data.get("timezone") or "UTC",
             expires_at=expires_at,
         )
 
@@ -91,14 +96,15 @@ class SessionManager:
         expires_at = datetime.now(UTC) + timedelta(hours=self._expire_hours)
 
         session = UserSession(
-            email=user_data.get("email", user_data.get("preferred_username", "")),
-            name=user_data.get("name", user_data.get("displayName", "")),
+            email=str(user_data.get("email") or user_data.get("preferred_username") or ""),
+            name=str(user_data.get("name") or user_data.get("displayName") or ""),
             user_id=user_data.get("user_id"),
             role=user_data.get("role"),
             is_active=user_data.get("is_active", True),
             given_name=user_data.get("given_name"),
             family_name=user_data.get("family_name"),
             groups=user_data.get("groups", []),
+            timezone=user_data.get("timezone") or "UTC",
             expires_at=expires_at,
         )
         return session

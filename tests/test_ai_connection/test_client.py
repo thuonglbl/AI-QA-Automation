@@ -1,11 +1,23 @@
-from unittest.mock import patch
+from typing import cast
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_openai import ChatOpenAI
 
 from ai_qa.ai_connection.client import LLMClient
 from ai_qa.ai_connection.config import LLMConfig
-from ai_qa.exceptions import LLMRateLimitError, LLMTimeoutError
+from ai_qa.exceptions import LLMAuthenticationError, LLMRateLimitError, LLMTimeoutError
+
+
+def _openai_model(client: LLMClient) -> ChatOpenAI:
+    """Return the concrete ``ChatOpenAI`` behind a client for attribute assertions.
+
+    ``LLMClient._chat_model`` is typed ``BaseChatModel`` (the base), which does not expose
+    provider-specific attributes (``model_name``, ``temperature``, ``openai_api_base``,
+    ``request_timeout``). Every non-claude/gemini config builds a ``ChatOpenAI``, so cast
+    to read those in tests (Pyrefly flags the base-typed access otherwise)."""
+    return cast(ChatOpenAI, client._chat_model)
 
 
 @pytest.fixture
@@ -22,8 +34,8 @@ def llm_config():
 
 def test_llm_client_initialization(llm_config):
     client = LLMClient(config=llm_config)
-    assert client._chat_model.model_name == "test-model"
-    assert client._chat_model.temperature == 0.0
+    assert _openai_model(client).model_name == "test-model"
+    assert _openai_model(client).temperature == 0.0
 
 
 @patch("ai_qa.ai_connection.client.ChatOpenAI.invoke")
@@ -88,10 +100,10 @@ def test_llm_client_provider_switching_via_config(mock_invoke):
     )
     client2 = LLMClient(config=config2)
 
-    assert client1._chat_model.model_name == "claude-3-sonnet"
+    assert _openai_model(client1).model_name == "claude-3-sonnet"
     # pydantic/langchain v0.2+ ChatOpenAI base_url behavior varies slightly,
     # but the client is initialized with it.
-    assert client2._chat_model.model_name == "gpt-4o"
+    assert _openai_model(client2).model_name == "gpt-4o"
 
 
 @pytest.mark.parametrize(
@@ -132,8 +144,6 @@ def test_claude_routes_to_chat_anthropic():
 
 
 def test_gemini_routes_to_openai_compat_endpoint():
-    from langchain_openai import ChatOpenAI
-
     client = LLMClient(
         config=LLMConfig(
             provider="gemini",
@@ -143,7 +153,7 @@ def test_gemini_routes_to_openai_compat_endpoint():
         )
     )
     assert isinstance(client._chat_model, ChatOpenAI)
-    assert str(client._chat_model.openai_api_base).endswith("/v1beta/openai")
+    assert str(_openai_model(client).openai_api_base).endswith("/v1beta/openai")
 
 
 def test_openai_base_url_gets_v1_suffix():
@@ -155,4 +165,68 @@ def test_openai_base_url_gets_v1_suffix():
             api_key="sk-openai-test-key-123",
         )
     )
-    assert str(client._chat_model.openai_api_base).rstrip("/").endswith("/v1")
+    assert str(_openai_model(client).openai_api_base).rstrip("/").endswith("/v1")
+
+
+def test_llm_config_has_generous_timeout_default():
+    """A per-request timeout bounds slow/stalled providers (no infinite hang)."""
+    cfg = LLMConfig(model_name="x")
+    assert cfg.timeout == 600.0
+    # The timeout is propagated to the underlying chat model.
+    client = LLMClient(config=cfg)
+    assert _openai_model(client).request_timeout == 600.0
+
+
+@pytest.mark.asyncio
+@patch("ai_qa.ai_connection.client.ChatOpenAI.ainvoke")
+async def test_ainvoke_success(mock_ainvoke, llm_config):
+    """ainvoke returns the model response (async, non-blocking path used by Mary)."""
+    client = LLMClient(config=llm_config)
+    mock_response = AIMessage(content="async hello")
+    mock_ainvoke.return_value = mock_response
+
+    response = await client.ainvoke([HumanMessage(content="Hi")])
+
+    assert response == mock_response
+    mock_ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("ai_qa.ai_connection.client.ChatOpenAI.ainvoke", new_callable=AsyncMock)
+async def test_ainvoke_timeout_not_retried(mock_ainvoke, llm_config):
+    """A timeout in the async path fails fast as LLMTimeoutError — NOT retried 3×.
+
+    Retrying a call that already burned a generous timeout only compounds dead air.
+    """
+    client = LLMClient(config=llm_config)
+    mock_ainvoke.side_effect = Exception("Request timed out")
+
+    with pytest.raises(LLMTimeoutError):
+        await client.ainvoke([HumanMessage(content="Hi")])
+
+    assert mock_ainvoke.await_count == 1
+
+
+@pytest.mark.asyncio
+@patch("ai_qa.ai_connection.client.ChatOpenAI.ainvoke", new_callable=AsyncMock)
+async def test_ainvoke_auth_error_not_retried(mock_ainvoke, llm_config):
+    """A 401/auth error fails fast (deterministic) — not retried 3x in the async path."""
+    client = LLMClient(config=llm_config)
+    mock_ainvoke.side_effect = Exception("Error code: 401 - invalid api key")
+
+    with pytest.raises(LLMAuthenticationError):
+        await client.ainvoke([HumanMessage(content="Hi")])
+
+    assert mock_ainvoke.await_count == 1
+
+
+@patch("ai_qa.ai_connection.client.ChatOpenAI.invoke")
+def test_invoke_auth_error_not_retried(mock_invoke, llm_config):
+    """Sync path also fails fast on auth errors instead of burning retries."""
+    client = LLMClient(config=llm_config)
+    mock_invoke.side_effect = Exception("authentication_error: invalid bearer token")
+
+    with pytest.raises(LLMAuthenticationError):
+        client.invoke([HumanMessage(content="Hi")])
+
+    assert mock_invoke.call_count == 1

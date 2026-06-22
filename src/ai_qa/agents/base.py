@@ -143,7 +143,7 @@ class BaseAgent(ABC):
     # Agent LLM Configuration
     # ------------------------------------------------------------------
 
-    def get_llm_config(self) -> "LLMConfig":
+    def get_llm_config(self) -> LLMConfig:
         """Build LLMConfig for this agent using database configuration.
 
         Raises:
@@ -346,13 +346,15 @@ class BaseAgent(ABC):
             message_type="success",
         )
 
-    async def handle_reject(self, feedback: str) -> None:
+    async def handle_reject(self, feedback: str, data: dict[str, Any] | None = None) -> None:
         """Called by ``POST /api/reject``.  Re-processes with feedback context.
 
         Transitions: current → PROCESSING → REVIEW_REQUEST | ERROR.
 
         Args:
             feedback: User-supplied rejection reason.
+            data: Optional per-agent payload (e.g. ``{"page_id": ...}`` for Bob).
+                  Subclasses that do not need it may ignore it.
         """
         await self.send_message(
             content=f'Understood. I\'ll incorporate your feedback: "{feedback}"',

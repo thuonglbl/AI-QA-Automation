@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:18-alpine
+    image: postgres:18.4-alpine
     container_name: ai_qa_postgres
     restart: always
     environment:
@@ -18,7 +18,7 @@ services:
       retries: 5
 
   seaweedfs:
-    image: chrislusf/seaweedfs:4.31
+    image: chrislusf/seaweedfs:4.33
     container_name: ai_qa_seaweedfs
     restart: always
     ports:

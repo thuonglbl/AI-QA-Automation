@@ -15,7 +15,7 @@ This repository uses a dual testing framework architecture:
 
 ### Backend
 
-- Ensure Python 3.12+ is installed.
+- Ensure Python 3.14+ is installed.
 - Install dependencies: `uv pip install -e ".[dev]"` (or equivalent pip install).
 
 ## Running Tests

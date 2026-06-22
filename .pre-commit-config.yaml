@@ -5,11 +5,11 @@
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    # Version matches dev dependency: ruff>=0.9.0
-    rev: v0.9.0
+    # Matches the installed ruff (0.15.16); required for target-version = "py314".
+    rev: v0.15.16
     hooks:
       # Run ruff linter (with auto-fix)
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
         types_or: [python, pyi]
       # Run ruff formatter
@@ -17,7 +17,8 @@ repos:
         types_or: [python, pyi]
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.0
+    # Matches the installed mypy (2.1.0).
+    rev: v2.1.0
     hooks:
       - id: mypy
         files: ^src/
@@ -29,3 +30,5 @@ repos:
           - pydantic-settings>=2.4.0
           - mcp>=1.6.0
           - sqlalchemy>=2.0
+          - cryptography>=43  # types for ai_qa.db.types Fernet usage
+          - tenacity>=8.0.0  # typed @retry decorators (client/script_generator/vision_locator)

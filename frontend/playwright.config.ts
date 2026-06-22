@@ -45,6 +45,9 @@ export default defineConfig({
     actionTimeout: 15 * 1000,
     navigationTimeout: 60 * 1000,
     baseURL: process.env.BASE_URL || "http://localhost:5173", // Default for Vite local
+    // The in-app runner targets the deployed HTTPS app on the server, which may
+    // use an internal/self-signed certificate. Only relaxed when explicitly opted in.
+    ignoreHTTPSErrors: process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS === "1",
     trace: "retain-on-failure-and-retries",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
@@ -57,31 +60,49 @@ export default defineConfig({
         ...devices["Desktop Chrome"],
         launchOptions: {
           slowMo: Number.isFinite(slowMo) ? slowMo : 0,
+          // Inside the backend container Chromium runs as root, where the
+          // sandbox must be disabled, and /dev/shm is too small. Opt-in only so
+          // local developer runs keep the default hardened browser.
+          args:
+            process.env.E2E_NO_SANDBOX === "1"
+              ? ["--no-sandbox", "--disable-dev-shm-usage"]
+              : [],
         },
       },
     },
   ],
   // Boot (and wait for) the backend + Vite dev server before running tests.
-  // reuseExistingServer keeps already-running local servers (and the admin
-  // in-app runner) untouched; in CI a fresh pair is started each run.
-  webServer: [
-    {
-      command: "uv run ai-qa",
-      cwd: path.resolve(__dirname, ".."),
-      url: "http://127.0.0.1:8000/auth/status",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120 * 1000,
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-    {
-      command: "npm run dev",
-      cwd: __dirname,
-      url: "http://localhost:5173",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120 * 1000,
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  ],
+  // reuseExistingServer keeps already-running local servers untouched; in CI a
+  // fresh pair is started each run.
+  //
+  // The in-app admin runner (POST /api/admin/tests/e2e) sets
+  // E2E_DISABLE_WEBSERVER=1 because the backend and frontend are ALREADY running
+  // when the button is clicked — locally (uvicorn + Vite) and on the deployed
+  // server (the backend container + the Nginx frontend). Booting a second
+  // backend would collide on port 8000, and the backend container has no Vite to
+  // boot at all. Terminal runs (`npx playwright test e2e`) leave the flag unset
+  // and still auto-boot the pair.
+  webServer:
+    process.env.E2E_DISABLE_WEBSERVER === "1"
+      ? undefined
+      : [
+          {
+            command: "uv run ai-qa",
+            cwd: path.resolve(__dirname, ".."),
+            url: "http://127.0.0.1:8000/auth/status",
+            reuseExistingServer: !process.env.CI,
+            timeout: 120 * 1000,
+            stdout: "pipe",
+            stderr: "pipe",
+          },
+          {
+            command: "npm run dev",
+            cwd: __dirname,
+            url: "http://localhost:5173",
+            reuseExistingServer: !process.env.CI,
+            timeout: 120 * 1000,
+            stdout: "pipe",
+            stderr: "pipe",
+          },
+        ],
 });

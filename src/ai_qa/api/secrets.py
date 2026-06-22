@@ -27,6 +27,7 @@ from ai_qa.secrets import (
     CANONICAL_SECRET_TYPES,
     SECRET_TYPE_BROWSER_USE,
     SECRET_TYPE_CLAUDE,
+    SECRET_TYPE_CLAUDE_SSO,
     SECRET_TYPE_GEMINI,
     SECRET_TYPE_MCP,
     SECRET_TYPE_ON_PREMISES,
@@ -50,6 +51,7 @@ SECRET_TYPE_MISMATCH_DETAIL = "secret_type in body does not match the path"
 # (ux-design-specification.md §AI Provider Selection).
 PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     SECRET_TYPE_CLAUDE: "Claude",
+    SECRET_TYPE_CLAUDE_SSO: "Claude (SSO)",
     SECRET_TYPE_OPENAI: "OpenAI",
     SECRET_TYPE_GEMINI: "Gemini / ChatGPT",
     SECRET_TYPE_BROWSER_USE: "Browser Use Cloud",

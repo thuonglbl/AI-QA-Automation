@@ -95,7 +95,7 @@ From Story 7.5 (Conversation History and Thread Resume):
 
 ### Latest Tech Information
 
-- Python 3.12+, FastAPI, SQLAlchemy/Alembic, PostgreSQL (SQLite in-memory for tests via `StaticPool`).
+- Python 3.14+, FastAPI, SQLAlchemy/Alembic, PostgreSQL (SQLite in-memory for tests via `StaticPool`).
 - React 18+, TypeScript, Vite.
 
 ### References

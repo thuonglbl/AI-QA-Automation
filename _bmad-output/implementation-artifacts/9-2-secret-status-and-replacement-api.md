@@ -172,7 +172,7 @@ tests/secrets/test_service.py    # UPDATE: list_secret_status + validate_secret_
 
 ### Latest Tech Information
 
-- No new dependencies. Uses already-pinned `fastapi`, `pydantic`/`pydantic-settings>=2.4`, `sqlalchemy>=2.0` (typed `Mapped[...]`), `cryptography` (via the existing `UserSecretEncryptedString`). Python 3.12+, `uv`, `ruff` (py312, line-length 100), `mypy strict`.
+- No new dependencies. Uses already-pinned `fastapi`, `pydantic`/`pydantic-settings>=2.4`, `sqlalchemy>=2.0` (typed `Mapped[...]`), `cryptography` (via the existing `UserSecretEncryptedString`). Python 3.14+, `uv`, `ruff` (py314, line-length 100), `mypy strict`.
 - FastAPI router/dependency patterns are identical to the existing `projects.py`/`admin.py` — no version-specific gotchas. Pydantic v2 `BaseModel` + `ConfigDict(from_attributes=True)` is the in-repo convention when mapping ORM rows to responses.
 
 ## Dev Agent Record

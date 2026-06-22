@@ -34,4 +34,4 @@ class UserSecret(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="configured")
     encrypted_value: Mapped[str] = mapped_column(UserSecretEncryptedString(1024), nullable=False)
 
-    user: Mapped["User"] = relationship(back_populates="secrets")
+    user: Mapped[User] = relationship(back_populates="secrets")

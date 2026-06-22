@@ -4,41 +4,86 @@ import { usePipelineState } from "@/hooks/usePipelineState";
 import { useAuth } from "@/hooks/useAuth";
 import { createThread, type Thread } from "@/lib/threads";
 import { apiFetch } from "@/lib/api";
-import { getThreadProviderConfig } from "@/lib/providerConfig";
+import { MessageTime, NowMessageTime } from "@/components/MessageTime";
 import { ProviderSelector } from "@/components/ProviderSelector";
 import { ModelAssignmentReview } from "@/components/ModelAssignmentReview";
 import { ProcessingIndicator } from "@/components/ProcessingIndicator";
-import { ProviderConfigPanel } from "@/components/ProviderConfigPanel";
 import { LoginPage } from "@/components/auth/LoginPage";
 import { AdminDashboard } from "@/components/admin/AdminDashboard";
+import { ProjectAdminDashboard } from "@/components/admin/ProjectAdminDashboard";
 import { ThinkingBubble } from "@/components/ThinkingBubble";
-import { SplitPanel } from "@/components/SplitPanel";
 import { ProjectSidebar } from "@/components/conversations/ProjectSidebar";
 import { ArtifactNotice, type ArtifactNoticeType } from "@/components/artifacts/ArtifactNotice";
 import { ArtifactPreview } from "@/components/artifacts/ArtifactPreview";
 import type { Artifact } from "@/components/conversations/ProjectSidebar";
+import { MaryReviewPanel } from "@/components/agents/MaryReviewPanel";
+import { SarahInputSelection } from "@/components/agents/SarahInputSelection";
+import { SarahInputsForm, type SarahInputsRequest } from "@/components/agents/SarahInputsForm";
+import { SarahScriptReviewPanel } from "@/components/agents/SarahScriptReviewPanel";
+import {
+  JackInputSelection,
+  type ProjectEnvironment,
+  type CapturedSessionSlot,
+  type JackRunConfig,
+} from "@/components/agents/JackInputSelection";
+import { JackExecutionReport } from "@/components/agents/JackExecutionReport";
+import { ExecutionHistory } from "@/components/agents/ExecutionHistory";
+import type { ExecutionRunSummary } from "@/types/execution";
+import type { MaryReviewCase, TestCaseInput, ScriptReviewItem, ScriptValidationError } from "@/types/testcase";
+import type { ScriptInput } from "@/types/script";
+import type { ExecutionSummary } from "@/types/execution";
 import { useProject } from "@/hooks/useProject";
 import type {
   ProviderOption,
   ProviderId,
+  AuthMethod,
   SecurityLevel,
   CredentialField,
   ModelAssignment,
   ThinkingTrace,
-  ProviderConfigResponse,
   SavedConfigPrompt,
 } from "@/types/provider";
 import type { AgentMessage } from "@/types/pipeline";
-import { LogOut, PanelLeft } from "lucide-react";
+import { ArrowDown, KeyRound, LogOut, PanelLeft } from "lucide-react";
+import { SessionMatrixPanel } from "@/components/sessions/SessionMatrixPanel";
 
-// Default provider options - shown immediately without waiting for WebSocket
+// Default provider options - shown immediately without waiting for WebSocket.
+// Order is authoritative and mirrors the backend PROVIDER_OPTIONS:
+// On-Premises, Claude SSO, Browser Use, Claude (API key), Gemini, OpenAI.
 const DEFAULT_PROVIDER_OPTIONS: ProviderOption[] = [
+  {
+    id: "on-premises",
+    name: "On-Premises",
+    description: "Internal infrastructure · Company API key",
+    qualityRank: 5,
+    securityLevel: "highest",
+    authMethod: "api_key",
+    credentialFields: [
+      {
+        name: "api_key",
+        label: "API Key",
+        type: "password",
+        required: true,
+        placeholder: "Enter API key...",
+      },
+    ],
+  },
+  {
+    id: "claude-sso",
+    name: "Anthropic / Claude (SSO)",
+    description: "Cloud · Enterprise SSO login",
+    qualityRank: 2,
+    securityLevel: "enterprise",
+    authMethod: "sso",
+    credentialFields: [],
+  },
   {
     id: "browser-use-cloud",
     name: "Browser Use Cloud",
     description: "Cloud · Personal API key",
     qualityRank: 1,
     securityLevel: "cloud",
+    authMethod: "api_key",
     credentialFields: [
       {
         name: "api_key",
@@ -52,9 +97,10 @@ const DEFAULT_PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: "claude",
     name: "Anthropic / Claude",
-    description: "Cloud · Enterprise API key or SSO",
+    description: "Cloud · Personal API key",
     qualityRank: 2,
-    securityLevel: "enterprise",
+    securityLevel: "good",
+    authMethod: "api_key",
     credentialFields: [
       {
         name: "api_key",
@@ -71,6 +117,7 @@ const DEFAULT_PROVIDER_OPTIONS: ProviderOption[] = [
     description: "Cloud · Personal API key",
     qualityRank: 3,
     securityLevel: "good",
+    authMethod: "api_key",
     credentialFields: [
       {
         name: "api_key",
@@ -87,6 +134,7 @@ const DEFAULT_PROVIDER_OPTIONS: ProviderOption[] = [
     description: "Cloud · Personal API key",
     qualityRank: 4,
     securityLevel: "good",
+    authMethod: "api_key",
     credentialFields: [
       {
         name: "api_key",
@@ -94,22 +142,6 @@ const DEFAULT_PROVIDER_OPTIONS: ProviderOption[] = [
         type: "password",
         required: true,
         placeholder: "Enter your OpenAI API key...",
-      },
-    ],
-  },
-  {
-    id: "on-premises",
-    name: "On-Premises",
-    description: "Internal infrastructure · Company API key",
-    qualityRank: 5,
-    securityLevel: "highest",
-    credentialFields: [
-      {
-        name: "api_key",
-        label: "API Key",
-        type: "password",
-        required: true,
-        placeholder: "Enter API key...",
       },
     ],
   },
@@ -127,6 +159,7 @@ const DEFAULT_PROVIDER_OPTIONS: ProviderOption[] = [
 const VALID_PROVIDER_IDS = new Set<string>([
   "browser-use-cloud",
   "claude",
+  "claude-sso",
   "openai",
   "gemini",
   "on-premises",
@@ -138,6 +171,10 @@ function normalizeProviderOption(raw: unknown): ProviderOption {
     (o.credentialFields as CredentialField[] | undefined) ??
     (o.credential_fields as CredentialField[] | undefined) ??
     [];
+  const authMethod =
+    (o.authMethod as AuthMethod | undefined) ??
+    (o.auth_method as AuthMethod | undefined) ??
+    "api_key";
   const rawId = o.id as string;
   return {
     id: VALID_PROVIDER_IDS.has(rawId) ? (rawId as ProviderId) : "on-premises",
@@ -148,6 +185,7 @@ function normalizeProviderOption(raw: unknown): ProviderOption {
       (o.securityLevel as SecurityLevel) ??
       (o.security_level as SecurityLevel) ??
       "cloud",
+    authMethod,
     credentialFields,
   };
 }
@@ -167,23 +205,34 @@ interface AliceState {
   submittedSelection: SubmittedSelection | null;
   thinkingTrace: ThinkingTrace | null;
   savedConfigPrompt: SavedConfigPrompt | null;
+  /** Provider ids that already have a stored key — clicking them skips the prompt. */
+  configuredProviders: string[];
+  /** Provider whose last connection failed (invalid key) — re-prompt for a new key. */
+  invalidProvider: string | null;
+  /** Bumped on every connection failure so the re-prompt clears even on repeat
+   *  failures of the SAME provider (invalidProvider value alone wouldn't change). */
+  invalidAttempt: number;
 }
 
 interface BobState {
   mcpPat: string;
-  isPaginating: boolean;
   isConfirmParent: boolean;
   suggestedPage: string;
   pageMetadata: any;
-  extractedPages: Array<{
-    page_id: string;
-    page_title: string;
-    source_url: string;
-    raw_html: string;
-    requirement_md: string;
-  }> | null;
   submittedMcp?: boolean;
-  thinkingTrace?: ThinkingTrace | null;
+  // After extraction, Bob asks for ONE Confluence page id / Jira ticket id.
+  selectIdPrompt: boolean;
+  selectedIdInput: string;
+  // Point 5: interactive clarification loop. While clarifyPrompt is true Bob is
+  // waiting for the user to answer (or skip) the open quality questions for one file.
+  clarifyPrompt: boolean;
+  clarifyInput: string;
+  clarifyData: {
+    pageId: string;
+    pageTitle: string;
+    sourceUrl: string;
+    points: { category: string; message: string; blocking: boolean }[];
+  } | null;
 }
 
 // Maps a backend artifact_change `change_type` to the notice type shown when the
@@ -227,6 +276,7 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(
     () => localStorage.getItem("ai-qa-sidebar-open") !== "false",
   );
+  const [sessionsPanelOpen, setSessionsPanelOpen] = useState<boolean>(false);
   // Guards against duplicate starter-thread creation under React StrictMode
   // double-invocation and re-renders.
   const creatingThreadRef = useRef(false);
@@ -401,6 +451,31 @@ function App() {
     artifactName: string;
   } | null>(null);
 
+  // Task 4.4: Self-echo suppression for the currently-open artifact.
+  // Stores the artifact_id and change_type of the last self-initiated mutation.
+  const suppressSelfEchoRef = useRef<{ artifactId: string; type: string; timer?: number } | null>(null);
+
+  const handleSelfMutation = useCallback((artifactId: string, type: "updated" | "deleted") => {
+    if (suppressSelfEchoRef.current?.timer) {
+      window.clearTimeout(suppressSelfEchoRef.current.timer);
+    }
+    suppressSelfEchoRef.current = {
+      artifactId,
+      type,
+      timer: window.setTimeout(() => {
+        suppressSelfEchoRef.current = null;
+      }, 3000),
+    };
+  }, []);
+
+  // Clear suppression flag if selection changes
+  useEffect(() => {
+    if (suppressSelfEchoRef.current?.timer) {
+      window.clearTimeout(suppressSelfEchoRef.current.timer);
+    }
+    suppressSelfEchoRef.current = null;
+  }, [selectedArtifact]);
+
   useEffect(() => {
     const unsubscribe = onRawEvent((data) => {
       if (data.type === "artifact_change") {
@@ -415,6 +490,18 @@ function App() {
         
         // Show notice if the changed artifact is currently selected
         if (eventArtifactId && eventArtifactId === selectedArtifact?.id && changeType) {
+          // Task 4.4: Suppress self-echo for own edits/deletes
+          if (
+            suppressSelfEchoRef.current?.artifactId === eventArtifactId &&
+            suppressSelfEchoRef.current?.type === changeType
+          ) {
+            if (suppressSelfEchoRef.current.timer) {
+              window.clearTimeout(suppressSelfEchoRef.current.timer);
+            }
+            suppressSelfEchoRef.current = null; // Consume it
+            return;
+          }
+
           const noticeType = artifactNoticeTypeFor(changeType);
           // The event carries no artifact name, but this branch only runs when
           // the changed artifact is the one being viewed, so its name is known.
@@ -433,6 +520,7 @@ function App() {
     currentStep,
     messages,
     isLoaded,
+    loadedThreadId,
     updateFromMessage,
     addUserMessage,
   } = usePipelineState({
@@ -461,24 +549,73 @@ function App() {
     submittedSelection: null,
     thinkingTrace: null,
     savedConfigPrompt: null,
+    configuredProviders: [],
+    invalidProvider: null,
+    invalidAttempt: 0,
   });
-  const [providerConfigPanel, setProviderConfigPanel] = useState<ProviderConfigResponse | null>(null);
   const isAliceStep = currentStep === 1;
 
   const [bobState, setBobState] = useState<BobState>({
     mcpPat: "",
-    isPaginating: false,
     isConfirmParent: false,
     suggestedPage: "",
     pageMetadata: null,
-    extractedPages: null,
     submittedMcp: false,
+    selectIdPrompt: false,
+    selectedIdInput: "",
+    clarifyPrompt: false,
+    clarifyInput: "",
+    clarifyData: null,
+  });
+  // The single id Bob handed off, carried to Mary's auto-start.
+  const [marySelectedId, setMarySelectedId] = useState<string>("");
+  const [maryState, setMaryState] = useState<{
+    testCases: MaryReviewCase[] | null;
+    // Risk-based test-design clarification loop: while clarifyPrompt is true Mary is
+    // waiting for the user to answer (or skip) one unclear point before generating.
+    clarifyPrompt: boolean;
+    clarifyInput: string;
+  }>({
+    testCases: null,
+    clarifyPrompt: false,
+    clarifyInput: "",
   });
   const isBobStep = currentStep === 2;
+  const isMaryStep = currentStep === 3;
+  const isSarahStep = currentStep === 4;
+  const isJackStep = currentStep === 5;
+
+  const [sarahState, setSarahState] = useState<{
+    testCases: TestCaseInput[] | null;
+    scripts: ScriptReviewItem[] | null;
+    validationErrors: Record<number, ScriptValidationError[]>;
+    inputsRequest: SarahInputsRequest | null;
+  }>({
+    testCases: null,
+    scripts: null,
+    validationErrors: {},
+    inputsRequest: null,
+  });
+
+  // Jack (step 5) input-selection + execution state (14.1/14.2/14.4).
+  const [jackState, setJackState] = useState<{
+    scripts: ScriptInput[] | null;
+    environments: ProjectEnvironment[];
+    appRoles: string[];
+    sessions: CapturedSessionSlot[];
+    summary: ExecutionSummary | null;
+  }>({
+    scripts: null,
+    environments: [],
+    appRoles: [],
+    sessions: [],
+    summary: null,
+  });
 
   // Ref to avoid double-processing the same message from both the live
-  // WebSocket queue and the one-shot history sync effect.
-  const syncedProjectIdRef = useRef<string | null>(null);
+  // WebSocket queue and the one-shot history sync effect. Keyed on the loaded
+  // thread so each conversation restores its panels exactly once on switch.
+  const syncedThreadIdRef = useRef<string | null>(null);
   const processedMsgIds = useRef<Set<string>>(new Set());
   const userScrolledUpRef = useRef(false);
 
@@ -520,13 +657,47 @@ function App() {
   );
 
   const hasSentStartRef = useRef(false);
+  // Separate guard so Mary's auto-start doesn't collide with Alice's step-1 guard.
+  const hasSentMaryStartRef = useRef(false);
+  // Separate guard for Sarah's step-4 auto-start.
+  const hasSentSarahStartRef = useRef(false);
+  // Separate guard for Jack's step-5 auto-start.
+  const hasSentJackStartRef = useRef(false);
 
-  // Auto-scroll to bottom when new messages arrive (only if user hasn't scrolled up)
+  // Task 6.1: Track previous message count to detect NEW arrivals (not in-place updates).
+  // When a new message arrives, force-scroll unconditionally and reset userScrolledUpRef so
+  // the user is considered "at bottom". In-place updates (same count) respect the guard.
+  // Task 6.2: chatBottomRef is a sentinel div that we call scrollIntoView on next-frame —
+  // reliable even when async content (markdown/ReviewContent/thinking panels) renders after.
+  // Task 6.3: NOT coupled to artifactRefreshTrigger (separate effect key) so artifact refresh
+  // never resets scroll position — preserves Story 10.7 invariant.
+  const prevMessageCountRef = useRef(0);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  // Point 1: when a new message arrives while the user has scrolled UP to read,
+  // we no longer yank them down — we surface a floating "New message" pill instead.
+  const [hasNewMessage, setHasNewMessage] = useState(false);
+
+  // Auto-scroll on new messages ONLY when the user is already at the bottom; if they
+  // scrolled up to read, preserve their position and flag a new message (point 1).
   useEffect(() => {
-    if (chatScrollRef.current && !userScrolledUpRef.current) {
-      const el = chatScrollRef.current;
-      el.scrollTop = el.scrollHeight;
+    const newMessage = messages.length > prevMessageCountRef.current;
+    prevMessageCountRef.current = messages.length;
+
+    if (newMessage) {
+      if (userScrolledUpRef.current) {
+        // Reading older messages: don't disrupt — show the floating button.
+        setHasNewMessage(true);
+      } else {
+        requestAnimationFrame(() => {
+          chatBottomRef.current?.scrollIntoView({ block: "end" });
+        });
+      }
+    } else if (chatScrollRef.current && !userScrolledUpRef.current) {
+      // Streaming update (aliceState / thinkingTrace): only scroll if not scrolled up
+      requestAnimationFrame(() => {
+        chatBottomRef.current?.scrollIntoView({ block: "end" });
+      });
     }
   }, [messages, aliceState.thinkingTrace, aliceState.modelAssignments]);
 
@@ -534,11 +705,79 @@ function App() {
     const el = e.currentTarget;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
     userScrolledUpRef.current = !nearBottom;
+    // Back at the bottom: the user has caught up — clear the new-message flag.
+    if (nearBottom) setHasNewMessage(false);
   }, []);
 
+  // Click handler for the floating "New message" pill: jump to the latest message.
+  const scrollToLatestMessage = useCallback(() => {
+    userScrolledUpRef.current = false;
+    setHasNewMessage(false);
+    requestAnimationFrame(() => {
+      chatBottomRef.current?.scrollIntoView({ block: "end" });
+    });
+  }, []);
+
+  // Task 6.4: Reset userScrolledUpRef when switching threads so the new thread
+  // always starts at the bottom (chat re-shows after a preview close too).
+  // Review P2 fix: also reset prevMessageCountRef so the new-message detector compares
+  // against this thread's own message count, not the previous thread's. Otherwise switching
+  // from a longer thread to a shorter one mis-classifies the next real message as "not new"
+  // (count <= stale prior count) and skips the AC4 force-scroll. Resetting to 0 makes the
+  // new thread's first load read as "new", landing it at the bottom.
   useEffect(() => {
     hasSentStartRef.current = false;
-  }, [threadId]);
+    hasSentMaryStartRef.current = false;
+    hasSentSarahStartRef.current = false;
+    hasSentJackStartRef.current = false;
+    // Clear the id Bob handed off so it never leaks into the next thread's
+    // Mary auto-start (each thread carries its own selected id server-side).
+    setMarySelectedId("");
+    userScrolledUpRef.current = false;
+    prevMessageCountRef.current = 0;
+    // Clear the floating "New message" pill so a flag raised in the previous
+    // thread can't persist into a freshly-loaded one (point 1 / F5).
+    setHasNewMessage(false);
+    // Full conversation isolation: reset every agent panel and the processed-id
+    // dedup set so the previous thread/project cannot bleed into this one, and so
+    // the new thread's history is replayed (not skipped) by the restore effect.
+    resetAliceConfiguration();
+    setBobState({
+      mcpPat: "",
+      isConfirmParent: false,
+      suggestedPage: "",
+      pageMetadata: null,
+      submittedMcp: false,
+      selectIdPrompt: false,
+      selectedIdInput: "",
+      clarifyPrompt: false,
+      clarifyInput: "",
+      clarifyData: null,
+    });
+    setMaryState({ testCases: null, clarifyPrompt: false, clarifyInput: "" });
+    setSarahState({
+      testCases: null,
+      scripts: null,
+      validationErrors: {},
+      inputsRequest: null,
+    });
+    setJackState({ scripts: null, environments: [], appRoles: [], sessions: [], summary: null });
+    processedMsgIds.current.clear();
+  }, [threadId, resetAliceConfiguration]);
+
+  // Review P3 fix: the chat container is display:none (`hidden`) while an artifact preview
+  // is open, so a new message arriving during the preview cannot scroll its sentinel into
+  // view. When the preview closes (selectedArtifact -> null) the chat re-shows — scroll to
+  // the bottom on the next frame so the missed message is visible (honors AC4 "always show
+  // newest"). The userScrolledUpRef guard preserves position when the user had scrolled up
+  // and nothing new arrived (a new message resets the flag in the scroll effect above).
+  useEffect(() => {
+    if (selectedArtifact) return;
+    if (userScrolledUpRef.current) return;
+    requestAnimationFrame(() => {
+      chatBottomRef.current?.scrollIntoView({ block: "end" });
+    });
+  }, [selectedArtifact]);
 
   useEffect(() => {
     if (
@@ -557,10 +796,48 @@ function App() {
     }
   }, [isConnected, currentStep, status, threadId, sendMessage]);
 
+  // Auto-start Mary on entry to step 3, carrying the id Bob selected. The id is
+  // also persisted server-side (mary_selected_id.json), so this is a convenience.
+  useEffect(() => {
+    if (
+      isConnected &&
+      currentStep === 3 &&
+      status === "start" &&
+      threadId &&
+      !hasSentMaryStartRef.current
+    ) {
+      hasSentMaryStartRef.current = true;
+      sendMessage({
+        type: "start",
+        step: 3,
+        inputData: marySelectedId ? { selected_id: marySelectedId } : {},
+      });
+    }
+  }, [isConnected, currentStep, status, threadId, sendMessage, marySelectedId]);
+
   // Handle WebSocket messages for Alice-specific UI
   const handleAliceMessage = useCallback(
     (message: AgentMessage) => {
       if (message.agentName && message.agentName !== "Alice") return;
+
+      // Rebuild the read-only submitted provider selection from its persisted
+      // marker (set during history replay). Processed in timeline order, so a
+      // later provider_options (re-prompt) below still clears it correctly.
+      if (message.metadata?.type === "provider_selection") {
+        const providerId = message.metadata.providerId as string | undefined;
+        const providerName = message.metadata.providerName as string | undefined;
+        if (providerId) {
+          setAliceState((prev) => ({
+            ...prev,
+            submittedSelection: {
+              providerId,
+              providerName: providerName || providerId,
+              credentials: {},
+            },
+          }));
+        }
+        return;
+      }
 
       // Provider options from backend — indicates we're back at provider selection step
       // Clear submittedSelection so user can reconfigure
@@ -571,12 +848,32 @@ function App() {
           modelAssignments: null,
           thinkingTrace: null,
           savedConfigPrompt: null,
+          invalidProvider: null,
+          invalidAttempt: 0,
           providerOptions: (
             (message.metadata?.options as unknown[]) ?? []
           ).map(normalizeProviderOption),
           onPremDefaults: message.metadata?.on_prem_defaults as
             | { server_url?: string; api_key_configured: boolean }
             | undefined,
+          configuredProviders:
+            (message.metadata?.configured_providers as string[] | undefined) ?? [],
+        }));
+      }
+
+      // Connection test failed (e.g. a stored key is no longer valid): drop the
+      // read-only submitted view and flag the provider so the selector re-prompts
+      // for a fresh key with the "invalid key" placeholder.
+      if (
+        message.metadata?.type === "connection_test" &&
+        message.metadata?.status === "failed"
+      ) {
+        setAliceState((prev) => ({
+          ...prev,
+          invalidProvider:
+            prev.submittedSelection?.providerId ?? prev.invalidProvider,
+          invalidAttempt: prev.invalidAttempt + 1,
+          submittedSelection: null,
         }));
       }
 
@@ -596,6 +893,8 @@ function App() {
       if (resultData?.model_assignments) {
         setAliceState((prev) => ({
           ...prev,
+          // Connection succeeded — clear any stale invalid-key flag.
+          invalidProvider: null,
           modelAssignments: resultData.model_assignments as ModelAssignment[],
           providerName:
             (
@@ -644,6 +943,16 @@ function App() {
     (message: AgentMessage, currentProjectUrl?: string | null) => {
       if (message.agentName && message.agentName !== "Bob") return;
 
+      // The persisted bob_start marker means MCP was already submitted — rebuild
+      // submittedMcp on replay so a restored thread greys out the key input
+      // instead of re-prompting for a key already provided.
+      if (message.metadata?.type === "bob_start") {
+        setBobState((prev) =>
+          prev.submittedMcp ? prev : { ...prev, submittedMcp: true },
+        );
+        return;
+      }
+
       const resultData =
         (message.metadata?.result as any)?.data || message.metadata;
 
@@ -669,32 +978,146 @@ function App() {
             suggestedPage: newSuggested,
           };
         });
-      } else if (
-        message.metadata?.is_review_ready ||
-        resultData?.type === "review_ready"
-      ) {
+      } else if (message.metadata?.type === "clarify_request") {
+        // Point 5: Bob is asking the user to clarify unclear points for one file.
+        // The question text renders as a normal Bob bubble; this drives the reply panel.
+        const rawPoints = message.metadata?.points;
         setBobState((prev) => ({
           ...prev,
           isConfirmParent: false,
-          isPaginating: true,
-          extractedPages:
-            (message.metadata?.pages as any) ||
-            (resultData?.pages as any) ||
-            [],
+          selectIdPrompt: false,
+          clarifyPrompt: true,
+          clarifyInput: "",
+          clarifyData: {
+            pageId: String(message.metadata?.page_id ?? ""),
+            pageTitle: String(message.metadata?.page_title ?? ""),
+            sourceUrl: String(message.metadata?.source_url ?? ""),
+            points: Array.isArray(rawPoints)
+              ? (rawPoints as {
+                  category: string;
+                  message: string;
+                  blocking: boolean;
+                }[])
+              : [],
+          },
         }));
-      }
-
-      // Thinking Trace
-      if (message.metadata?.type === "thinking_trace") {
+      } else if (message.metadata?.is_select_id) {
+        // Extraction (and any clarification) done; Bob asks for one id to generate from.
         setBobState((prev) => ({
           ...prev,
-          thinkingTrace: message.metadata?.trace as ThinkingTrace,
+          isConfirmParent: false,
+          clarifyPrompt: false,
+          clarifyData: null,
+          selectIdPrompt: true,
         }));
       }
+      // Bob's thinking_trace is no longer stored in bobState — it renders inline
+      // in the message map (point 2), in chronological order.
     },
     [],
   );
 
+  // Handle WebSocket messages for Mary-specific UI
+  const handleMaryMessage = useCallback((message: AgentMessage) => {
+    if (message.agentName && message.agentName !== "Mary") return;
+    if (message.metadata?.type === "test_clarify_request") {
+      // Mary is asking the author to clarify an unclear point before generating.
+      setMaryState((prev) => ({
+        ...prev,
+        testCases: null,
+        clarifyPrompt: true,
+        clarifyInput: "",
+      }));
+      return;
+    }
+    if (message.metadata?.type === "test_case_review") {
+      const testCases = (message.metadata.test_cases as MaryReviewCase[]) ?? [];
+      // The review list means clarification is over — close the clarify panel.
+      setMaryState((prev) => ({ ...prev, testCases, clarifyPrompt: false }));
+    }
+  }, []);
+
+  // Handle WebSocket messages for Sarah-specific UI
+  const handleSarahMessage = useCallback((message: AgentMessage) => {
+    if (message.agentName && message.agentName !== "Sarah") return;
+    if (message.metadata?.type === "test_case_selection") {
+      const testCases = (message.metadata.test_cases as TestCaseInput[]) ?? [];
+      setSarahState((prev) => ({ ...prev, testCases, scripts: null, inputsRequest: null }));
+    } else if (message.metadata?.type === "sarah_inputs_request") {
+      // Sarah needs the application URL (+ Chrome path if not on file) before it
+      // can drive the real app with browser-use.
+      const m = message.metadata;
+      setSarahState((prev) => ({
+        ...prev,
+        testCases: null,
+        scripts: null,
+        inputsRequest: {
+          needsUrl: !!m.needs_url,
+          needsChrome: !!m.needs_chrome,
+          chromeOnFile: !!m.chrome_on_file,
+          chromeExample: (m.chrome_example as string) ?? "",
+          cdpExample: (m.cdp_example as string) ?? "",
+          environments:
+            (m.environments as { name: string; url: string }[] | undefined) ?? [],
+        },
+      }));
+    } else if (message.metadata?.type === "script_review") {
+      // Present-all transport (13.5): replace scripts list; clear input-selection.
+      // Also clear validationErrors — new payload = new generation, stale errors are invalid.
+      const scripts = (message.metadata.scripts as ScriptReviewItem[]) ?? [];
+      setSarahState((prev) => ({
+        ...prev,
+        scripts,
+        testCases: null,
+        validationErrors: {},
+        inputsRequest: null,
+      }));
+    } else if (message.metadata?.type === "script_validation_error") {
+      // 13.6 AC2: set per-script validation errors WITHOUT touching the scripts list.
+      // The panel's Edit buffer must NOT be reset — that's the load-bearing AC1 mechanism.
+      const idx = message.metadata.script_index as number;
+      const errors = (message.metadata.errors as ScriptValidationError[]) ?? [];
+      setSarahState((prev) => ({
+        ...prev,
+        validationErrors: { ...prev.validationErrors, [idx]: errors },
+      }));
+    }
+  }, []);
+
+  // Handle WebSocket messages for Jack-specific UI (14.1 selection, 14.2/14.4 summary)
+  const handleJackMessage = useCallback((message: AgentMessage) => {
+    if (message.agentName && message.agentName !== "Jack") return;
+    if (message.metadata?.type === "script_selection") {
+      const scripts = (message.metadata.scripts as ScriptInput[]) ?? [];
+      const environments = (message.metadata.environments as ProjectEnvironment[]) ?? [];
+      const appRoles = (message.metadata.app_roles as string[]) ?? [];
+      const sessions = (message.metadata.sessions as CapturedSessionSlot[]) ?? [];
+      setJackState((prev) => ({
+        ...prev,
+        scripts,
+        environments,
+        appRoles,
+        sessions,
+        summary: null,
+      }));
+    } else if (message.metadata?.type === "execution_summary") {
+      const m = message.metadata;
+      const summary: ExecutionSummary = {
+        run_id: (m.run_id as string | null) ?? null,
+        total: (m.total as number) ?? 0,
+        passed: (m.passed as number) ?? 0,
+        failed: (m.failed as number) ?? 0,
+        errors: (m.errors as number) ?? 0,
+        skipped: (m.skipped as number) ?? 0,
+        duration_ms: (m.duration_ms as number) ?? 0,
+        browsers: (m.browsers as string[]) ?? [],
+        unavailable_browsers:
+          (m.unavailable_browsers as { label: string; reason: string }[]) ?? [],
+        report_artifact_id: (m.report_artifact_id as string | null) ?? null,
+      };
+      setJackState((prev) => ({ ...prev, summary, scripts: null }));
+    }
+  }, []);
 
   useEffect(() => {
     if (messageQueue.length > 0) {
@@ -705,6 +1128,9 @@ function App() {
         // FIX RC-3: mark as processed so history sync doesn't replay it
         if (msg.id) processedMsgIds.current.add(msg.id);
         handleBobMessage(msg, selectedProject?.confluence_base_url);
+        handleMaryMessage(msg);
+        handleSarahMessage(msg);
+        handleJackMessage(msg);
       });
       consumeMessages(messagesToProcess.length);
     }
@@ -713,26 +1139,49 @@ function App() {
     updateFromMessage,
     handleAliceMessage,
     handleBobMessage,
+    handleMaryMessage,
+    handleSarahMessage,
+    handleJackMessage,
     consumeMessages,
     selectedProject,
   ]);
 
   // Sync state from messages when history is loaded.
-  // Replay loaded messages into individual agent states for UI restoration
+  // Replay loaded messages into individual agent states for UI restoration.
+  // Keyed on loadedThreadId (set only once the matching thread's messages are in
+  // state) so restoration runs exactly once per loaded thread — including two
+  // threads in the same project — without racing the stale isLoaded flag during
+  // a switch.
   useEffect(() => {
-    if (
-      !isLoaded ||
-      syncedProjectIdRef.current === (selectedProject?.id || null)
-    )
-      return;
-    syncedProjectIdRef.current = selectedProject?.id || null;
+    if (loadedThreadId === null) return;
+    if (syncedThreadIdRef.current === loadedThreadId) return;
+    syncedThreadIdRef.current = loadedThreadId;
     messages.forEach((msg) => {
       // FIX RC-3: skip messages already processed from the live queue
       if (msg.id && processedMsgIds.current.has(msg.id)) return;
       handleAliceMessage(msg);
       handleBobMessage(msg, selectedProject?.confluence_base_url);
+      // Restore Mary/Sarah review-panel state on reload / thread re-select,
+      // consistent with the live-queue effect (and with Bob above). Without
+      // these, the test-case / script review panels vanish after a refresh.
+      handleMaryMessage(msg);
+      handleSarahMessage(msg);
+      handleJackMessage(msg);
+      // Mark restored ids processed so a later live echo/reconnect replay of an
+      // already-restored message isn't handled a second time (symmetric with the
+      // live-queue effect's FIX RC-3 bookkeeping).
+      if (msg.id) processedMsgIds.current.add(msg.id);
     });
-  }, [isLoaded, selectedProject?.id]);
+  }, [
+    loadedThreadId,
+    messages,
+    handleAliceMessage,
+    handleBobMessage,
+    handleMaryMessage,
+    handleSarahMessage,
+    handleJackMessage,
+    selectedProject?.confluence_base_url,
+  ]);
 
   useEffect(() => {
     if (!wsError) return;
@@ -776,6 +1225,207 @@ function App() {
     }
   }, [currentStep, status, sendMessage, isLoaded, selectedProjectId]);
 
+  // Auto-navigate to Mary when Bob reaches DONE (mirror of the Alice→Bob effect).
+  useEffect(() => {
+    if (!isLoaded || !selectedProjectId) return;
+    if (currentStep === 2 && (status === "completed" || status === "done")) {
+      const timer = setTimeout(() => {
+        sendMessage({
+          type: "navigate",
+          step: 3,
+          direction: "next",
+          agentName: "Mary",
+          sender: "user",
+          content: "Navigate to Mary",
+          messageType: "info",
+        });
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [currentStep, status, sendMessage, isLoaded, selectedProjectId]);
+
+  // Auto-start Sarah when step 4 is reached and Sarah is in START state.
+  // The user arrives here via the "Proceed to Sarah" button (12.4). Sarah
+  // needs no user input to begin loading approved test cases.
+  useEffect(() => {
+    if (
+      isConnected &&
+      currentStep === 4 &&
+      status === "start" &&
+      threadId &&
+      !hasSentSarahStartRef.current
+    ) {
+      hasSentSarahStartRef.current = true;
+      sendMessage({
+        type: "start",
+        step: 4,
+        inputData: {},
+      });
+    }
+  }, [isConnected, currentStep, status, threadId, sendMessage]);
+
+  // Auto-start Jack when step 5 is reached and Jack is in START state.
+  // The user arrives here via the "Proceed to Jack" button. Jack needs no user
+  // input to begin loading approved scripts.
+  useEffect(() => {
+    if (
+      isConnected &&
+      currentStep === 5 &&
+      status === "start" &&
+      threadId &&
+      !hasSentJackStartRef.current
+    ) {
+      hasSentJackStartRef.current = true;
+      sendMessage({
+        type: "start",
+        step: 5,
+        inputData: {},
+      });
+    }
+  }, [isConnected, currentStep, status, threadId, sendMessage]);
+
+  // Mary approve: send index-addressable approve to backend
+  const handleMaryApprove = useCallback(
+    (index: number) => {
+      if (!selectedProjectId) return;
+      sendMessage({
+        type: "approve",
+        step: 3,
+        data: { action: "approved", test_case_index: index },
+      });
+    },
+    [selectedProjectId, sendMessage],
+  );
+
+  // Mary reject: send index-addressable reject to backend
+  const handleMaryReject = useCallback(
+    (index: number, feedback: string) => {
+      if (!selectedProjectId) return;
+      sendMessage({
+        type: "reject",
+        step: 3,
+        feedback,
+        data: { test_case_index: index },
+      });
+    },
+    [selectedProjectId, sendMessage],
+  );
+
+  // Mary clarify: answer (or skip) the current test-design clarification question.
+  // Routed as an "approve" on step 3 — the backend reads the action while in its
+  // clarify phase. Mirrors Bob's clarification reply.
+  const handleMaryClarifyAnswer = useCallback(
+    (action: "clarify_answer" | "skip", answer: string) => {
+      if (!selectedProjectId) return;
+      const trimmed = answer.trim();
+      if (action === "clarify_answer" && !trimmed) return;
+      addUserMessage(action === "skip" ? "Skip this question" : trimmed);
+      // Hide the panel while Mary processes; a follow-up question (or the test-case
+      // review) re-opens the right UI.
+      setMaryState((prev) => ({ ...prev, clarifyPrompt: false, clarifyInput: "" }));
+      sendMessage({
+        type: "approve",
+        step: 3,
+        data: { action, answer: trimmed },
+      });
+    },
+    [selectedProjectId, sendMessage, addUserMessage],
+  );
+
+  // Sarah confirm: send selected artifact ids as approve with input-selection action
+  const handleSarahConfirm = useCallback(
+    (selectedIds: string[]) => {
+      if (!selectedProjectId) return;
+      sendMessage({
+        type: "approve",
+        step: 4,
+        data: { action: "confirm_inputs", selected_artifact_ids: selectedIds },
+      });
+    },
+    [selectedProjectId, sendMessage],
+  );
+
+  // Jack confirm: send selected script ids + run config (URL/env/role/browsers) (14.1/14.2/14.4)
+  const handleJackConfirm = useCallback(
+    (selectedIds: string[], config: JackRunConfig) => {
+      if (!selectedProjectId) return;
+      sendMessage({
+        type: "approve",
+        step: 5,
+        data: {
+          action: "confirm_inputs",
+          selected_artifact_ids: selectedIds,
+          target_url: config.targetUrl,
+          environment: config.environment,
+          role: config.role,
+          browsers: config.browsers,
+        },
+      });
+    },
+    [selectedProjectId, sendMessage],
+  );
+
+  // Sarah inputs submit: re-start step 4 carrying the application URL + Chrome
+  // path so the browser-use exploration can run on the real app.
+  const handleSarahInputsSubmit = useCallback(
+    (targetUrl: string, chromePath: string, cdpUrl: string) => {
+      if (!selectedProjectId) return;
+      setSarahState((prev) => ({ ...prev, inputsRequest: null }));
+      sendMessage({
+        type: "start",
+        step: 4,
+        inputData: { target_url: targetUrl, chrome_path: chromePath, cdp_url: cdpUrl },
+      });
+    },
+    [selectedProjectId, sendMessage],
+  );
+
+  // Sarah script-review approve (index-addressable, 13.5)
+  const handleSarahApprove = useCallback(
+    (index: number, editedContent?: string) => {
+      if (!selectedProjectId) return;
+      sendMessage({
+        type: "approve",
+        step: 4,
+        data: {
+          action: "approved",
+          script_index: index,
+          // 13.6 AC3: thread the edited content so the backend can validate + save it.
+          // When undefined (no edit), the backend takes the back-compat path (saves original).
+          ...(editedContent !== undefined ? { script_content: editedContent } : {}),
+        },
+      });
+    },
+    [selectedProjectId, sendMessage],
+  );
+
+  // Sarah script-review skip: routes through approve with action="skip" (WS only has approve/reject)
+  const handleSarahSkip = useCallback(
+    (index: number) => {
+      if (!selectedProjectId) return;
+      sendMessage({
+        type: "approve",
+        step: 4,
+        data: { action: "skip", script_index: index },
+      });
+    },
+    [selectedProjectId, sendMessage],
+  );
+
+  // Sarah script-review reject (index-addressable, 13.5)
+  const handleSarahReject = useCallback(
+    (index: number, feedback: string) => {
+      if (!selectedProjectId) return;
+      sendMessage({
+        type: "reject",
+        step: 4,
+        feedback,
+        data: { script_index: index },
+      });
+    },
+    [selectedProjectId, sendMessage],
+  );
+
   // Handle provider selection
   const handleProviderSelect = useCallback(
     (providerId: string, credentials: Record<string, string>) => {
@@ -800,6 +1450,17 @@ function App() {
         },
       }));
 
+      // Persist a SECRET-FREE marker (no credentials) so the submitted selection
+      // can be rebuilt when the conversation is reloaded — otherwise a restored
+      // thread re-shows the provider list as if nothing was chosen. Hidden from
+      // the chat list (filtered by metadata.type); the ProviderSelector renders
+      // the read-only choice instead.
+      addUserMessage(`Selected provider: ${providerName || providerId}`, "info", {
+        type: "provider_selection",
+        providerId,
+        providerName: providerName || providerId,
+      });
+
       // Send provider selection to backend via WebSocket
       sendMessage({
         type: "start",
@@ -812,6 +1473,7 @@ function App() {
     },
     [
       sendMessage,
+      addUserMessage,
       aliceState.providerOptions,
       selectedProjectId,
       clearSelectedProject,
@@ -821,18 +1483,6 @@ function App() {
   const handleUseSavedConfig = useCallback(() => {
     setAliceState((prev) => ({ ...prev, savedConfigPrompt: null }));
     sendMessage({ type: "start", step: 1, inputData: { use_saved_config: true } });
-  }, [sendMessage]);
-
-  const handleInspectConfig = useCallback(() => {
-    if (!threadId) return;
-    getThreadProviderConfig(threadId)
-      .then((cfg) => setProviderConfigPanel(cfg))
-      .catch((err) => { console.error("Failed to load provider config:", err); });
-  }, [threadId]);
-
-  const handleChangeConfig = useCallback(() => {
-    setProviderConfigPanel(null);
-    sendMessage({ type: "start", step: 1, inputData: { force_reconfigure: true } });
   }, [sendMessage]);
 
   // Handle Bob start
@@ -851,6 +1501,8 @@ function App() {
       inputData: {
         mcp_pat: bobState.mcpPat,
         confluence_url: selectedProject?.confluence_base_url ?? "",
+        // Jira no longer rides the start payload — after extraction Bob asks for
+        // a single Confluence page id or Jira ticket id via the select-id step.
       },
     });
   }, [
@@ -880,41 +1532,57 @@ function App() {
   const handleBobApproveParent = useCallback(
     (suggestedPage: string) => {
       if (!selectedProjectId) return;
+      const trimmed = suggestedPage.trim();
+      // Blank → skip extraction and go straight to test cases (Mary); a value →
+      // (re)scope extraction to that page and its child pages.
       sendMessage({
         type: "approve",
         step: 2,
-        data: { confirmed_page_name: suggestedPage },
+        data: trimmed ? { confirmed_page_name: trimmed } : { action: "skip" },
       });
     },
     [selectedProjectId, sendMessage],
   );
 
-  const handleBobApprove = useCallback(
-    (pageId: string, updatedMarkdown: string) => {
-      if (!selectedProjectId) return;
+  // After extraction, the user submits ONE Confluence page id or Jira ticket id.
+  // Bob resolves it (reads+saves a Jira ticket, or reuses an already-saved page),
+  // persists the choice for Mary, and hands off.
+  const handleBobSelectId = useCallback(
+    (id: string) => {
+      const trimmed = id.trim();
+      if (!selectedProjectId || !trimmed) return;
+      setMarySelectedId(trimmed);
+      addUserMessage(trimmed);
       sendMessage({
         type: "approve",
         step: 2,
-        data: {
-          action: "approved",
-          page_id: pageId,
-          markdown: updatedMarkdown,
-        },
+        data: { action: "select_id", id: trimmed },
       });
     },
-    [selectedProjectId, sendMessage],
+    [selectedProjectId, sendMessage, addUserMessage],
   );
 
-  const handleBobSkip = useCallback(
-    (pageId: string) => {
+  // Point 5: send a clarification answer (or skip this file) for the current file.
+  // Bob routes by phase, so both actions go over the same approve channel. The
+  // clarify question bundles all of a file's unclear points, so skipping is
+  // per-file (there is no per-point skip).
+  const handleBobClarifyAnswer = useCallback(
+    (action: "clarify_answer" | "skip_file", answer: string) => {
       if (!selectedProjectId) return;
+      const pageId = bobState.clarifyData?.pageId ?? "";
+      const trimmed = answer.trim();
+      if (action === "clarify_answer" && !trimmed) return;
+      addUserMessage(action === "skip_file" ? "Skip this file" : trimmed);
+      // Hide the panel while Bob processes; a follow-up clarify_request (or the
+      // select-id prompt) re-opens the right UI.
+      setBobState((prev) => ({ ...prev, clarifyPrompt: false, clarifyInput: "" }));
       sendMessage({
         type: "approve",
         step: 2,
-        data: { action: "not_requirement", page_id: pageId },
+        data: { action, page_id: pageId, answer: trimmed },
       });
     },
-    [selectedProjectId, sendMessage],
+    [selectedProjectId, bobState.clarifyData, sendMessage, addUserMessage],
   );
 
   // The active thread carries an immutable bound project. Provider/Alice UI is
@@ -930,6 +1598,15 @@ function App() {
   // Show model review if we have assignments - always visible once assigned
   const showModelReview = aliceState.modelAssignments;
   const isProcessing = status === "processing";
+  // Earliest bob_start marker (by timestamp) — the chat list collapses any later
+  // duplicates onto this one so the MCP input renders exactly once.
+  const firstBobStartId =
+    [...messages]
+      .sort(
+        (a, b) =>
+          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+      )
+      .find((m) => m.metadata?.type === "bob_start")?.id ?? null;
 
   // Show login page if not authenticated
   if (!isAuthenticated && !isLoading) {
@@ -938,6 +1615,10 @@ function App() {
 
   if (isAuthenticated && user?.role?.toLowerCase() === "admin") {
     return <AdminDashboard />;
+  }
+
+  if (isAuthenticated && user?.role?.toLowerCase() === "project_admin") {
+    return <ProjectAdminDashboard />;
   }
 
   // Agent display names and colors
@@ -992,14 +1673,15 @@ function App() {
     <div className="h-screen flex bg-[#0f172a] overflow-hidden text-white">
       {/* Sidebar */}
       {isSidebarOpen && (
-        <aside className="w-[260px] flex-shrink-0 flex flex-col bg-[#111827] border-r border-[#1f2937] p-3 transition-all duration-300">
+        <aside className="w-[540px] flex-shrink-0 flex flex-col bg-[#111827] border-r border-[#1f2937] p-3 transition-all duration-300">
           <div className="px-3 py-2 mb-2 font-bold text-base flex items-center gap-2 tracking-wide">
             AI <span className="text-[#3b82f6]">QA Automation</span>
           </div>
           
           {isAuthenticated && (
-            <ProjectSidebar 
-              currentThreadId={threadId} 
+            <ProjectSidebar
+              currentThreadId={threadId}
+              activeProjectId={activeProjectId}
               onSelectThread={(id) => {
                 setThreadId(id);
                 localStorage.setItem("ai-qa-thread-id", id);
@@ -1049,6 +1731,15 @@ function App() {
               <span className="text-xs text-[#64748b] mr-2">{user.name}</span>
             )}
             <button
+              onClick={() => setSessionsPanelOpen(true)}
+              disabled={!selectedProjectId}
+              title="Manage your test-login sessions"
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#e2e8f0] bg-white text-xs font-medium text-[#64748b] hover:bg-[#f8fafc] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              Sessions
+            </button>
+            <button
               onClick={() => logout()}
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-[#e2e8f0] bg-white text-xs font-medium text-[#64748b] hover:bg-[#f8fafc] transition-all"
             >
@@ -1057,6 +1748,14 @@ function App() {
             </button>
           </div>
         </nav>
+        {selectedProjectId && (
+          <SessionMatrixPanel
+            projectId={selectedProjectId}
+            projectName={selectedProject?.name}
+            open={sessionsPanelOpen}
+            onClose={() => setSessionsPanelOpen(false)}
+          />
+        )}
 
         <div className="flex-1 flex flex-col overflow-hidden relative">
           {/* Artifact Notice */}
@@ -1132,30 +1831,7 @@ function App() {
                     ? "Review"
                     : "Done"}
             </span>
-            {isAliceStep && threadId && (
-              <button
-                onClick={handleInspectConfig}
-                aria-label="Inspect provider configuration"
-                title="Provider Configuration"
-                data-testid="inspect-config-btn"
-                className="p-1.5 rounded-lg text-[#64748b] hover:bg-[#f1f5f9] hover:text-[#0f172a] transition-colors"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
-                  <circle cx="12" cy="12" r="3"/>
-                </svg>
-              </button>
-            )}
           </div>
-
-          {/* Provider Config Panel (inspect modal) */}
-          {providerConfigPanel && (
-            <ProviderConfigPanel
-              config={providerConfigPanel}
-              onChangeConfig={handleChangeConfig}
-              onClose={() => setProviderConfigPanel(null)}
-            />
-          )}
 
           {/* Error display */}
           {wsError && (
@@ -1195,7 +1871,10 @@ function App() {
             </div>
           )}
 
-          {/* Chat Content - Scrollable container (hidden when artifact preview is open) */}
+          {/* Chat Content - Scrollable container (hidden when artifact preview is open).
+              Wrapped in a relative box so the floating "New message" pill (point 1) can
+              anchor to the chat viewport; the wrapper hides together with the chat. */}
+          <div className={`relative flex-1 flex flex-col min-h-0${selectedArtifact ? " hidden" : ""}`}>
           <div ref={chatScrollRef} onScroll={handleChatScroll} className={`flex-1 bg-[#f8fafc] overflow-y-auto max-h-[calc(100vh-120px)]${selectedArtifact ? " hidden" : ""}`}>
             <div className="p-5 flex flex-col gap-4 min-h-0">
               {/* Alice info message: loading / error / no-access. The project
@@ -1206,6 +1885,7 @@ function App() {
                   <div className="w-[40%] min-w-[18rem] max-w-xl self-start">
                     <div className="text-[11px] font-semibold mb-1 text-[#3b82f6]">
                       Alice
+                      <NowMessageTime />
                     </div>
                     <div className="p-4 text-sm leading-relaxed bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm">
                       {isLoadingProjects ? (
@@ -1226,7 +1906,17 @@ function App() {
               {/* Saved-config prompt (Task 4) — explicit use/change affordance */}
               {hasConfirmedProject && aliceState.savedConfigPrompt && !aliceState.submittedSelection && (
                 <div className="self-start w-[50%] min-w-0">
-                  <div className="text-[11px] font-semibold text-[#3b82f6] mb-1">Alice</div>
+                  <div className="text-[11px] font-semibold text-[#3b82f6] mb-1">
+                    Alice
+                    <MessageTime
+                      timestamp={
+                        messages.find(
+                          (m) => m.metadata?.type === "saved_config_prompt",
+                        )?.timestamp
+                      }
+                      fallbackToNow
+                    />
+                  </div>
                   <div className="p-4 bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-sm text-[#0f172a] leading-relaxed space-y-3">
                     <p>
                       You have a saved provider configuration for this project:{" "}
@@ -1280,6 +1970,19 @@ function App() {
                   }
                   submittedSelection={aliceState.submittedSelection}
                   enabledProviders={selectedProject?.enabled_providers}
+                  configuredProviders={aliceState.configuredProviders}
+                  invalidProvider={aliceState.invalidProvider}
+                  invalidAttempt={aliceState.invalidAttempt}
+                  messageTimestamp={
+                    messages.find(
+                      (m) => m.metadata?.type === "provider_options",
+                    )?.timestamp
+                  }
+                  selectionTimestamp={
+                    messages.find(
+                      (m) => m.metadata?.type === "provider_selection",
+                    )?.timestamp
+                  }
                 />
               )}
 
@@ -1297,6 +2000,13 @@ function App() {
                   key={`trace-${aliceState.thinkingTrace.connection_status}-${aliceState.thinkingTrace.available_models?.length || 0}`}
                   trace={aliceState.thinkingTrace}
                   title="Alice's thought"
+                  timestamp={
+                    messages.find(
+                      (m) =>
+                        m.metadata?.type === "thinking_trace" &&
+                        m.agentName !== "Bob",
+                    )?.timestamp
+                  }
                   isCompleted={!aliceState.thinkingTrace.available_models?.length}
                 />
               )}
@@ -1311,6 +2021,10 @@ function App() {
                   unavailableModels={aliceState.thinkingTrace?.unavailable_models}
                   onApprove={handleApprove}
                   disabled={!isConnected || status === "error"}
+                  messageTimestamp={
+                    messages.find((m) => m.metadata?.model_assignments)
+                      ?.timestamp
+                  }
                 />
               )}
 
@@ -1322,6 +2036,9 @@ function App() {
                     new Date(b.timestamp).getTime(),
                 )
                 .filter((msg) => {
+                  // Skip empty-content messages (e.g. provider_options carriers,
+                  // including persisted ones whose metadata didn't round-trip).
+                  if (!msg.content || msg.content.trim() === "") return false;
                   // Skip processing/thinking messages that are transient
                   const content = msg.content?.toLowerCase() || "";
                   if (content === "processing" || content === "review_request")
@@ -1333,8 +2050,33 @@ function App() {
                     return false;
                   // Skip provider options messages (rendered via ProviderSelector component)
                   if (msg.metadata?.type === "provider_options") return false;
-                  // Skip thinking trace messages (rendered via ThinkingBubble component)
-                  if (msg.metadata?.type === "thinking_trace") return false;
+                  // Skip Mary's per-item test-case review carrier: its markdown dump
+                  // ("## Test Case X of Y …") is redundant — the MaryReviewPanel below
+                  // renders the same case with approve/reject controls.
+                  if (msg.metadata?.type === "test_case_review") return false;
+                  // Skip the secret-free provider-selection marker (rebuilds the
+                  // read-only ProviderSelector on reload; never a chat bubble).
+                  if (msg.metadata?.type === "provider_selection") return false;
+                  // Collapse duplicate bob_start markers (stale dupes accumulated
+                  // by earlier sessions): keep only the first so the MCP input and
+                  // "Start requirements extraction" bubble render exactly once.
+                  if (
+                    msg.metadata?.type === "bob_start" &&
+                    firstBobStartId !== null &&
+                    msg.id !== firstBobStartId
+                  )
+                    return false;
+                  // Alice's streaming trace renders via the fixed ThinkingBubble below;
+                  // Bob's one-shot "Extract from MCP: done" trace renders INLINE in
+                  // chronological order (point 2), so only skip non-Bob traces here.
+                  if (
+                    msg.metadata?.type === "thinking_trace" &&
+                    msg.agentName !== "Bob"
+                  )
+                    return false;
+                  // Point 3: is_select_id only drives the inline select-id input
+                  // (rendered separately below); its carrier text is redundant.
+                  if (msg.metadata?.is_select_id) return false;
                   // Skip model assignments messages (rendered via ModelAssignmentReview component)
                   if (msg.metadata?.model_assignments) return false;
                   // Skip project selection message because it is rendered inline to preserve chat flow:
@@ -1377,6 +2119,7 @@ function App() {
                           <div className="w-[85%] max-w-4xl self-start mb-4">
                             <div className="text-[11px] font-semibold mb-1 text-[#3b82f6]">
                               Bob
+                              <MessageTime timestamp={msg.timestamp} />
                             </div>
                             <div className="bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm overflow-hidden flex flex-col p-5 gap-4">
                               <p className="text-sm font-medium">
@@ -1393,10 +2136,25 @@ function App() {
                                       mcpPat: e.target.value,
                                     }))
                                   }
-                                  disabled={bobState.submittedMcp}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      if (
+                                        bobState.mcpPat &&
+                                        isConnected &&
+                                        (!bobState.submittedMcp ||
+                                          status === "start")
+                                      )
+                                        handleBobStart();
+                                    }
+                                  }}
+                                  disabled={
+                                    bobState.submittedMcp && status !== "start"
+                                  }
                                   className="flex-1 rounded-md border border-[#e2e8f0] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b82f6] focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
                                 />
-                                {!bobState.submittedMcp && (
+                                {(!bobState.submittedMcp ||
+                                  status === "start") && (
                                   <button
                                     onClick={handleBobStart}
                                     disabled={!bobState.mcpPat || !isConnected}
@@ -1413,12 +2171,67 @@ function App() {
                         <div className="w-[40%] min-w-0 self-end">
                           <div className="text-[11px] font-semibold mb-1 text-[#64748b] text-right">
                             You
+                            <MessageTime timestamp={msg.timestamp} />
                           </div>
                           <div className="p-4 text-sm leading-relaxed bg-[#3b82f6] text-white rounded-2xl rounded-br-sm">
                             {msg.content}
                           </div>
                         </div>
                       </Fragment>
+                    );
+                  }
+
+                  // Point 2: Bob's thinking trace renders inline at its chronological
+                  // position (right after the conversions, before the quality summary).
+                  if (msg.metadata?.type === "thinking_trace") {
+                    return (
+                      <ThinkingBubble
+                        key={msg.id}
+                        trace={msg.metadata?.trace as ThinkingTrace}
+                        title="Bob's thought"
+                        timestamp={msg.timestamp}
+                      />
+                    );
+                  }
+
+                  // Point 5: Bob's clarification question carries a "Clarify: <file>"
+                  // title so the user knows which requirement it concerns.
+                  if (msg.metadata?.type === "clarify_request") {
+                    return (
+                      <div key={msg.id} className="w-[85%] max-w-4xl self-start">
+                        <div className="text-[11px] font-semibold mb-1 text-[#3b82f6]">
+                          Bob
+                          <MessageTime timestamp={msg.timestamp} />
+                        </div>
+                        <div className="bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm p-5 flex flex-col gap-2">
+                          <p className="text-sm font-semibold text-gray-800">
+                            Clarify: {String(msg.metadata?.page_title ?? "")}
+                          </p>
+                          <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+                            {msg.content}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // Mary's risk-based test-design clarification question.
+                  if (msg.metadata?.type === "test_clarify_request") {
+                    return (
+                      <div key={msg.id} className="w-[85%] max-w-4xl self-start">
+                        <div className="text-[11px] font-semibold mb-1 text-[#22c55e]">
+                          Mary
+                          <MessageTime timestamp={msg.timestamp} />
+                        </div>
+                        <div className="bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm p-5 flex flex-col gap-2">
+                          <p className="text-sm font-semibold text-gray-800">
+                            Clarify before writing test cases
+                          </p>
+                          <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+                            {msg.content}
+                          </p>
+                        </div>
+                      </div>
                     );
                   }
 
@@ -1433,6 +2246,7 @@ function App() {
                         {msg.sender === "user"
                           ? "You"
                           : msg.agentName || msg.sender}
+                        <MessageTime timestamp={msg.timestamp} />
                       </div>
                       <div
                         className={`p-4 text-sm leading-relaxed ${msg.sender === "user" ? "bg-[#3b82f6] text-white rounded-2xl rounded-br-sm" : "bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a]"}`}
@@ -1450,6 +2264,7 @@ function App() {
                   <div className="w-[85%] max-w-4xl self-start mt-4">
                     <div className="text-[11px] font-semibold mb-1 text-[#3b82f6]">
                       Bob
+                      <NowMessageTime />
                     </div>
                     <div className="bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm overflow-hidden flex flex-col p-5 gap-4">
                       <p className="text-sm font-medium">
@@ -1466,6 +2281,17 @@ function App() {
                               mcpPat: e.target.value,
                             }))
                           }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              if (
+                                bobState.mcpPat &&
+                                isConnected &&
+                                !bobState.submittedMcp
+                              )
+                                handleBobStart();
+                            }
+                          }}
                           disabled={bobState.submittedMcp}
                           className="flex-1 rounded-md border border-[#e2e8f0] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b82f6] focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
                         />
@@ -1483,13 +2309,8 @@ function App() {
                   </div>
                 )}
 
-              {/* Bob Thinking Trace */}
-              {isBobStep && (bobState as any).thinkingTrace && (
-                <ThinkingBubble
-                  trace={(bobState as any).thinkingTrace}
-                  title="Bob's thought"
-                />
-              )}
+              {/* Bob's thinking trace now renders inline within the message map
+                  above (point 2) so it appears in chronological order. */}
 
               {/* Bob Parent Page Confirmation */}
               {isBobStep &&
@@ -1498,16 +2319,29 @@ function App() {
                   <div className="w-[85%] max-w-4xl self-start">
                     <div className="text-[11px] font-semibold mb-1 text-[#3b82f6]">
                       Bob
+                      <MessageTime
+                        timestamp={
+                          messages.find(
+                            (m) =>
+                              m.metadata?.is_confirm_parent ||
+                              m.metadata?.type === "confirm_parent",
+                          )?.timestamp
+                        }
+                        fallbackToNow
+                      />
                     </div>
                     <div className="bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm overflow-hidden flex flex-col p-5 gap-4">
                       <p className="text-sm font-medium text-gray-700 leading-relaxed">
-                        I found the below link contains all requirements, is it
-                        correct? If not, please input the correct one.
+                        I found the link below with all the requirements. To cover
+                        only part of them, enter a parent page URL instead — all of
+                        its child pages are processed. If your requirements are
+                        already extracted and unchanged, leave it blank to skip
+                        straight to test cases.
                       </p>
                       <div className="flex gap-3">
                         <input
                           type="text"
-                          placeholder="Enter the correct page URL..."
+                          placeholder="Enter a parent page URL, or leave blank to skip..."
                           value={bobState.suggestedPage}
                           onChange={(e) =>
                             setBobState((prev) => ({
@@ -1515,13 +2349,73 @@ function App() {
                               suggestedPage: e.target.value,
                             }))
                           }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              if (isConnected)
+                                handleBobApproveParent(bobState.suggestedPage);
+                            }
+                          }}
                           className="flex-1 rounded-md border border-[#e2e8f0] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b82f6] focus:border-transparent"
                         />
                         <button
                           onClick={() =>
                             handleBobApproveParent(bobState.suggestedPage)
                           }
-                          disabled={!bobState.suggestedPage || !isConnected}
+                          disabled={!isConnected}
+                          className="bg-[#3b82f6] text-white px-8 py-2 rounded-md text-sm font-medium hover:bg-[#2563eb] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                          {bobState.suggestedPage.trim() ? "OK" : "Skip"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+              {/* Bob single-id selection (replaces the old per-page review panel).
+                  All extracted pages are auto-saved; the user picks ONE id to
+                  generate test cases from. */}
+              {isBobStep &&
+                status === "review_request" &&
+                bobState.selectIdPrompt && (
+                  <div className="w-[85%] max-w-4xl self-start">
+                    <div className="text-[11px] font-semibold mb-1 text-[#3b82f6]">
+                      Bob
+                      <MessageTime
+                        timestamp={
+                          messages.find((m) => m.metadata?.is_select_id)
+                            ?.timestamp
+                        }
+                        fallbackToNow
+                      />
+                    </div>
+                    <div className="bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm overflow-hidden flex flex-col p-5 gap-4">
+                      <p className="text-sm font-medium text-gray-700 leading-relaxed">
+                        Requirements saved. Please input 1 Confluence page id or
+                        Jira ticket id to generate test cases.
+                      </p>
+                      <div className="flex gap-3">
+                        <input
+                          type="text"
+                          value={bobState.selectedIdInput}
+                          onChange={(e) =>
+                            setBobState((prev) => ({
+                              ...prev,
+                              selectedIdInput: e.target.value,
+                            }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              handleBobSelectId(bobState.selectedIdInput);
+                            }
+                          }}
+                          className="flex-1 rounded-md border border-[#e2e8f0] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b82f6] focus:border-transparent"
+                        />
+                        <button
+                          onClick={() =>
+                            handleBobSelectId(bobState.selectedIdInput)
+                          }
+                          disabled={!bobState.selectedIdInput.trim() || !isConnected}
                           className="bg-[#3b82f6] text-white px-8 py-2 rounded-md text-sm font-medium hover:bg-[#2563eb] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                         >
                           OK
@@ -1531,28 +2425,386 @@ function App() {
                   </div>
                 )}
 
-              {/* Bob Requirement Review */}
+              {/* Point 5: Bob clarification reply panel — the user's answer input, on
+                  the right (user side). The question (with its "Clarify: <file>" title)
+                  renders as a Bob bubble above; this is just the input + actions. */}
               {isBobStep &&
                 status === "review_request" &&
-                bobState.isPaginating &&
-                bobState.extractedPages && (
-                  <div className="w-[85%] max-w-5xl self-start">
-                    <div className="text-[11px] font-semibold mb-1 text-[#3b82f6]">
-                      Bob
+                bobState.clarifyPrompt &&
+                bobState.clarifyData && (
+                  <div className="w-[85%] max-w-4xl self-end">
+                    <div className="bg-white border border-[#e2e8f0] rounded-2xl rounded-br-sm text-[#0f172a] shadow-sm overflow-hidden flex flex-col p-5 gap-3">
+                      <textarea
+                        rows={3}
+                        value={bobState.clarifyInput}
+                        onChange={(e) =>
+                          setBobState((prev) => ({
+                            ...prev,
+                            clarifyInput: e.target.value,
+                          }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            if (bobState.clarifyInput.trim() && isConnected)
+                              handleBobClarifyAnswer(
+                                "clarify_answer",
+                                bobState.clarifyInput,
+                              );
+                          }
+                        }}
+                        placeholder="Type the missing details here..."
+                        className="rounded-md border border-[#e2e8f0] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b82f6] focus:border-transparent resize-y"
+                      />
+                      <div className="flex flex-wrap gap-3 justify-end">
+                        <button
+                          onClick={() =>
+                            handleBobClarifyAnswer(
+                              "clarify_answer",
+                              bobState.clarifyInput,
+                            )
+                          }
+                          disabled={!bobState.clarifyInput.trim() || !isConnected}
+                          className="bg-[#3b82f6] text-white px-6 py-2 rounded-md text-sm font-medium hover:bg-[#2563eb] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                          Submit answer
+                        </button>
+                        <button
+                          onClick={() => handleBobClarifyAnswer("skip_file", "")}
+                          disabled={!isConnected}
+                          className="border border-[#e2e8f0] text-gray-600 px-4 py-2 rounded-md text-sm font-medium hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                          Skip this file
+                        </button>
+                      </div>
                     </div>
-                    <SplitPanel
-                      pages={bobState.extractedPages}
-                      currentIndex={0}
-                      totalPages={bobState.extractedPages.length}
-                      onApprove={handleBobApprove}
-                      onSkip={handleBobSkip}
-                      disabled={false}
+                  </div>
+                )}
+
+              {/* Mary clarification reply panel — the question renders as a Mary bubble
+                  above; this is the answer input + actions, on the right (user side). */}
+              {isMaryStep && status === "review_request" && maryState.clarifyPrompt && (
+                <div className="w-[85%] max-w-4xl self-end">
+                  <div className="bg-white border border-[#e2e8f0] rounded-2xl rounded-br-sm text-[#0f172a] shadow-sm overflow-hidden flex flex-col p-5 gap-3">
+                    <textarea
+                      rows={3}
+                      value={maryState.clarifyInput}
+                      onChange={(e) =>
+                        setMaryState((prev) => ({
+                          ...prev,
+                          clarifyInput: e.target.value,
+                        }))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          if (maryState.clarifyInput.trim() && isConnected)
+                            handleMaryClarifyAnswer(
+                              "clarify_answer",
+                              maryState.clarifyInput,
+                            );
+                        }
+                      }}
+                      placeholder="Answer the question here, or skip it..."
+                      className="rounded-md border border-[#e2e8f0] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#22c55e] focus:border-transparent resize-y"
+                    />
+                    <div className="flex flex-wrap gap-3 justify-end">
+                      <button
+                        onClick={() =>
+                          handleMaryClarifyAnswer("clarify_answer", maryState.clarifyInput)
+                        }
+                        disabled={!maryState.clarifyInput.trim() || !isConnected}
+                        className="bg-[#22c55e] text-white px-6 py-2 rounded-md text-sm font-medium hover:bg-[#16a34a] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        Submit answer
+                      </button>
+                      <button
+                        onClick={() => handleMaryClarifyAnswer("skip", "")}
+                        disabled={!isConnected}
+                        className="border border-[#e2e8f0] text-gray-600 px-4 py-2 rounded-md text-sm font-medium hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        Skip this question
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Mary per-item test-case review panel */}
+              {isMaryStep &&
+                status === "review_request" &&
+                maryState.testCases &&
+                maryState.testCases.length > 0 && (
+                  <div className="w-[85%] max-w-4xl self-start">
+                    <div className="text-[11px] font-semibold mb-1 text-[#22c55e]">
+                      Mary
+                      <MessageTime
+                        timestamp={
+                          messages.find(
+                            (m) => m.metadata?.type === "test_case_review",
+                          )?.timestamp
+                        }
+                        fallbackToNow
+                      />
+                    </div>
+                    <MaryReviewPanel
+                      testCases={maryState.testCases}
+                      onApprove={handleMaryApprove}
+                      onReject={handleMaryReject}
+                      disabled={!isConnected}
                     />
                   </div>
                 )}
 
+              {/* Sarah inputs form — collect target URL + Chrome path so the
+                  browser-use exploration can drive the real app. */}
+              {isSarahStep && sarahState.inputsRequest && (
+                <div className="w-[85%] max-w-4xl self-start">
+                  <div className="text-[11px] font-semibold mb-1 text-[#8B5CF6]">
+                    Sarah
+                    <MessageTime
+                      timestamp={
+                        messages.find(
+                          (m) => m.metadata?.type === "sarah_inputs_request",
+                        )?.timestamp
+                      }
+                      fallbackToNow
+                    />
+                  </div>
+                  <SarahInputsForm
+                    request={sarahState.inputsRequest}
+                    onSubmit={handleSarahInputsSubmit}
+                    disabled={!isConnected}
+                  />
+                </div>
+              )}
+
+              {/* Sarah input-selection panel */}
+              {isSarahStep &&
+                status === "review_request" &&
+                sarahState.testCases &&
+                sarahState.testCases.length > 0 && (
+                  <div className="w-[85%] max-w-4xl self-start">
+                    <div className="text-[11px] font-semibold mb-1 text-[#8B5CF6]">
+                      Sarah
+                      <MessageTime
+                        timestamp={
+                          messages.find(
+                            (m) => m.metadata?.type === "test_case_selection",
+                          )?.timestamp
+                        }
+                        fallbackToNow
+                      />
+                    </div>
+                    <SarahInputSelection
+                      testCases={sarahState.testCases}
+                      onConfirm={handleSarahConfirm}
+                      disabled={!isConnected}
+                    />
+                  </div>
+                )}
+
+              {/* Sarah script-review panel — side-by-side review UX (13.5) */}
+              {isSarahStep &&
+                status === "review_request" &&
+                sarahState.scripts &&
+                sarahState.scripts.length > 0 && (
+                  <div className="w-[85%] max-w-4xl self-start">
+                    <div className="text-[11px] font-semibold mb-1 text-[#8B5CF6]">
+                      Sarah
+                      <MessageTime
+                        timestamp={
+                          messages.find(
+                            (m) => m.metadata?.type === "script_review",
+                          )?.timestamp
+                        }
+                        fallbackToNow
+                      />
+                    </div>
+                    <SarahScriptReviewPanel
+                      scripts={sarahState.scripts}
+                      onApprove={handleSarahApprove}
+                      onReject={handleSarahReject}
+                      onSkip={handleSarahSkip}
+                      validationErrors={sarahState.validationErrors}
+                      disabled={!isConnected}
+                    />
+                  </div>
+                )}
+
+              {/* Jack input-selection panel (14.1) */}
+              {isJackStep &&
+                status === "review_request" &&
+                jackState.scripts &&
+                jackState.scripts.length > 0 && (
+                  <div className="w-[85%] max-w-4xl self-start">
+                    <div className="text-[11px] font-semibold mb-1 text-[#F97316]">
+                      Jack
+                      <MessageTime
+                        timestamp={
+                          messages.find(
+                            (m) => m.metadata?.type === "script_selection",
+                          )?.timestamp
+                        }
+                        fallbackToNow
+                      />
+                    </div>
+                    <JackInputSelection
+                      scripts={jackState.scripts}
+                      environments={jackState.environments}
+                      appRoles={jackState.appRoles}
+                      sessions={jackState.sessions}
+                      onConfirm={handleJackConfirm}
+                      disabled={!isConnected}
+                    />
+                  </div>
+                )}
+
+              {/* Jack execution report + history (14.6) */}
+              {isJackStep && jackState.summary && selectedProjectId && (
+                <div className="w-[85%] max-w-4xl self-start">
+                  <div className="text-[11px] font-semibold mb-1 text-[#F97316]">
+                    Jack
+                    <MessageTime
+                      timestamp={
+                        messages.find(
+                          (m) => m.metadata?.type === "execution_summary",
+                        )?.timestamp
+                      }
+                      fallbackToNow
+                    />
+                  </div>
+                  <JackExecutionReport
+                    projectId={selectedProjectId}
+                    summary={jackState.summary}
+                  />
+                </div>
+              )}
+
+              {/* Execution history (14.6 AC3) — filterable past runs */}
+              {isJackStep && selectedProjectId && (
+                <div className="w-[85%] max-w-4xl self-start">
+                  <ExecutionHistory
+                    projectId={selectedProjectId}
+                    threadId={threadId ?? undefined}
+                    onOpenRun={(run: ExecutionRunSummary) =>
+                      setJackState((prev) => ({
+                        ...prev,
+                        summary: {
+                          run_id: run.run_id,
+                          total: run.total,
+                          passed: run.passed,
+                          failed: run.failed,
+                          errors: run.errors,
+                          skipped: run.skipped,
+                          duration_ms: run.duration_ms ?? 0,
+                          browsers: run.browsers,
+                          unavailable_browsers: run.unavailable_browsers,
+                          report_artifact_id: run.report_artifact_id,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+              )}
+
+              {/* Sarah DONE — Proceed to Jack affordance (14.1). */}
+              {isSarahStep && (status === "completed" || status === "done") && (
+                <div className="w-[85%] max-w-4xl self-start">
+                  <div className="text-[11px] font-semibold mb-1 text-[#8B5CF6]">
+                    Sarah
+                    <MessageTime
+                      timestamp={
+                        messages.find(
+                          (m) => m.metadata?.type === "script_review",
+                        )?.timestamp
+                      }
+                      fallbackToNow
+                    />
+                  </div>
+                  <div className="bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm overflow-hidden flex flex-col p-5 gap-4">
+                    <p className="text-sm font-medium text-gray-700">
+                      Scripts reviewed and saved. Ready to run tests with Jack.
+                    </p>
+                    <button
+                      onClick={() =>
+                        sendMessage({
+                          type: "navigate",
+                          step: 5,
+                          direction: "next",
+                          agentName: "Jack",
+                          sender: "user",
+                          content: "Navigate to Jack",
+                          messageType: "info",
+                        })
+                      }
+                      disabled={!isConnected}
+                      className="self-start bg-[#F97316] text-white px-6 py-2 rounded-md text-sm font-medium hover:bg-[#ea580c] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Proceed to Jack →
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Mary DONE — Proceed to Sarah affordance.
+                  Sarah's step-4 UI is Epic 13; landing there shows the existing empty step. */}
+              {isMaryStep && (status === "completed" || status === "done") && (
+                <div className="w-[85%] max-w-4xl self-start">
+                  <div className="text-[11px] font-semibold mb-1 text-[#22c55e]">
+                    Mary
+                    <MessageTime
+                      timestamp={
+                        messages.find(
+                          (m) => m.metadata?.type === "test_case_review",
+                        )?.timestamp
+                      }
+                      fallbackToNow
+                    />
+                  </div>
+                  <div className="bg-white border border-[#e2e8f0] rounded-2xl rounded-bl-sm text-[#0f172a] shadow-sm overflow-hidden flex flex-col p-5 gap-4">
+                    <p className="text-sm font-medium text-gray-700">
+                      All test cases reviewed and saved. Ready to generate scripts with Sarah.
+                    </p>
+                    <button
+                      onClick={() =>
+                        sendMessage({
+                          type: "navigate",
+                          step: 4,
+                          direction: "next",
+                          agentName: "Sarah",
+                          sender: "user",
+                          content: "Navigate to Sarah",
+                          messageType: "info",
+                        })
+                      }
+                      disabled={!isConnected}
+                      className="self-start bg-[#22c55e] text-white px-6 py-2 rounded-md text-sm font-medium hover:bg-[#16a34a] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Proceed to Sarah →
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Empty state intentionally hidden to avoid exposing technical waiting states. */}
+              {/* Task 6.2: Bottom sentinel — scrollIntoView(this) is always at the true
+                  end of the message list even after async content (markdown, etc.) renders. */}
+              <div ref={chatBottomRef} aria-hidden="true" />
             </div>
+          </div>
+          {/* Point 1: floating jump-to-latest pill — only when a new message arrived
+              while the user was scrolled up reading earlier messages. */}
+          {!selectedArtifact && hasNewMessage && (
+            <button
+              type="button"
+              onClick={scrollToLatestMessage}
+              className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 bg-[#3b82f6] text-white rounded-full px-4 py-1.5 text-xs font-semibold shadow-md hover:bg-[#2563eb] active:scale-95 transition-transform"
+            >
+              <ArrowDown className="w-3 h-3" />
+              New message
+            </button>
+          )}
           </div>
 
           {/* Artifact Preview — replaces chat content when an artifact is selected */}
@@ -1560,6 +2812,7 @@ function App() {
             <ArtifactPreview
               artifact={selectedArtifact}
               onClose={() => setSelectedArtifact(null)}
+              onSelfMutation={(type) => handleSelfMutation(selectedArtifact.id, type)}
             />
           )}
 

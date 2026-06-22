@@ -1,9 +1,10 @@
 """Unit tests for DB-backed local authentication services."""
 
 from collections.abc import Generator
+from typing import cast
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import Table, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -28,7 +29,7 @@ def db_session() -> Generator[Session]:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(engine, tables=[User.__table__])
+    Base.metadata.create_all(engine, tables=cast("list[Table]", [User.__table__]))
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     session = session_factory()
     try:

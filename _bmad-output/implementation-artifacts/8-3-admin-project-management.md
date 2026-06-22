@@ -114,7 +114,7 @@ From 8-2 (Admin User Management), 8-1 (Admin Routing), and 6-4 (Project/Membersh
 
 ### Latest Tech Information
 
-- Backend: Python 3.12+, FastAPI with `Depends(require_admin)` RBAC; Pydantic v2 `Field`/`field_validator` for `ProjectCreateRequest`/`ProjectUpdateRequest` (name trim + blank rejection, required `confluence_base_url`). `422` (validation) vs `403`/`401` (authorization) split is deliberate. SQLAlchemy 2.x ORM with `ON DELETE CASCADE` on project-scoped FKs.
+- Backend: Python 3.14+, FastAPI with `Depends(require_admin)` RBAC; Pydantic v2 `Field`/`field_validator` for `ProjectCreateRequest`/`ProjectUpdateRequest` (name trim + blank rejection, required `confluence_base_url`). `422` (validation) vs `403`/`401` (authorization) split is deliberate. SQLAlchemy 2.x ORM with `ON DELETE CASCADE` on project-scoped FKs.
 - Frontend: React 18 + TypeScript + Vite, Vitest + Testing Library (unit), Playwright (e2e). Project list state comes from the `useProject` context (`reloadProjects`); error surfacing goes through `getSafeApiErrorMessage` → red banner via `addError`.
 
 ### References

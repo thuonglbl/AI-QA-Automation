@@ -4,7 +4,7 @@ baseline_commit: 0c010d3e3feb3f1bf3da120adac2345e0ab3152f
 
 # Story 10.1: Project Artifact Storage Foundation
 
-Status: review
+Status: done
 
 <!-- markdownlint-disable MD033 MD041 -->
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
@@ -142,7 +142,7 @@ ai-qa-artifacts/
     test_scripts/test_login_flow.py
 ```
 
-This story maps `testcase`/`testscript`/`playwright_script` to flat keys under `test_cases/`/`test_scripts/` to match that diagram and the existing `requirements/` precedent. **Known trade-off (flat keys):** a new version overwrites the same object key (only the latest bytes are retained in storage; per-version *metadata* and content-hash are still preserved in `artifact_versions`), and two artifacts of the same kind+name in one project would collide. This is acceptable for MVP (architecture: "Artifact version rollback" is explicitly post-MVP). See **Open Question Q1** if collision-safety is preferred over the documented flat layout.
+**Code-review decision (2026-06-11): collision-safe nesting was chosen over the flat layout (Q1 alternative).** `build_artifact_key` now writes every artifact+version to its own path `projects/{project_id}/{folder}/{artifact_id}/v{version}/{safe_name}` for all kinds. The logical folders (`requirements/`/`test_cases/`/`test_scripts/`) remain browsable by prefix for Story 10.2's empty-folder projection, but two distinct artifacts of the same kind+name no longer collide, and each version's bytes are retained (so future version rollback is possible). This intentionally diverges from the architecture's flat bucket diagram above — see the resolved **Open Question Q1**.
 
 ### Authorization model
 
@@ -158,14 +158,14 @@ This story maps `testcase`/`testscript`/`playwright_script` to flat keys under `
 - `# type: ignore` / `@ts-ignore`; global lint disables; mixing formatting with logic in one commit (project rules).
 - Leaving `ArtifactService(db)` to silently default to `LocalArtifactStorage()` ([service.py:37](src/ai_qa/artifacts/service.py:37)) in any runtime path. Production already injects S3 via `get_artifact_storage()`; keep doing so. (Hardening the default is **optional** — see Q2 — because unit tests rely on the Local default.)
 
-### Realtime event handling in shipped 10-7/10-8 — VERIFIED CORRECT (do not "fix", do not regress)
+### Realtime event handling in shipped 10-7/10-8 — CORRECTED in this story (code review 2026-06-11)
 
-An earlier analysis pass suspected two frontend defects here; both were **checked against current `main` and are NOT present** — the code already handles them correctly and intentionally:
+An earlier analysis pass claimed `main` already handled two cases correctly. **That was wrong.** Verified against HEAD (`git show HEAD:frontend/src/App.tsx`): the handler matched only `change_type === "delete"` while the backend emits the past-tense `"deleted"` — so the delete notice never fired — and it read a non-existent `data.artifact_name`. This story **corrects both**:
 
-- **Delete events map to the delete notice.** [App.tsx:408-411](frontend/src/App.tsx:408) maps `change_type === "deleted"` (the backend's past-tense value, with a defensive `|| "delete"`) to the `"delete"` notice type. There is no `"delete"`-vs-`"deleted"` mismatch.
-- **The notice shows the artifact name from local state.** [App.tsx:412-417](frontend/src/App.tsx:412) sources `artifactName` from `selectedArtifact?.name` (falling back to `"Artifact"`). This is correct: the notice branch only runs when the changed artifact is the one currently open, so its name is already in local state. The event intentionally carries no `name` ([models.py:132](src/ai_qa/models.py:132)), and `ArtifactNotice` renders the passed name fine ([ArtifactNotice.tsx:75](frontend/src/components/artifacts/ArtifactNotice.tsx:75)).
+- **Delete events now map to the delete notice.** [App.tsx](frontend/src/App.tsx) matches `changeType === "deleted" || changeType === "delete"` via the extracted, unit-tested `artifactNoticeTypeFor` helper.
+- **The notice sources the name from local state.** `artifactName` comes from `selectedArtifact?.name` (falling back to `"Artifact"`); the branch only runs for the currently-open artifact, so its name is local. The event intentionally carries no `name` ([models.py:132](src/ai_qa/models.py:132)) — that frozen contract is preserved.
 
-So there is **nothing to fix here.** Constraints this places on 10.1: keep `change_type` past-tense (`created`/`updated`/`deleted`) and do **not** add a `name` field to `ArtifactChangeEvent` — the frontend does not need it. (Minor pre-existing gap, NOT in 10.1 scope: this handler has no Vitest coverage in `App.test.tsx` today — 10-7/10-8 test debt.)
+Constraints upheld: `change_type` stays past-tense (`created`/`updated`/`deleted`); no `name` field added to `ArtifactChangeEvent`. Vitest coverage for `artifactNoticeTypeFor` added in `App.test.tsx` (4 cases), closing the prior 10-7/10-8 test-debt gap for this logic.
 
 ### Previous-story / brownfield intelligence
 
@@ -221,7 +221,7 @@ No new dependencies. Reuse the already-pinned stack: `boto3>=1.43.12` (S3 client
 
 ### Open Questions for Thuong (non-blocking — sensible defaults chosen)
 
-- **Q1 — Flat vs. collision-safe keys for `test_cases/`/`test_scripts/`.** Default (this story): **flat** `projects/{project_id}/test_cases/{name}` to match the architecture bucket diagram + the `requirements/` precedent. Trade-off: same-name artifacts overwrite, and version bytes overwrite (metadata still versioned in DB). Alternative: keep the collision-safe `…/test_cases/{artifact_id}/v{version}/{name}` nesting (folder still browsable by prefix). Pick flat unless you want collision-safety.
+- **Q1 — Flat vs. collision-safe keys for `test_cases/`/`test_scripts/`. → RESOLVED (code review 2026-06-11): collision-safe nesting chosen.** `build_artifact_key` writes `projects/{project_id}/{folder}/{artifact_id}/v{version}/{safe_name}` for all kinds, so same-name artifacts and per-version bytes never overwrite. Folders stay browsable by prefix. Trade-off accepted: diverges from the flat bucket diagram, but eliminates silent data loss and preserves version bytes.
 - **Q2 — Harden `ArtifactService` storage default?** Default: leave `LocalArtifactStorage()` as the service default (unit tests depend on it) and rely on `get_artifact_storage()` injection in all runtime paths. Alternative: make `storage` a required constructor arg (forces explicit injection, but touches test call sites).
 - **Q3 — Drop the orphaned `legacy_pipeline_run_id` column** in this migration as cleanup, or defer? Default: include it only if it doesn't complicate the migration.
 
@@ -263,20 +263,23 @@ uv run pytest tests/unit/test_artifact_service.py tests/api/test_artifact_api.py
 ### File List
 
 - `src/ai_qa/db/models.py` — Added `created_by_user_id`, `updated_by_user_id`, `thread_id` columns to `Artifact`
-- `src/ai_qa/artifacts/storage.py` — Extracted `build_artifact_key()` shared helper; both backends now use it; `testcase`/`testscript`/`playwright_script` mapped to canonical folders
+- `src/ai_qa/artifacts/storage.py` — Extracted `build_artifact_key()` shared helper used by both backends. **Code review (2026-06-11): switched to collision-safe nested keys** `projects/{project_id}/{folder}/{artifact_id}/v{version}/{safe_name}` for all kinds (logical folders still prefix-browsable)
 - `src/ai_qa/artifacts/service.py` — Added `REQUIRED_ARTIFACT_FOLDERS`, `required_folders()`, `_validate_thread()`; updated `save_artifact` and `create_version` to set ownership fields
 - `src/ai_qa/api/artifacts.py` — Added `created_by_user_id`, `updated_by_user_id`, `thread_id` to `ArtifactResponse`; updated `_artifact_detail_response` manual builder
 - `frontend/src/components/conversations/ProjectSidebar.tsx` — Added 3 optional fields to `Artifact` interface
 - `alembic/versions/604f28c24393_add_artifact_ownership_and_thread_.py` — New migration: 3 columns + FK + indexes on `artifacts` table; `down_revision = e9f1a2b3c4d5`
-- `tests/unit/test_artifact_service.py` — Added 6 new tests (key-builder, folder mapping, creator/updater/thread, thread cross-project rejection)
-- `tests/api/test_artifact_api.py` — Added 4 AC3 leak-canary tests
+- `tests/unit/test_artifact_service.py` — Added tests (folder mapping, creator/updater/thread, thread cross-project rejection). **Code review (2026-06-11):** key-builder test now derives kinds from `ARTIFACT_KINDS` with nested-key assertions + a both-backends routing test
+- `tests/api/test_artifact_api.py` — Added 4 AC3 leak-canary tests. **Code review (2026-06-11):** hardened `_no_storage_leak` to assert on storage-key *values* (regex) not just field names, fixed a tautological status assert, added generic-404-`detail` assertions
 - `tests/api/test_artifact_events.py` — Updated 3 mock setups to include new nullable fields
 - `_bmad-output/implementation-artifacts/10-1-project-artifact-storage-foundation.md` — This story file
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` — Status updated
+- `frontend/src/App.tsx` — **Code review (2026-06-11):** corrected the realtime artifact-change notice handler (past-tense `"deleted"` match + name from local state); extracted the exported `artifactNoticeTypeFor` helper for testability
+- `frontend/src/App.test.tsx` — **Code review (2026-06-11):** added 4 Vitest cases for `artifactNoticeTypeFor`
 
 ### Change Log
 
 - 2026-06-10: Story 10-1 implemented — artifact ownership metadata (creator/updater/thread), canonical folder mapping (test_cases/test_scripts), required-folder projection, AC3 leak-canary tests, frontend type sync, Alembic migration (604f28c24393).
+- 2026-06-11: Code review applied — artifact storage switched to collision-safe nested per-version keys (Open Question Q1 resolved); App.tsx realtime notice handler corrected + unit-tested (`artifactNoticeTypeFor`); AC3 leak-canary hardened to assert on key *values*. Gate re-run green: ruff, mypy (strict), pytest 60 passed, typecheck, vitest 15 passed, eslint.
 
 ---
 
@@ -286,26 +289,26 @@ uv run pytest tests/unit/test_artifact_service.py tests/api/test_artifact_api.py
 
 Adversarial code review (2026-06-10): 3 parallel layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor), all on Opus 4.8. AC1, AC2, frozen contracts, and migration `down_revision` (single head `604f28c24393`) verified correct against real code. Result: **2 decision-needed, 2 patch, 4 deferred, 8 dismissed** — the dismissed set includes one adversarial false-positive: the Acceptance Auditor's "App.tsx change was not applied to disk" claim was checked against git (`git diff HEAD` + `git show HEAD`) and is **false** — the change is on disk.
 
-**Decision-needed**
+#### Decision-needed
 
-- [ ] [Review][Decision] Flat storage keys overwrite prior-version bytes and allow same-name artifact collisions — `build_artifact_key` ([storage.py:26](src/ai_qa/artifacts/storage.py:26)) returns flat keys (no `artifact_id`/`version`) for `requirements`/`raw_html`/`testcase`/`testscript`/`playwright_script`; `create_version` ([service.py:126](src/ai_qa/artifacts/service.py:126)) rewrites the same key, so older `ArtifactVersion` rows' `content_hash`/`storage_path` no longer match the stored bytes. No `UniqueConstraint(project_id, kind, name)` exists ([models.py:128](src/ai_qa/db/models.py:128)), so two distinct artifacts of the same kind+name silently overwrite each other; names that sanitize identically (`"测试.md"`→`"md"`, blank→`"artifact"` at [storage.py:259](src/ai_qa/artifacts/storage.py:259)) collide too. Matches the documented flat-key MVP trade-off / Open Question Q1. Decision: keep flat / keep flat + add the uniqueness constraint / switch to collision-safe nesting.
-- [ ] [Review][Decision] `App.tsx` realtime-notice change is undocumented and outside the stated 10.1 scope — the working tree edits the artifact-change handler ([App.tsx:405](frontend/src/App.tsx:405)) to match past-tense `"deleted"` and source the artifact name from local state. The change is correct and fixes a real latent bug (HEAD matched only `"delete"`, but the backend emits `"deleted"`, so delete notices never fired) and keeps the frozen `ArtifactChangeEvent` contract — but `App.tsx` is not in this story's File List, the Dev Notes "VERIFIED CORRECT (do not fix)" section is false against `main`, and 10.1 scope states "no UI rendering work." Decision: keep + add to File List + correct the Dev Note + add Vitest coverage / keep + document only / revert into a dedicated 10-7/10-8 follow-up.
+- [x] `[Review][Decision]` Flat storage keys overwrite prior-version bytes and allow same-name artifact collisions — `build_artifact_key` ([storage.py:26](src/ai_qa/artifacts/storage.py:26)) returns flat keys (no `artifact_id`/`version`) for `requirements`/`raw_html`/`testcase`/`testscript`/`playwright_script`; `create_version` ([service.py:126](src/ai_qa/artifacts/service.py:126)) rewrites the same key, so older `ArtifactVersion` rows' `content_hash`/`storage_path` no longer match the stored bytes. No `UniqueConstraint(project_id, kind, name)` exists ([models.py:128](src/ai_qa/db/models.py:128)), so two distinct artifacts of the same kind+name silently overwrite each other; names that sanitize identically (`"测试.md"`→`"md"`, blank→`"artifact"` at [storage.py:259](src/ai_qa/artifacts/storage.py:259)) collide too. Matches the documented flat-key MVP trade-off / Open Question Q1. Decision: keep flat / keep flat + add the uniqueness constraint / switch to collision-safe nesting.
+- [x] `[Review][Decision]` `App.tsx` realtime-notice change is undocumented and outside the stated 10.1 scope — the working tree edits the artifact-change handler ([App.tsx:405](frontend/src/App.tsx:405)) to match past-tense `"deleted"` and source the artifact name from local state. The change is correct and fixes a real latent bug (HEAD matched only `"delete"`, but the backend emits `"deleted"`, so delete notices never fired) and keeps the frozen `ArtifactChangeEvent` contract — but `App.tsx` is not in this story's File List, the Dev Notes "VERIFIED CORRECT (do not fix)" section is false against `main`, and 10.1 scope states "no UI rendering work." Decision: keep + add to File List + correct the Dev Note + add Vitest coverage / keep + document only / revert into a dedicated 10-7/10-8 follow-up.
 
-**Patch**
+#### Patch
 
-- [ ] [Review][Patch] AC3 leak-canary asserts on field-*name* substrings, not sensitive *values* — `_no_storage_leak` only checks for the tokens `{storage_path, s3_key, object_key, bucket}` in the body, so a leaked path *value* (e.g. `projects/<uuid>/test_cases/x.json`) would pass; should assert the known storage path / `projects/{id}/` prefix is absent and that the 404 detail equals the generic message [tests/api/test_artifact_api.py:605](tests/api/test_artifact_api.py:605)
-- [ ] [Review][Patch] `test_build_artifact_key_*` hardcodes the kind list and calls the helper once — derive kinds from `ARTIFACT_KINDS` (so new kinds are covered) and assert both backend write paths route through `build_artifact_key` [tests/unit/test_artifact_service.py](tests/unit/test_artifact_service.py)
+- [x] `[Review][Patch]` AC3 leak-canary asserts on field-*name* substrings, not sensitive *values* — `_no_storage_leak` only checks for the tokens `{storage_path, s3_key, object_key, bucket}` in the body, so a leaked path *value* (e.g. `projects/<uuid>/test_cases/x.json`) would pass; should assert the known storage path / `projects/{id}/` prefix is absent and that the 404 detail equals the generic message [tests/api/test_artifact_api.py:605](tests/api/test_artifact_api.py:605)
+- [x] `[Review][Patch]` `test_build_artifact_key_*` hardcodes the kind list and calls the helper once — derive kinds from `ARTIFACT_KINDS` (so new kinds are covered) and assert both backend write paths route through `build_artifact_key` [tests/unit/test_artifact_service.py](tests/unit/test_artifact_service.py)
 
-- [ ] [Review][Patch] (from Decision 1 → nested per-version) Switch `build_artifact_key` to collision-safe keys `projects/{project_id}/{folder}/{artifact_id}/v{version}/{safe_name}` for the logical-folder kinds (generic kinds stay under `artifacts/`); update `test_build_artifact_key_*` expectations and revise the spec's "Storage path target" section + Open Question Q1 to record the nested decision [storage.py:12](src/ai_qa/artifacts/storage.py:12)
-- [ ] [Review][Patch] (from Decision 2 → keep + document + test) Keep the `App.tsx` notice fix; add `App.tsx` to the File List, correct the false "VERIFIED CORRECT (do not fix)" Dev Note, and add Vitest coverage for the `deleted`→delete / `updated`→update notice handler [App.tsx:405](frontend/src/App.tsx:405)
+- [x] `[Review][Patch]` (from Decision 1 → nested per-version) Switch `build_artifact_key` to collision-safe keys `projects/{project_id}/{folder}/{artifact_id}/v{version}/{safe_name}` for the logical-folder kinds (generic kinds stay under `artifacts/`); update `test_build_artifact_key_*` expectations and revise the spec's "Storage path target" section + Open Question Q1 to record the nested decision [storage.py:12](src/ai_qa/artifacts/storage.py:12)
+- [x] `[Review][Patch]` (from Decision 2 → keep + document + test) Keep the `App.tsx` notice fix; add `App.tsx` to the File List, correct the false "VERIFIED CORRECT (do not fix)" Dev Note, and add Vitest coverage for the `deleted`→delete / `updated`→update notice handler [App.tsx:405](frontend/src/App.tsx:405)
 
-_Decisions resolved 2026-06-11: D1 → collision-safe nested per-version keys; D2 → keep the App.tsx fix + document + add test._
+Decisions resolved 2026-06-11: D1 → collision-safe nested per-version keys; D2 → keep the App.tsx fix + document + add test.
 
-**Deferred**
+#### Deferred
 
-- [x] [Review][Defer] `thread_id` column + `_validate_thread` are foundation-only — no production caller passes `thread_id`, and there is no `agent_run.thread_id == thread_id` consistency check when both are supplied [service.py:227](src/ai_qa/artifacts/service.py:227) — deferred, intended foundation for Story 10.2
-- [x] [Review][Defer] `created_by_user_id`/`updated_by_user_id` not validated against project membership at the service layer [service.py:64](src/ai_qa/artifacts/service.py:64) — deferred, defense-in-depth (the API path already passes an authorized member)
-- [x] [Review][Defer] `create_version` overwrites `updated_by_user_id` with `None` when a caller passes `None` [service.py:136](src/ai_qa/artifacts/service.py:136) — deferred, not reachable with None from the current API path
-- [x] [Review][Defer] Migration is not SQLite-batch-safe (`op.create_foreign_key`/`drop_constraint` need `render_as_batch`) [alembic/versions/604f28c24393_add_artifact_ownership_and_thread_.py](alembic/versions/604f28c24393_add_artifact_ownership_and_thread_.py) — deferred, production is PostgreSQL; tests build schema via `create_all`
+- [x] `[Review][Defer]` `thread_id` column + `_validate_thread` are foundation-only — no production caller passes `thread_id`, and there is no `agent_run.thread_id == thread_id` consistency check when both are supplied [service.py:227](src/ai_qa/artifacts/service.py:227) — deferred, intended foundation for Story 10.2
+- [x] `[Review][Defer]` `created_by_user_id`/`updated_by_user_id` not validated against project membership at the service layer [service.py:64](src/ai_qa/artifacts/service.py:64) — deferred, defense-in-depth (the API path already passes an authorized member)
+- [x] `[Review][Defer]` `create_version` overwrites `updated_by_user_id` with `None` when a caller passes `None` [service.py:136](src/ai_qa/artifacts/service.py:136) — deferred, not reachable with None from the current API path
+- [x] `[Review][Defer]` Migration is not SQLite-batch-safe (`op.create_foreign_key`/`drop_constraint` need `render_as_batch`) [alembic/versions/604f28c24393_add_artifact_ownership_and_thread_.py](alembic/versions/604f28c24393_add_artifact_ownership_and_thread_.py) — deferred, production is PostgreSQL; tests build schema via `create_all`
 
 <!-- markdownlint-enable MD013 -->

@@ -1,13 +1,15 @@
 """API tests for admin user management endpoints."""
 
-import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from ai_qa.db.models import Project, User
 
 
 class TestAdminUserCreate:
-    @pytest.mark.asyncio
-    async def test_create_user_valid(self, client, admin_token):
-        response = await client.post(
-            "/admin/users",
+    def test_create_user_valid(self, client: TestClient, admin_token: str) -> None:
+        response = client.post(
+            "/api/admin/users",
             json={
                 "email": "newuser@test.com",
                 "display_name": "New User",
@@ -20,11 +22,45 @@ class TestAdminUserCreate:
         data = response.json()
         assert data["email"] == "newuser@test.com"
         assert data["is_active"] is True
+        # Defaults to UTC when the admin omits a timezone.
+        assert data["timezone"] == "UTC"
 
-    @pytest.mark.asyncio
-    async def test_create_user_duplicate_email(self, client, admin_token, db_user):
-        response = await client.post(
-            "/admin/users",
+    def test_create_user_with_timezone(self, client: TestClient, admin_token: str) -> None:
+        response = client.post(
+            "/api/admin/users",
+            json={
+                "email": "tzuser@test.com",
+                "display_name": "TZ User",
+                "initial_password": "StrongPass1!",
+                "role": "standard",
+                "timezone": "Asia/Ho_Chi_Minh",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["timezone"] == "Asia/Ho_Chi_Minh"
+
+    def test_create_user_invalid_timezone_rejected(
+        self, client: TestClient, admin_token: str
+    ) -> None:
+        response = client.post(
+            "/api/admin/users",
+            json={
+                "email": "badtz@test.com",
+                "display_name": "Bad TZ",
+                "initial_password": "StrongPass1!",
+                "role": "standard",
+                "timezone": "Not/AZone",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 422
+
+    def test_create_user_duplicate_email(
+        self, client: TestClient, admin_token: str, db_user: User
+    ) -> None:
+        response = client.post(
+            "/api/admin/users",
             json={
                 "email": db_user.email,
                 "display_name": "Duplicate",
@@ -35,10 +71,9 @@ class TestAdminUserCreate:
         )
         assert response.status_code == 409
 
-    @pytest.mark.asyncio
-    async def test_create_user_weak_password(self, client, admin_token):
-        response = await client.post(
-            "/admin/users",
+    def test_create_user_weak_password(self, client: TestClient, admin_token: str) -> None:
+        response = client.post(
+            "/api/admin/users",
             json={
                 "email": "weak@test.com",
                 "display_name": "Weak Pass",
@@ -49,10 +84,9 @@ class TestAdminUserCreate:
         )
         assert response.status_code == 422
 
-    @pytest.mark.asyncio
-    async def test_non_admin_cannot_create_user(self, client, user_token):
-        response = await client.post(
-            "/admin/users",
+    def test_non_admin_cannot_create_user(self, client: TestClient, user_token: str) -> None:
+        response = client.post(
+            "/api/admin/users",
             json={
                 "email": "hacker@test.com",
                 "display_name": "Hacker",
@@ -65,38 +99,393 @@ class TestAdminUserCreate:
 
 
 class TestAdminUserDelete:
-    @pytest.mark.asyncio
-    async def test_delete_user(self, client, admin_token, db_user):
-        response = await client.delete(
-            f"/admin/users/{db_user.id}",
+    def test_delete_user(self, client: TestClient, admin_token: str, db_user: User) -> None:
+        response = client.delete(
+            f"/api/admin/users/{db_user.id}",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert response.status_code == 204
 
-    @pytest.mark.asyncio
-    async def test_delete_nonexistent_user(self, client, admin_token, fake_uuid):
-        response = await client.delete(
-            f"/admin/users/{fake_uuid}",
+    def test_delete_nonexistent_user(
+        self, client: TestClient, admin_token: str, fake_uuid: object
+    ) -> None:
+        response = client.delete(
+            f"/api/admin/users/{fake_uuid}",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert response.status_code == 404
 
 
+class TestAdminUserCreateProjectAdmin:
+    """Story 15.3 — project_admin users are linked to a project at creation."""
+
+    def test_create_project_admin_with_project_creates_membership(
+        self, client: TestClient, admin_token: str, db_project: Project
+    ) -> None:
+        response = client.post(
+            "/api/admin/users",
+            json={
+                "email": "pa@test.com",
+                "display_name": "Project Admin",
+                "initial_password": "StrongPass1!",
+                "role": "project_admin",
+                "project_id": str(db_project.id),
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["role"] == "project_admin"
+        memberships = data["project_memberships"]
+        assert any(
+            m["role"] == "project_admin" and m["project_id"] == str(db_project.id)
+            for m in memberships
+        )
+
+    def test_create_project_admin_without_project_rejected(
+        self, client: TestClient, admin_token: str
+    ) -> None:
+        response = client.post(
+            "/api/admin/users",
+            json={
+                "email": "pa-noproj@test.com",
+                "display_name": "No Project",
+                "initial_password": "StrongPass1!",
+                "role": "project_admin",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 422
+
+    def test_create_standard_with_project_rejected(
+        self, client: TestClient, admin_token: str, db_project: Project
+    ) -> None:
+        response = client.post(
+            "/api/admin/users",
+            json={
+                "email": "std-proj@test.com",
+                "display_name": "Standard With Project",
+                "initial_password": "StrongPass1!",
+                "role": "standard",
+                "project_id": str(db_project.id),
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 422
+
+    def test_create_project_admin_nonexistent_project(
+        self, client: TestClient, admin_token: str, fake_uuid: object
+    ) -> None:
+        response = client.post(
+            "/api/admin/users",
+            json={
+                "email": "pa-ghost@test.com",
+                "display_name": "Ghost Project",
+                "initial_password": "StrongPass1!",
+                "role": "project_admin",
+                "project_id": str(fake_uuid),
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 404
+
+    def test_multiple_project_admins_same_project(
+        self, client: TestClient, admin_token: str, db_project: Project
+    ) -> None:
+        """Many-to-many: a project may have several project_admins (no uniqueness error)."""
+        for email in ("pa-a@test.com", "pa-b@test.com"):
+            response = client.post(
+                "/api/admin/users",
+                json={
+                    "email": email,
+                    "display_name": email,
+                    "initial_password": "StrongPass1!",
+                    "role": "project_admin",
+                    "project_id": str(db_project.id),
+                },
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert response.status_code == 200
+
+
+class TestAdminUserUpdate:
+    """Story 15.5 — edit users with platform-admin immutability and role-flip rules."""
+
+    def _admin_id(self, client: TestClient, admin_token: str) -> str:
+        users = client.get(
+            "/api/admin/users", headers={"Authorization": f"Bearer {admin_token}"}
+        ).json()
+        return next(u["id"] for u in users if u["role"] == "admin")
+
+    def test_update_user_valid(self, client: TestClient, admin_token: str, db_user: User) -> None:
+        response = client.put(
+            f"/api/admin/users/{db_user.id}",
+            json={
+                "display_name": "Renamed User",
+                "role": "standard",
+                "timezone": "Asia/Ho_Chi_Minh",
+                "is_active": True,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["display_name"] == "Renamed User"
+        assert data["timezone"] == "Asia/Ho_Chi_Minh"
+        assert "password_hash" not in data
+        assert "new_password" not in data
+
+    def test_update_nonexistent_user_returns_404(
+        self, client: TestClient, admin_token: str, fake_uuid: object
+    ) -> None:
+        response = client.put(
+            f"/api/admin/users/{fake_uuid}",
+            json={
+                "display_name": "Nobody",
+                "role": "standard",
+                "timezone": "UTC",
+                "is_active": True,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 404
+
+    def test_update_user_invalid_timezone(
+        self, client: TestClient, admin_token: str, db_user: User
+    ) -> None:
+        response = client.put(
+            f"/api/admin/users/{db_user.id}",
+            json={
+                "display_name": "User",
+                "role": "standard",
+                "timezone": "Not/AZone",
+                "is_active": True,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 422
+
+    def test_update_user_promote_to_admin_rejected(
+        self, client: TestClient, admin_token: str, db_user: User
+    ) -> None:
+        response = client.put(
+            f"/api/admin/users/{db_user.id}",
+            json={
+                "display_name": "User",
+                "role": "admin",
+                "timezone": "UTC",
+                "is_active": True,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 422
+
+    def test_cannot_edit_platform_admin(self, client: TestClient, admin_token: str) -> None:
+        admin_id = self._admin_id(client, admin_token)
+        response = client.put(
+            f"/api/admin/users/{admin_id}",
+            json={
+                "display_name": "Hacked Admin",
+                "role": "standard",
+                "timezone": "UTC",
+                "is_active": True,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 403
+
+    def test_cannot_delete_platform_admin(self, client: TestClient, admin_token: str) -> None:
+        admin_id = self._admin_id(client, admin_token)
+        response = client.delete(
+            f"/api/admin/users/{admin_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 403
+
+    def test_admin_cannot_deactivate_self(self, client: TestClient, admin_token: str) -> None:
+        admin_id = self._admin_id(client, admin_token)
+        response = client.put(
+            f"/api/admin/users/{admin_id}",
+            json={
+                "display_name": "Admin",
+                "role": "standard",
+                "timezone": "UTC",
+                "is_active": False,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 403
+
+    def test_non_admin_cannot_update_user(
+        self, client: TestClient, user_token: str, db_user: User
+    ) -> None:
+        response = client.put(
+            f"/api/admin/users/{db_user.id}",
+            json={
+                "display_name": "X",
+                "role": "standard",
+                "timezone": "UTC",
+                "is_active": True,
+            },
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        assert response.status_code == 403
+
+    def test_non_admin_cannot_delete_user(
+        self, client: TestClient, user_token: str, db_user: User
+    ) -> None:
+        response = client.delete(
+            f"/api/admin/users/{db_user.id}",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        assert response.status_code == 403
+
+    def test_promote_standard_to_project_admin_creates_membership(
+        self, client: TestClient, admin_token: str, db_user: User, db_project: Project
+    ) -> None:
+        response = client.put(
+            f"/api/admin/users/{db_user.id}",
+            json={
+                "display_name": db_user.display_name,
+                "role": "project_admin",
+                "timezone": "UTC",
+                "is_active": True,
+                "project_id": str(db_project.id),
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["role"] == "project_admin"
+        assert any(
+            m["role"] == "project_admin" and m["project_id"] == str(db_project.id)
+            for m in data["project_memberships"]
+        )
+
+    def test_promote_to_project_admin_without_project_rejected(
+        self, client: TestClient, admin_token: str, db_user: User
+    ) -> None:
+        response = client.put(
+            f"/api/admin/users/{db_user.id}",
+            json={
+                "display_name": db_user.display_name,
+                "role": "project_admin",
+                "timezone": "UTC",
+                "is_active": True,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 422
+
+    def test_demote_project_admin_to_standard_removes_membership(
+        self, client: TestClient, admin_token: str, db_project: Project
+    ) -> None:
+        created = client.post(
+            "/api/admin/users",
+            json={
+                "email": "demote-me@test.com",
+                "display_name": "Demote Me",
+                "initial_password": "StrongPass1!",
+                "role": "project_admin",
+                "project_id": str(db_project.id),
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert created.status_code == 200
+        user_id = created.json()["id"]
+
+        demoted = client.put(
+            f"/api/admin/users/{user_id}",
+            json={
+                "display_name": "Demote Me",
+                "role": "standard",
+                "timezone": "UTC",
+                "is_active": True,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert demoted.status_code == 200
+        data = demoted.json()
+        assert data["role"] == "standard"
+        assert not any(m["role"] == "project_admin" for m in data["project_memberships"])
+
+    def test_update_standard_with_project_id_rejected(
+        self, client: TestClient, admin_token: str, db_user: User, db_project: Project
+    ) -> None:
+        response = client.put(
+            f"/api/admin/users/{db_user.id}",
+            json={
+                "display_name": db_user.display_name,
+                "role": "standard",
+                "timezone": "UTC",
+                "is_active": True,
+                "project_id": str(db_project.id),
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 422
+
+    def test_update_password_changes_hash(
+        self, client: TestClient, admin_token: str, db_user: User, db_session: Session
+    ) -> None:
+        before = db_user.password_hash
+        response = client.put(
+            f"/api/admin/users/{db_user.id}",
+            json={
+                "display_name": db_user.display_name,
+                "role": "standard",
+                "timezone": "UTC",
+                "is_active": True,
+                "new_password": "BrandNewPass1!",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 200
+        db_session.refresh(db_user)
+        assert db_user.password_hash != before
+
+
 class TestAdminUserList:
-    @pytest.mark.asyncio
-    async def test_list_users(self, client, admin_token):
-        response = await client.get(
-            "/admin/users",
+    def test_list_users(self, client: TestClient, admin_token: str) -> None:
+        response = client.get(
+            "/api/admin/users",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, list)
 
-    @pytest.mark.asyncio
-    async def test_non_admin_cannot_list_users(self, client, user_token):
-        response = await client.get(
-            "/admin/users",
+    def test_non_admin_cannot_list_users(self, client: TestClient, user_token: str) -> None:
+        response = client.get(
+            "/api/admin/users",
             headers={"Authorization": f"Bearer {user_token}"},
         )
         assert response.status_code == 403
+
+    def test_list_users_includes_project_admin_membership(
+        self, client: TestClient, admin_token: str, db_project: Project
+    ) -> None:
+        """list_users eager-loads memberships and exposes project_name (Story 15.4)."""
+        create = client.post(
+            "/api/admin/users",
+            json={
+                "email": "pa-list@test.com",
+                "display_name": "PA List",
+                "initial_password": "StrongPass1!",
+                "role": "project_admin",
+                "project_id": str(db_project.id),
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert create.status_code == 200
+
+        listing = client.get(
+            "/api/admin/users",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert listing.status_code == 200
+        pa = next(u for u in listing.json() if u["email"] == "pa-list@test.com")
+        assert any(
+            m["role"] == "project_admin" and m["project_name"] == db_project.name
+            for m in pa["project_memberships"]
+        )

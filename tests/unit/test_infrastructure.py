@@ -64,14 +64,14 @@ async def test_async_test_support() -> None:
     This is a canary test — if it fails, pytest-asyncio is not configured.
     """
     await asyncio.sleep(0)  # No-op async operation
-    assert True  # If we got here, async mode is working
+    assert asyncio.get_running_loop().is_running()
 
 
 # --- Coverage Infrastructure ---
 
 
-def test_coverage_tracking_active() -> None:
-    """Placeholder: coverage tracking verified by --cov flag in pytest config."""
-    # If this test runs, pytest-cov is active (it would error without it
-    # when --cov-fail-under is set but cov isn't installed)
-    assert True
+def test_coverage_tracking_active(pytestconfig: pytest.Config) -> None:
+    """Verify pytest-cov is installed and coverage tracking is active."""
+    # If pytest-cov is not installed, this plugin will not be registered
+    # and --cov-fail-under in addopts would also fail at collection time.
+    assert pytestconfig.pluginmanager.hasplugin("pytest_cov")
