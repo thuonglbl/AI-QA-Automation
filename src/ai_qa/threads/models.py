@@ -33,6 +33,11 @@ class Thread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     provider_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
     provider_base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     current_agent: Mapped[str] = mapped_column(String(50), nullable=False, default="Alice")
+    # The confirmed Confluence parent for an in-flight Bob extraction, persisted so an
+    # interrupted run can resume from the next un-converted page without the user
+    # re-entering anything. Set before extraction, cleared on successful completion.
+    # NULL = nothing to resume (the "Continue" affordance is gated on this being set).
+    bob_resume_parent: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     messages: Mapped[list[Message]] = relationship(
         back_populates="thread", cascade="all, delete-orphan", order_by="Message.created_at"

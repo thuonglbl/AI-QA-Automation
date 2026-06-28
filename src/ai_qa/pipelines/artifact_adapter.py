@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import UUID
 
 from ai_qa.artifacts.service import ArtifactService
+from ai_qa.artifacts.storage import StorageObjectNotFoundError
 from ai_qa.db.models import Artifact
 from ai_qa.pipelines.context import PipelineContext
 
@@ -28,6 +30,27 @@ class PipelineArtifact:
     source_url: str | None = None
     warnings: list[dict[str, Any]] | None = None
     thread_id: UUID | None = None
+    updated_at: datetime | None = None
+
+
+def _sort_by_recency(items: list[PipelineArtifact]) -> list[PipelineArtifact]:
+    """Order *items* most-recently-updated first.
+
+    Artifacts loaded from the store always carry ``updated_at`` (tz-aware in
+    production); any without one (e.g. hand-built test fixtures that never reach
+    the store) sort last so a missing timestamp never raises during the comparison.
+    """
+
+    def _key(art: PipelineArtifact) -> datetime:
+        dt = cast(datetime, art.updated_at)
+        # SQLite round-trips drop tzinfo, so a dataset can mix freshly-set (aware)
+        # and DB-read (naive) rows. Normalise naive→UTC so the compare never raises.
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+    dated = [a for a in items if a.updated_at is not None]
+    undated = [a for a in items if a.updated_at is None]
+    dated.sort(key=_key, reverse=True)
+    return dated + undated
 
 
 class PipelineArtifactAdapter:
@@ -62,6 +85,7 @@ class PipelineArtifactAdapter:
         warnings: list[dict[str, Any]] | None = None,
         title: str | None = None,
         parent_source_id: str | None = None,
+        ancestor_source_ids: list[str] | None = None,
     ) -> Artifact:
         """Persist an APPROVED requirement under projects/{id}/requirements/ with provenance.
 
@@ -94,6 +118,7 @@ class PipelineArtifactAdapter:
             warnings=warnings,
             title=title,
             parent_source_id=parent_source_id,
+            ancestor_source_ids=ancestor_source_ids,
         )
 
         # Only after the new row is committed, remove the superseded prior rows (best-effort dedupe).
@@ -209,8 +234,9 @@ class PipelineArtifactAdapter:
 
         Artifacts whose ``thread_id`` matches ``context.thread_id`` are listed first
         (pre-select candidates for the selection panel); other project-level artifacts
-        follow.  Within each group, the original name-order from ``list_artifacts`` is
-        preserved (stable sort).
+        follow.  Within each group, the most-recently-updated test cases are listed
+        first so that when Sarah is reached by skipping Mary (blank id at Bob), the
+        previous session's / a colleague's freshest reusable work surfaces at the top.
         """
         artifacts = [
             a for a in self._load_text_artifacts(kind="testcase") if a.source_type != "draft"
@@ -223,7 +249,7 @@ class PipelineArtifactAdapter:
                 current_thread.append(art)
             else:
                 other_threads.append(art)
-        return current_thread + other_threads
+        return _sort_by_recency(current_thread) + _sort_by_recency(other_threads)
 
     def save_script(self, name: str, script_content: str) -> Artifact:
         """Persist an APPROVED Playwright script under projects/{id}/test_scripts/.
@@ -344,6 +370,23 @@ class PipelineArtifactAdapter:
                 return parsed if isinstance(parsed, dict) else None
         return None
 
+    def load_all_metadata(self) -> dict[str, dict[str, Any]]:
+        """Load every JSON configuration artifact once as a ``name -> parsed-dict`` map.
+
+        Bulk alternative to calling :meth:`load_metadata` per name (which re-lists and
+        decodes all configuration artifacts on each call — O(names x artifacts)). Skips
+        unparseable or non-dict entries.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for art in self._load_text_artifacts(kind="configuration"):
+            try:
+                parsed = json.loads(art.content)
+            except json.JSONDecodeError, ValueError:
+                continue
+            if isinstance(parsed, dict):
+                out[art.name] = parsed
+        return out
+
     def save_raw_html(self, name: str, html_content: str) -> Artifact:
         """Save raw HTML from Confluence page extraction (Phase 1)."""
         if not name.endswith(".html"):
@@ -359,7 +402,17 @@ class PipelineArtifactAdapter:
         artifacts = self.service.list_artifacts(project_id=self.project_id, kind="raw_html")
         for artifact in artifacts:
             if artifact.name == f"{page_id}/raw.html":
-                return self.service.read_current_content(artifact).decode("utf-8")
+                try:
+                    return self.service.read_current_content(artifact).decode("utf-8")
+                except StorageObjectNotFoundError:
+                    logger.warning(
+                        "Skipping raw_html with missing storage object: "
+                        "id=%s name=%s storage_path=%s",
+                        artifact.id,
+                        artifact.name,
+                        artifact.storage_path,
+                    )
+                    return None
         return None
 
     def save_image(self, name: str, image_bytes: bytes) -> Artifact:
@@ -494,7 +547,24 @@ class PipelineArtifactAdapter:
 
     def _load_text_artifacts(self, *, kind: str) -> list[PipelineArtifact]:
         artifacts = self.service.list_artifacts(project_id=self.project_id, kind=kind)
-        return [self._to_pipeline_artifact(artifact) for artifact in artifacts]
+        loaded: list[PipelineArtifact] = []
+        for artifact in artifacts:
+            try:
+                loaded.append(self._to_pipeline_artifact(artifact))
+            except StorageObjectNotFoundError:
+                # An artifact row whose backing object is gone (e.g. deleted on the
+                # filesystem) must not abort the whole load — skip it so the surviving
+                # artifacts (and the agents that read them, e.g. Bob's resume step)
+                # keep working. Other storage errors propagate.
+                logger.warning(
+                    "Skipping artifact with missing storage object: "
+                    "id=%s kind=%s name=%s storage_path=%s",
+                    artifact.id,
+                    artifact.kind,
+                    artifact.name,
+                    artifact.storage_path,
+                )
+        return loaded
 
     def _to_pipeline_artifact(self, artifact: Artifact) -> PipelineArtifact:
         content_bytes = self.service.read_current_content(artifact)
@@ -508,6 +578,7 @@ class PipelineArtifactAdapter:
             source_url=artifact.source_url,
             warnings=artifact.warnings,
             thread_id=artifact.thread_id,
+            updated_at=artifact.updated_at,
         )
 
     def _json_content(self, value: str | dict[str, Any]) -> str:

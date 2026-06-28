@@ -6,7 +6,12 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from ai_qa.models import AgentMessage, StageResult
+from ai_qa.models import (
+    STAGE_RESULT_MESSAGE_LIMIT,
+    AgentMessage,
+    StageResult,
+    bound_stage_messages,
+)
 
 # --- StageResult Tests ---
 
@@ -111,6 +116,66 @@ def test_stage_result_warnings_list_max_length() -> None:
             success=True,
             warnings=["Warning"] * 101,  # 101 items, exceeds max_length=100
         )
+
+
+# --- bound_stage_messages Tests ---
+
+
+def test_bound_stage_messages_under_cap_distinct_unchanged() -> None:
+    """A distinct list under the cap is returned unchanged (no rollup)."""
+    messages = [f"warning {i}" for i in range(50)]
+    assert bound_stage_messages(messages) == messages
+
+
+def test_bound_stage_messages_collapses_identical_duplicates() -> None:
+    """Identical repeated messages (the SSO offender) collapse to one entry."""
+    messages = ["REVIEW: SSO/session setup required"] * 200
+    assert bound_stage_messages(messages) == ["REVIEW: SSO/session setup required"]
+
+
+def test_bound_stage_messages_preserves_first_occurrence_order() -> None:
+    """Dedupe keeps the first occurrence and preserves order."""
+    assert bound_stage_messages(["b", "a", "b", "c", "a"]) == ["b", "a", "c"]
+
+
+def test_bound_stage_messages_over_cap_keeps_99_plus_rollup() -> None:
+    """More than the cap distinct items -> first 99 kept + one rollup line = 100 total."""
+    messages = [f"warning {i}" for i in range(150)]
+    result = bound_stage_messages(messages)
+    assert len(result) == STAGE_RESULT_MESSAGE_LIMIT
+    assert result[:99] == messages[:99]
+    # 150 distinct, 99 kept -> 51 suppressed
+    assert result[-1] == "... and 51 more warnings suppressed"
+
+
+def test_bound_stage_messages_exactly_at_cap_unchanged() -> None:
+    """Exactly `limit` distinct items are returned unchanged (no rollup)."""
+    messages = [f"warning {i}" for i in range(STAGE_RESULT_MESSAGE_LIMIT)]
+    result = bound_stage_messages(messages)
+    assert result == messages
+    assert "suppressed" not in result[-1]
+
+
+def test_bound_stage_messages_errors_kind_rollup_noun() -> None:
+    """kind='errors' uses the errors noun in the rollup line."""
+    messages = [f"error {i}" for i in range(120)]
+    result = bound_stage_messages(messages, kind="errors")
+    assert len(result) == STAGE_RESULT_MESSAGE_LIMIT
+    # 120 distinct, 99 kept -> 21 suppressed
+    assert result[-1] == "... and 21 more errors suppressed"
+
+
+def test_bound_stage_messages_empty_returns_empty() -> None:
+    """An empty input yields an empty list."""
+    assert bound_stage_messages([]) == []
+
+
+def test_bound_stage_messages_output_constructs_stageresult() -> None:
+    """A bounded over-cap list constructs StageResult without raising too_long."""
+    raw = [f"REVIEW: ambiguous assertion {i}" for i in range(150)]
+    result = StageResult(success=True, warnings=bound_stage_messages(raw))
+    assert len(result.warnings) <= STAGE_RESULT_MESSAGE_LIMIT
+    assert result.warnings[-1] == "... and 51 more warnings suppressed"
 
 
 def test_stage_result_json_serialization() -> None:

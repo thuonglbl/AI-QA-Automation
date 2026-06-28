@@ -51,7 +51,8 @@ from ai_qa.pipelines.script_runner import (
     browser_spec_from_label,
     run_scripts,
 )
-from ai_qa.sessions.service import list_session_status, resolve_storage_state
+from ai_qa.sessions import auto_login
+from ai_qa.sessions.service import list_session_status
 from ai_qa.threads.models import AgentRun
 
 logger = logging.getLogger(__name__)
@@ -220,6 +221,7 @@ class JackAgent(BaseAgent):
                     headed=not server_mode,
                     capture_screenshots=settings.execution_capture_screenshots,
                     capture_traces=settings.execution_capture_traces,
+                    capture_videos=settings.execution_capture_videos,
                     server_mode=server_mode,
                 )
                 # Stamp the role each result ran AS, and namespace produced files per role so
@@ -270,21 +272,21 @@ class JackAgent(BaseAgent):
         )
 
     def _format_missing_sessions_message(self, environment: str, roles: list[str]) -> str:
-        """UX-DR12 message when one or more involved roles have no captured session.
+        """UX-DR12 message when one or more involved roles have no test account configured.
 
         Slice 6: the selected scripts can span several roles (each runs as its own account),
-        so EVERY involved role needs a captured session for the chosen environment. Lists
-        each missing (environment / role) so the tester knows exactly what to capture.
+        so EVERY involved role needs a test account for the chosen environment. Lists
+        each missing (environment / role) so the tester knows exactly what is missing.
         """
         env_label = environment or "(no environment)"
         pairs = "\n".join(f"  - {env_label} / {r or '(no role)'}" for r in roles)
         return (
             "**What happened:** Jack cannot run: the selected scripts include role(s) with no "
-            "captured session.\n\n"
+            "test account.\n\n"
             "**Why:** Each role runs as its own account, so every involved role needs a valid "
-            "captured session for the selected environment — running without one would produce "
+            "test account for the selected environment — running without one would produce "
             "misleading login failures.\n\n"
-            "**What to do:** Capture a session for each of these in the Sessions panel, then run "
+            "**What to do:** Configure a test account for each of these in the Test Accounts panel, then run "
             f"again:\n{pairs}"
         )
 
@@ -504,13 +506,25 @@ class JackAgent(BaseAgent):
             eff = self._effective_role(self._artifact_role(adapter, art.name), role)
             groups.setdefault(eff, []).append(art)
 
+        # Progress feedback BEFORE the silent work: the per-role resolve below drives a real
+        # browser login (~30-60s each) which otherwise looks frozen in the UI.
+        await self.send_message(
+            content=(
+                f"Preparing the run on '{environment}'. Logging in for role(s): "
+                f"{', '.join(sorted(groups)) or role or '(default)'}. This drives a real browser "
+                "and can take up to a minute per role…"
+            ),
+            message_type="info",
+            metadata={"type": "execution_preparing"},
+        )
+
         # AC3 (14.4): the app under test is authenticated — EVERY involved role needs a
         # captured session for the selected environment. Hard-block listing any that are
         # missing (no unauthenticated fallback). resolve_storage_state is the only blob reader.
         sessions: dict[str, dict[str, Any]] = {}
         missing: list[str] = []
         for grp_role in groups:
-            blob = self._resolve_session(environment, grp_role)
+            blob = await self._resolve_session(environment, grp_role)
             if blob is None:
                 missing.append(grp_role)
             else:
@@ -533,7 +547,7 @@ class JackAgent(BaseAgent):
         self.phase = "execution"
         await self._begin_execution()
 
-    def _resolve_session(self, environment: str, role: str) -> dict[str, Any] | None:
+    async def _resolve_session(self, environment: str, role: str) -> dict[str, Any] | None:
         """Return the captured storageState for (env, role) or None. Never logs the blob."""
         ctx = self.project_context
         if (
@@ -545,17 +559,37 @@ class JackAgent(BaseAgent):
             return None
         if not environment or not role:
             return None
-        return resolve_storage_state(
-            ctx.artifact_service.db,
-            user_id=ctx.user_id,
-            project_id=ctx.project_id,
-            environment=environment,
-            role=role,
-        )
+
+        try:
+            return await auto_login.resolve_or_generate_storage_state(
+                db=ctx.artifact_service.db,
+                user_id=ctx.user_id,
+                project_id=ctx.project_id,
+                environment=environment,
+                role=role,
+                chrome_path="",
+                # Jack doesn't use llm for UI interaction directly in his own loop,
+                # but if he needs to auto-login, he might need it. We'll pass None for now.
+                llm=None,
+                timeout=60,
+            )
+        except Exception as exc:
+            logger.warning("Auto-login failed during _resolve_session: %s", exc)
+            return None
 
     async def _begin_execution(self) -> None:
         """Run the confirmed scripts, persist results, and land in REVIEW_REQUEST (14.2/14.4)."""
         await self.transition_to(AgentState.PROCESSING)
+        browsers_label = ", ".join(self._browser_labels) or "chromium"
+        await self.send_message(
+            content=(
+                f"Running {len(self.confirmed_scripts)} script(s) on {browsers_label}. "
+                "Executing against the live app — this can take a few minutes; the results "
+                "summary will appear here when the run finishes."
+            ),
+            message_type="info",
+            metadata={"type": "execution_started"},
+        )
         try:
             try:
                 result = await self.process({}, feedback=None)
@@ -690,6 +724,7 @@ class JackAgent(BaseAgent):
             "log": settings.execution_capture_logs,
             "execution_screenshot": settings.execution_capture_screenshots,
             "trace": settings.execution_capture_traces,
+            "video": settings.execution_capture_videos,
         }
         kept = [pf for pf in run_result.produced_files if keep_by_kind.get(pf.kind, True)]
         if not kept:
@@ -900,6 +935,8 @@ class JackAgent(BaseAgent):
         present script_selection (REVIEW_REQUEST). After the user confirms,
         handle_approve dispatches to _confirm_inputs → _begin_execution.
         """
+        await self.send_message("I'll execute your approved test scripts and report the results.")
+
         # Fresh run: reset all per-run state so a re-start never inherits stale state.
         self.phase = "input_selection"
         self.confirmed_scripts = []

@@ -221,7 +221,7 @@ async def mock_authorize(
    <input id="password" name="password" type="password" autocomplete="current-password"
      placeholder="Password" data-testid="sso-password" required>
    <button type="submit" data-testid="sso-submit">Sign in</button>
-   <div class="org">Company · Claude Team</div>
+   <div class="org">CORP Information Technology Vietnam · Claude Team</div>
  </form>
 </body></html>"""
     return HTMLResponse(content=html)

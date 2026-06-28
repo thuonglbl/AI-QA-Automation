@@ -38,7 +38,6 @@ def db_user(db_session: Session) -> User:
     user = User(
         email="owner@example.com",
         display_name="Owner",
-        password_hash="hash",
         role="standard",
     )
     db_session.add(user)
@@ -192,3 +191,40 @@ class TestThreadService:
         # Second pass finds nothing left to reset and adds no duplicate message.
         assert (threads_reset, runs_reset) == (0, 0)
         assert len(service.get_thread_messages(thread.id)) == 1
+
+    def test_reconcile_flags_resume_available_when_parent_persisted(
+        self, db_session: Session, db_user: User
+    ) -> None:
+        thread = Thread(
+            user_id=db_user.id,
+            status="processing",
+            current_step=2,
+            current_agent="Bob",
+            bob_resume_parent="https://confluence.company.com/parent",
+        )
+        db_session.add(thread)
+        db_session.commit()
+
+        service = ThreadService(db_session)
+        service.reconcile_interrupted_work()
+
+        messages = service.get_thread_messages(thread.id)
+        assert len(messages) == 1
+        # Resumable run → metadata flag + a Continue hint in the copy.
+        assert messages[0].message_metadata == {"resume_available": True}
+        assert "continue" in messages[0].content.lower()
+
+    def test_reconcile_no_resume_flag_without_persisted_parent(
+        self, db_session: Session, db_user: User
+    ) -> None:
+        thread = Thread(user_id=db_user.id, status="processing", current_step=2)
+        db_session.add(thread)
+        db_session.commit()
+
+        service = ThreadService(db_session)
+        service.reconcile_interrupted_work()
+
+        messages = service.get_thread_messages(thread.id)
+        assert len(messages) == 1
+        # No persisted parent → no resume affordance.
+        assert messages[0].message_metadata is None

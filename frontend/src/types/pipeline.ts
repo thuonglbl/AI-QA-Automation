@@ -97,7 +97,8 @@ export type ErrorType =
   | "LLM_FAILURE"
   | "NETWORK_ERROR"
   | "CONFIG_ERROR"
-  | "UNKNOWN_ERROR";
+  | "UNKNOWN_ERROR"
+  | "BACKEND_PROVIDED";
 
 /** Error info with 3-part structure (what, why, whatToDo) */
 export interface ErrorInfo {
@@ -112,12 +113,13 @@ export interface ProcessingIndicatorProps {
   message: string;
   isActive?: boolean;
   className?: string;
+  agentName?: string;
 }
 
 /** ErrorFeedback component props */
 export interface ErrorFeedbackProps {
   error: ErrorInfo;
-  onRetry: () => void;
+  onRetry?: () => void;
   className?: string;
 }
 

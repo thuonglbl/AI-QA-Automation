@@ -21,6 +21,7 @@ Key principles:
    These are valid Python comments and are explicitly REQUIRED when detail is missing. Keep surrounding code runnable where possible.
 7. Never emit credentials; reuse the existing authenticated session supplied at execution time.
 8. Parameterize the application URL for environment reuse: `import os`, define a module-level `BASE_URL = os.environ["APP_BASE_URL"]`, and build every `page.goto(...)` from it (e.g. `page.goto(f"{BASE_URL}/journeys")`). NEVER hardcode the scheme+host inline, so the same script runs unchanged against any environment (local/test/integrate/production) by setting `APP_BASE_URL`.
+9. **English Language**: The generated Python code, including all docstrings, variable names, and comments, MUST be written in English, regardless of the language of the test case or context.
 
 Output only valid Python code without markdown formatting or explanations.
 Inline `# TODO:` and `# REVIEW:` comments are allowed and required when details are missing — they are not explanations."""

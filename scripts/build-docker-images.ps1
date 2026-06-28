@@ -23,8 +23,21 @@ function Import-EnvFile {
 
         $name = $parts[0].Trim()
         $value = $parts[1].Trim()
-        if ($value.StartsWith('"') -and $value.EndsWith('"')) {
-            $value = $value.Substring(1, $value.Length - 2)
+
+        if ($value.StartsWith('"') -or $value.StartsWith("'")) {
+            # Quoted value: take everything up to the matching closing quote and
+            # drop any trailing inline comment. Preserves '#' inside the quotes
+            # (e.g. ADMIN_PASSWORD="...#").
+            $quote = $value[0]
+            $end = $value.IndexOf($quote, 1)
+            if ($end -gt 0) { $value = $value.Substring(1, $end - 1) }
+        }
+        else {
+            # Unquoted value: strip an inline comment introduced by whitespace +
+            # '#' (matching python-dotenv), so "http://host:5173 # note" becomes
+            # "http://host:5173". A value that STARTS with '#' has no preceding
+            # space and is kept verbatim (e.g. a password like "#abc#").
+            $value = ([regex]::Replace($value, '\s+#.*$', '')).Trim()
         }
 
         [Environment]::SetEnvironmentVariable($name, $value, "Process")
@@ -93,7 +106,7 @@ try {
     docker build --file Dockerfile.backend --build-arg PYTHON_VERSION=$pythonVersion --build-arg UV_VERSION=$uvVersion --build-arg NODE_VERSION=$nodeVersion --tag $backendImage .
     if ($LASTEXITCODE -ne 0) { throw "Backend image build failed (exit $LASTEXITCODE) - not pushing." }
 
-    docker build --file frontend/Dockerfile --build-arg NODE_VERSION=$nodeVersion --build-arg NGINX_VERSION=$nginxVersion --tag $frontendImage ./frontend
+    docker build --file frontend/Dockerfile --build-arg NODE_VERSION=$nodeVersion --build-arg NGINX_VERSION=$nginxVersion --build-arg DOCKER_IMAGE_VERSION=$imageVersion --tag $frontendImage ./frontend
     if ($LASTEXITCODE -ne 0) { throw "Frontend image build failed (exit $LASTEXITCODE) - not pushing." }
 
     if ($Push) {

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { AssignableUser, ProjectAdminProject } from "@/types/project";
+import type { EnvConnectionStatus } from "@/types/session";
 
 const project: ProjectAdminProject = {
   id: "p1",
@@ -9,9 +10,8 @@ const project: ProjectAdminProject = {
   confluence_base_url: "https://confluence.example.com",
   jira_base_url: null,
   enabled_providers: ["openai"],
-  environments: [],
+  environments: [{ name: "Test 1", url: "https://t1.app" }],
   app_roles: ["Admin"],
-  login_type: "SSO",
   created_by_user_id: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
@@ -54,19 +54,18 @@ const padminMember: AssignableUser = {
 const updateProjectConfig = vi.fn().mockResolvedValue(project);
 const addProjectMember = vi.fn().mockResolvedValue({});
 const removeProjectMember = vi.fn().mockResolvedValue(undefined);
-
-const upsertProjectAccount = vi.fn().mockResolvedValue({});
-const deleteProjectAccount = vi.fn().mockResolvedValue(undefined);
+const checkConnections = vi.fn();
 
 vi.mock("@/lib/projectAdmin", () => ({
   listAdministeredProjects: () => Promise.resolve([project]),
   listAssignableUsers: () => Promise.resolve([member, newcomer, adminUser, padminMember]),
-  listProjectAccounts: () => Promise.resolve([]),
-  upsertProjectAccount: (...args: unknown[]) => upsertProjectAccount(...args),
-  deleteProjectAccount: (...args: unknown[]) => deleteProjectAccount(...args),
   updateProjectConfig: (...args: unknown[]) => updateProjectConfig(...args),
   addProjectMember: (...args: unknown[]) => addProjectMember(...args),
   removeProjectMember: (...args: unknown[]) => removeProjectMember(...args),
+}));
+
+vi.mock("@/lib/sessions", () => ({
+  checkConnections: (...args: unknown[]) => checkConnections(...args),
 }));
 
 vi.mock("@/hooks/useAuth", () => ({
@@ -83,21 +82,51 @@ vi.mock("@/hooks/useAuth", () => ({
 
 import { ProjectAdminDashboard } from "../admin/ProjectAdminDashboard";
 
-describe("ProjectAdminDashboard", () => {
-  beforeEach(() => vi.clearAllMocks());
+const CONN_RESULTS: EnvConnectionStatus[] = [
+  { name: "Test 1", url: "https://t1.app", reachable: true, status_code: 200, detail: "200 OK" },
+  {
+    name: "Prod",
+    url: "https://prod.app",
+    reachable: false,
+    status_code: null,
+    detail: "Connection failed",
+  },
+];
 
-  it("lists the administered project and populates its config", async () => {
+describe("ProjectAdminDashboard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    checkConnections.mockResolvedValue(CONN_RESULTS);
+  });
+
+  it("lists the administered project and populates its config (no login type / accounts)", async () => {
     render(<ProjectAdminDashboard />);
     expect(await screen.findByRole("option", { name: "Alpha" })).toBeInTheDocument();
     // Config form is populated from the selected project via an effect (async).
     expect(
       await screen.findByDisplayValue("https://confluence.example.com"),
     ).toBeInTheDocument();
-    // app role "Admin" appears (chip in the editor + the account role dropdown option)
+    // app role "Admin" appears (chip in the editor).
     expect(screen.getAllByText("Admin").length).toBeGreaterThan(0);
-    // login-type selector + accounts section are present
-    expect(screen.getByLabelText(/login type/i)).toHaveValue("SSO");
-    expect(screen.getByText(/test-login accounts/i)).toBeInTheDocument();
+    // Removed: login-type selector + test-login accounts section.
+    expect(screen.queryByLabelText(/login type/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/test-login accounts/i)).not.toBeInTheDocument();
+  });
+
+  it("checks environment connectivity after a successful save and renders the results", async () => {
+    render(<ProjectAdminDashboard />);
+    await screen.findByRole("option", { name: "Alpha" });
+    await screen.findByDisplayValue("https://confluence.example.com");
+    fireEvent.click(screen.getByRole("button", { name: /Save configuration/i }));
+
+    await waitFor(() => expect(checkConnections).toHaveBeenCalledWith("p1"));
+    // Reachable env → "✓ Connected".
+    expect(await screen.findByText("✓ Connected")).toBeInTheDocument();
+    // Unreachable env → "✗ Failed" + firewall guidance.
+    expect(screen.getByText("✗ Failed")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Please contact Administrator to open firewall/i),
+    ).toBeInTheDocument();
   });
 
   it("saves configuration via the project-admin API", async () => {

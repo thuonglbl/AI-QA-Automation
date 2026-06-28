@@ -114,7 +114,7 @@ describe("ChatInputArea", () => {
 
   describe("Review State (AC 3, 6, 8)", () => {
     it("renders Approve and Reject buttons", () => {
-      render(<ChatInputArea {...defaultProps} state="review" />);
+      render(<ChatInputArea {...defaultProps} state="review" disabledReason={undefined} />);
 
       expect(
         screen.getByRole("button", { name: /Approve/i }),
@@ -130,6 +130,7 @@ describe("ChatInputArea", () => {
         <ChatInputArea
           {...defaultProps}
           state="review"
+          disabledReason={undefined}
           onApprove={onApprove}
         />,
       );
@@ -143,7 +144,7 @@ describe("ChatInputArea", () => {
     it("calls onReject when Reject is clicked", () => {
       const onReject = vi.fn();
       render(
-        <ChatInputArea {...defaultProps} state="review" onReject={onReject} />,
+        <ChatInputArea {...defaultProps} state="review" disabledReason={undefined} onReject={onReject} />,
       );
 
       const rejectButton = screen.getByRole("button", { name: /Reject/i });
@@ -153,18 +154,38 @@ describe("ChatInputArea", () => {
     });
 
     it("renders max 2 buttons (AC 6)", () => {
-      render(<ChatInputArea {...defaultProps} state="review" />);
+      render(<ChatInputArea {...defaultProps} state="review" disabledReason={undefined} />);
 
       const buttons = screen.getAllByRole("button");
       expect(buttons.length).toBeLessThanOrEqual(2);
     });
 
     it("positions primary action (Approve) on the right (AC 6)", () => {
-      render(<ChatInputArea {...defaultProps} state="review" />);
+      render(<ChatInputArea {...defaultProps} state="review" disabledReason={undefined} />);
 
       const buttons = screen.getAllByRole("button");
       // Approve should be the second (rightmost) button
       expect(buttons[1]).toHaveTextContent(/Approve/i);
+    });
+
+    it("renders disabled Review actions with tooltips when disabledReason is present", () => {
+      render(
+        <ChatInputArea
+          {...defaultProps}
+          state="review"
+          disabledReason="Review unavailable: please answer the active prompt first"
+        />
+      );
+
+      const approveButton = screen.getByRole("button", { name: /Approve/i });
+      expect(approveButton).toBeDisabled();
+
+      const rejectButton = screen.getByRole("button", { name: /Reject/i });
+      expect(rejectButton).toBeDisabled();
+
+      // Tooltip is mocked in test-setup.ts to just render its children, so the text should be present
+      const tooltips = screen.getAllByText("Review unavailable: please answer the active prompt first");
+      expect(tooltips.length).toBe(2);
     });
   });
 

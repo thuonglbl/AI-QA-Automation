@@ -20,19 +20,19 @@
 | Ticket           | N/A                                                                        |
 | Date opened      | 2026-06-18                                                                 |
 | Status           | Active                                                                     |
-| System           | Local dev (Win11), React 19 frontend, FastAPI backend; user [EMAIL_ADDRESS], 2 projects (PT, PTP) |
+| System           | Local dev (Win11), React 19 frontend, FastAPI backend; user thuong.lambale@corp.vn, 2 projects (PT, PTP) |
 | Evidence sources | Frontend source code, two user screenshots, alice.py message emitters      |
 
 ## Problem Statement
 
-User (logged in as [EMAIL_ADDRESS], 2 projects) was chatting in **conversation #2 of project PTP**,
+User (logged in as thuong.lambale@corp.vn, 2 projects) was chatting in **conversation #2 of project PTP**,
 had **not** pressed OK on Alice's config, then switched to **conversation #1 of project PT**.
 
 - **Bug 1:** Conversation #1 displayed the entire chat from conversation #2, even though they are
   different threads in different projects.
 - **Bug 2:** Switching back to conversation #2, extra/redundant ("thừa") messages appeared:
   `Finished model assignment reasoning.` and `Connected successfully to On-Premises. ## AI Provider
-  Configuration Review **Provider Endpoint:** https://[IP_ADDRESS] ###…`. User wants these removed.
+  Configuration Review **Provider Endpoint:** https://ai.svc.corp.ch ###…`. User wants these removed.
 
 ## Evidence Inventory
 

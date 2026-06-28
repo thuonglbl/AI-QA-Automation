@@ -29,7 +29,7 @@ Orchestrator follow-up fixes (beyond the 28, required to keep gates green):
 - `frontend/src/components/projects/ProjectPicker.test.tsx` — mock `Project` gained `jira_base_url`/`enabled_providers` (pre-existing, surfaced by C9).
 - Ruff cleanup in `test_sarah.py` (dropped redundant `AgentState as SS` in-function imports → use top-level `AgentState`; unused imports) and `test_script_generator.py` (N801 class renames `…AC13_3`→`…AC133`, `…AC13_4`→`…AC134`).
 
-**C6 RESOLVED (2026-06-17):** verified against the **live** MCP server — the correct param is **`issueKey`** (tool `jira_get_issue`). Both snake_case `issue_key` AND the best-guess `issueIdOrKey` are rejected (`-32602 Input validation error … path: ["issueKey"] message: "Required"`). `jira_reader.py:189` corrected to `issueKey`; regression test `TestReadIssueRequestPayload` (3 tests asserting the payload uses `issueKey`, never `issue_key`/`issueIdOrKey`) added to `tests/pipelines/test_jira_reader.py`. `pytest tests/pipelines/test_jira_reader.py` → 22 passed; ruff clean. No open caveats remain.
+**C6 RESOLVED (2026-06-17):** verified against the **live** MCP server — the correct param is **`issueKey`** (tool `corp_jira_get_issue`). Both snake_case `issue_key` AND the best-guess `issueIdOrKey` are rejected (`-32602 Input validation error … path: ["issueKey"] message: "Required"`). `jira_reader.py:189` corrected to `issueKey`; regression test `TestReadIssueRequestPayload` (3 tests asserting the payload uses `issueKey`, never `issue_key`/`issueIdOrKey`) added to `tests/pipelines/test_jira_reader.py`. `pytest tests/pipelines/test_jira_reader.py` → 22 passed; ruff clean. No open caveats remain.
 
 ## Summary counts
 

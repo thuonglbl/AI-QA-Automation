@@ -3,7 +3,7 @@ baseline_commit: d97e58533b04901b688a1c04f24032cfc8dc0e53
 ---
 # Story 16.3: Processing and Progress Indicators
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -25,24 +25,24 @@ so that I know what is happening without losing context.
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Make the processing indicator agent-accurate (AC: 1) [PRIMARY GAP]**
-  - [ ] `ProcessingIndicator` currently hardcodes the label "Alice" ([frontend/src/components/ProcessingIndicator.tsx](frontend/src/components/ProcessingIndicator.tsx)). Make the agent name a prop sourced from the active agent (`AGENTS[currentAgent]`), defaulting safely.
-  - [ ] Render the current operation label from `metadata.processingMessage` (already plumbed through `usePipelineState.updateFromMessage` → `processingMessage`) or the agent's status text; show the agent name + operation label together.
-  - [ ] Confirm the indicator remains non-blocking (renders alongside chat history; input area shows the `processing` state from 16-2).
+- [x] **Task 1 — Make the processing indicator agent-accurate (AC: 1) [PRIMARY GAP]**
+  - [x] `ProcessingIndicator` currently hardcodes the label "Alice" ([frontend/src/components/ProcessingIndicator.tsx](frontend/src/components/ProcessingIndicator.tsx)). Make the agent name a prop sourced from the active agent (`AGENTS[currentAgent]`), defaulting safely.
+  - [x] Render the current operation label from `metadata.processingMessage` (already plumbed through `usePipelineState.updateFromMessage` → `processingMessage`) or the agent's status text; show the agent name + operation label together.
+  - [x] Confirm the indicator remains non-blocking (renders alongside chat history; input area shows the `processing` state from 16-2).
 
-- [ ] **Task 2 — Verify live progress preserves input + scroll (AC: 2)**
-  - [ ] Confirm WS progress updates update `StepDots` (current/completed) and `AgentTopBar` status badge without remounting the chat input or forcing a scroll reset (`ChatArea` only auto-scrolls when the user is at the bottom).
-  - [ ] Confirm `processingMessage` / status updates do not clear the user's in-progress textarea content. Add a regression test if not covered.
+- [x] **Task 2 — Verify live progress preserves input + scroll (AC: 2)**
+  - [x] Confirm WS progress updates update `StepDots` (current/completed) and `AgentTopBar` status badge without remounting the chat input or forcing a scroll reset (`ChatArea` only auto-scrolls when the user is at the bottom).
+  - [x] Confirm `processingMessage` / status updates do not clear the user's in-progress textarea content. Add a regression test if not covered.
 
-- [ ] **Task 3 — Verify/complete terminal states (AC: 3)**
-  - [ ] Confirm complete (`done`/`completed` → Continue/Completed control), and failure (error bubble + `ErrorFeedback` retry) terminal states render with next actions.
-  - [ ] **Cancellation:** research found no cancellation UI today. Determine whether a cancel/terminal-cancelled status exists on the backend pipeline. If a cancel path exists, render a clear cancelled state + next action; if it does not exist, document that AC3's "cancelled" arm is N/A for this build in Completion Notes and cover only complete/fail (do NOT invent a backend cancel mechanism in this FE story).
+- [x] **Task 3 — Verify/complete terminal states (AC: 3)**
+  - [x] Confirm complete (`done`/`completed` → Continue/Completed control), and failure (error bubble + `ErrorFeedback` retry) terminal states render with next actions.
+  - [x] **Cancellation:** research found no cancellation UI today. Determine whether a cancel/terminal-cancelled status exists on the backend pipeline. If a cancel path exists, render a clear cancelled state + next action; if it does not exist, document that AC3's "cancelled" arm is N/A for this build in Completion Notes and cover only complete/fail (do NOT invent a backend cancel mechanism in this FE story).
 
-- [ ] **Task 4 — Tests (AC: 1, 2, 3)**
-  - [ ] Extend `ProcessingIndicator` tests: renders the active agent's name (e.g. "Bob", not "Alice") and the operation label.
-  - [ ] Add a test that a progress update does not clear chat input or jump scroll when the user has scrolled up.
-  - [ ] Add tests for the terminal complete + failure states' next-action affordances.
-  - [ ] `npm run typecheck` + `npm run lint` + `npm test` green.
+- [x] **Task 4 — Tests (AC: 1, 2, 3)**
+  - [x] Extend `ProcessingIndicator` tests: renders the active agent's name (e.g. "Bob", not "Alice") and the operation label.
+  - [x] Add a test that a progress update does not clear chat input or jump scroll when the user has scrolled up.
+  - [x] Add tests for the terminal complete + failure states' next-action affordances.
+  - [x] `npm run typecheck` + `npm run lint` + `npm test` green.
 
 ## Dev Notes
 

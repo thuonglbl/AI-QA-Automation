@@ -110,12 +110,20 @@ async def sync_models_and_benchmarks(
     scores_written = 0
     if benchmark_available:
         note = f"Synced from llm-stats.com on {now:%Y-%m-%d}"
+        from ai_qa.agents.alice import _has_vision_signal
+
         for model_id, model in unique_models.items():
             scores = bench.scores_by_model.get(model_id)
             # A vision score only makes sense for vision-capable models. Drop it for
-            # text-only models (e.g. GLM-5.1) so the score matches the dashboard's
-            # "vision" tag — supports_vision must be explicitly True to keep it.
-            if scores and model.supports_vision is not True:
+            # genuinely text-only models (e.g. GLM-5.1) so the score stays consistent with
+            # the dashboard's "vision" tag. Use the UNION signal (advertised flag OR a
+            # vision name signal) — the gateway flag alone is unreliable: it misses name-
+            # obvious vision families (e.g. gemma, qwen-*-vl) whose score would otherwise
+            # be wrongly dropped here.
+            is_vision = _has_vision_signal(
+                {"id": model_id, "supports_vision": model.supports_vision}
+            )
+            if scores and not is_vision:
                 scores = {cap: val for cap, val in scores.items() if cap != "vision"}
             written = _overwrite_scores(db, model_id, scores, triggered_by_user_id, note)
             if written > 0:

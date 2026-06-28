@@ -113,10 +113,10 @@ located two compounding **test-only** defects.
 
 - **Finding 5 [Confirmed].** Real projects store the FULL page URL in `confluence_base_url`, not a host.
   Live Postgres query (`ai_qa_automation.projects`): "PTP Personal Travel Plan" →
-  `confluence-link` (the
+  `https://confluence.svc.corp.ch/spaces/EXPERTGROUP/pages/1238866187/PTP+-+Personal+Travel+Plan` (the
   exact page Test 1 targets); "PT Tool" → `.../pages/690323464/...`. The field name "base URL" is a misnomer.
 - **Finding 6 [Confirmed].** The test created the project via `baseUrl()` (`epic-11.spec.ts:38-41`), which
-  strips to scheme+host → `confluence-link`. `App.tsx:931` forwards that verbatim as
+  strips to scheme+host → `https://confluence.svc.corp.ch`. `App.tsx:931` forwards that verbatim as
   `confluence_url`; `_validate_confluence_url` finds no page id/space key and returns the on-screen error
   ([bob.py:191-197](src/ai_qa/agents/bob.py)). The host-only URL still passes `is_valid_confluence_url`
   (host matches `confluence[./]`), so it reaches the page-id check rather than the format-hint branch.
@@ -148,6 +148,6 @@ real parent-confirmation card → OK → `SplitPanel` review. Confidence **High*
   ([AdminDashboard.tsx:534,743](frontend/src/components/admin/AdminDashboard.tsx)) implies host-only entry,
   contradicting the full-page-URL semantics the backend requires. Worth a placeholder/helper-text fix so real
   admins don't repeat this mistake.
-- **Caveat.** The corrected Test 1 now hits the LIVE internal MCP against `confluence-link` (connect →
+- **Caveat.** The corrected Test 1 now hits the LIVE internal MCP against `confluence.svc.corp.ch` (connect →
   find/get_children/read_page). Requires network + EXPERTGROUP read grant (user confirmed both). If unavailable,
   it times out at the confirm/review wait rather than at URL validation.

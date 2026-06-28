@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ai_qa.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
-from ai_qa.db.types import EncryptedText, UserSecretEncryptedText
+from ai_qa.db.types import UserSecretEncryptedString, UserSecretEncryptedText
 from ai_qa.secrets.models import UserSecret  # noqa: F401  # register UserSecret mapper
 from ai_qa.threads.models import AgentRun  # noqa: F401  # register AgentRun mapper
 
@@ -34,13 +34,23 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Nullable after Epic 23 / story 23.3: SSO-provisioned users have no local password
+    # (the column is dropped entirely in 23.6). Local password login still works until then.
+    # Stable Entra object id (oid) — the cross-login join key (email/UPN can change).
+    # Populated on first SSO provision; email is the fallback match for pre-existing rows.
+    azure_oid: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="standard")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    chrome_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Best-effort Azure-synced avatar (Epic 23, story 23.4), stored as a `data:` URI.
+    # Populated on SSO login when the Graph photo fetch succeeds; served from our own
+    # backend (GET /auth/me/avatar). Null => the FE renders an initials fallback.
+    avatar: Mapped[str | None] = mapped_column(Text, nullable=True)
     # IANA timezone (e.g. "Asia/Ho_Chi_Minh") set by an admin at user creation; the
     # frontend formats message timestamps in this zone. Defaults to UTC.
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    conversation_language: Mapped[str] = mapped_column(String(10), nullable=False, default="en")
 
     created_projects: Mapped[list[Project]] = relationship(back_populates="created_by_user")
     memberships: Mapped[list[ProjectMembership]] = relationship(back_populates="user")
@@ -80,10 +90,6 @@ class Project(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Together with ``environments`` they form the (environment × role) matrix a captured
     # browser session is keyed by. All optional — empty list is valid.
     app_roles: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    # How the app under test is logged into: "SSO" (corporate IdP — accounts store only an
-    # email/username; testers capture their own session) or "PASSWORD" (accounts store an
-    # encrypted password; backend can auto-capture). Project-wide, project_admin-managed.
-    login_type: Mapped[str] = mapped_column(String(20), nullable=False, default="SSO")
     created_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
     )
@@ -92,46 +98,8 @@ class Project(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     memberships: Mapped[list[ProjectMembership]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
-    accounts: Mapped[list[ProjectAccount]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
     artifacts: Mapped[list[Artifact]] = relationship(back_populates="project")
     audit_events: Mapped[list[AuditEvent]] = relationship(back_populates="project")
-
-
-class ProjectAccount(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A project-level test-login identity for one (environment, role).
-
-    Managed by the project_admin (the identity catalog — WHO logs in, HOW). For an SSO
-    project this stores only ``login_identifier`` (email/username) with no password; for a
-    PASSWORD project it also holds an ``encrypted_password`` (project-shared, encrypted with
-    the instance ``db_encryption_key`` — NOT the per-user secrets key). The actual
-    proof-of-authentication (``storageState``) is the per-user :class:`CapturedSession`,
-    which this catalog parameterizes; the password is never returned to the frontend.
-    """
-
-    __tablename__ = "project_accounts"
-    # project_id already gets an index from ``index=True`` on its column below
-    # (ix_project_accounts_project_id); no separate explicit index needed.
-    __table_args__ = (
-        UniqueConstraint(
-            "project_id", "environment", "role", name="uq_project_accounts_project_env_role"
-        ),
-    )
-
-    project_id: Mapped[UUID] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    environment: Mapped[str] = mapped_column(String(64), nullable=False)
-    role: Mapped[str] = mapped_column(String(64), nullable=False)
-    # Email or username used to log in (always present; not secret).
-    login_identifier: Mapped[str] = mapped_column(String(320), nullable=False)
-    # Encrypted password — only for PASSWORD projects (NULL for SSO). TEXT-backed: the Fernet
-    # ciphertext expands past the plaintext length and must not overflow a varchar bound.
-    encrypted_password: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
-    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-    project: Mapped[Project] = relationship(back_populates="accounts")
 
 
 class CapturedSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -258,6 +226,8 @@ class Artifact(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Source id of this artifact's PARENT page (Confluence), for rendering a
     # Confluence-like tree. Null for root pages and non-hierarchical sources (Jira).
     parent_source_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Ordered list of ancestor source ids (root to immediate parent) for full-chain tree.
+    ancestor_source_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     project: Mapped[Project] = relationship(back_populates="artifacts")
     agent_run: Mapped[AgentRun | None] = relationship(back_populates="artifacts")
@@ -406,3 +376,40 @@ class DiscoveredModelSnapshot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     supports_vision: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TestAccountCredential(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Dedicated test-account credential for a project's (environment, role).
+
+    Used to automatically generate a ``storageState`` session (Epic 25).
+    Credentials are encrypted at rest with the per-user-secrets Fernet key,
+    never leaked, and managed by Project Admins.
+    """
+
+    __tablename__ = "test_account_credentials"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "project_id",
+            "environment",
+            "role",
+            name="uq_test_account_credentials_user_project_env_role",
+        ),
+        Index("ix_test_account_credentials_user_project", "user_id", "project_id"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    environment: Mapped[str] = mapped_column(String(64), nullable=False)
+    role: Mapped[str] = mapped_column(String(64), nullable=False)
+    username: Mapped[str] = mapped_column(UserSecretEncryptedString(1024), nullable=False)
+    password: Mapped[str] = mapped_column(UserSecretEncryptedString(1024), nullable=False)
+    # Optional TOTP seed for MFA bypass. Encrypted UserSecret.
+    totp_secret: Mapped[str | None] = mapped_column(UserSecretEncryptedString, nullable=True)
+
+    user: Mapped[User] = relationship()
+    project: Mapped[Project] = relationship()

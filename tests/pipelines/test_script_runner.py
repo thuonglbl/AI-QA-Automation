@@ -178,6 +178,16 @@ class TestBuildSubprocessEnv:
         assert env["E2E_NO_SANDBOX"] == "1"
         assert env["PLAYWRIGHT_IGNORE_HTTPS_ERRORS"] == "1"
 
+    def test_app_base_url_trailing_slash_stripped(self) -> None:
+        # A configured env URL with a trailing slash must not yield "host//path"
+        # when scripts build URLs as f"{BASE_URL}/path".
+        env = build_subprocess_env(
+            base_env={"PATH": "/x"},
+            base_url="https://int-app.corpnet.local/",
+            server_mode=False,
+        )
+        assert env["APP_BASE_URL"] == "https://int-app.corpnet.local"
+
 
 class TestParseJunitXml:
     def test_parses_all_statuses_and_provenance(self) -> None:

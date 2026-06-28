@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Shield, LogOut, Settings, X } from "lucide-react";
+import { Plus, Shield, LogOut, Settings, X, ArrowLeft } from "lucide-react";
+import { UserBadge } from "@/components/auth/UserBadge";
+import { AppVersion } from "@/components/AppVersion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,22 +9,20 @@ import { getSafeApiErrorMessage } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
 import {
   addProjectMember,
-  deleteProjectAccount,
   listAdministeredProjects,
   listAssignableUsers,
-  listProjectAccounts,
   removeProjectMember,
   updateProjectConfig,
-  upsertProjectAccount,
 } from "@/lib/projectAdmin";
+import { checkConnections } from "@/lib/sessions";
 import { AppRolesEditor, EnvironmentsEditor, cleanEnvironments } from "@/components/admin/AdminDashboard";
 import type {
   AssignableUser,
-  ProjectAccount,
   ProjectAdminProject,
   ProjectEnvironment,
-  ProjectLoginType,
 } from "@/types/project";
+import type { EnvConnectionStatus } from "@/types/session";
+
 
 // Mirrors the Alice provider order (backend PROVIDER_OPTIONS).
 const PROVIDER_OPTIONS = [
@@ -34,8 +34,15 @@ const PROVIDER_OPTIONS = [
   { id: "openai", label: "ChatGPT" },
 ] as const;
 
-export function ProjectAdminDashboard() {
+export function ProjectAdminDashboard({
+  onBackToWorkspace,
+  onNavigateToAdmin,
+}: {
+  onBackToWorkspace?: () => void;
+  onNavigateToAdmin?: () => void;
+} = {}) {
   const { user, logout } = useAuth();
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectAdminProject[]>([]);
   const [users, setUsers] = useState<AssignableUser[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -50,16 +57,11 @@ export function ProjectAdminDashboard() {
   const [providers, setProviders] = useState<string[]>([]);
   const [environments, setEnvironments] = useState<ProjectEnvironment[]>([]);
   const [appRoles, setAppRoles] = useState<string[]>([]);
-  const [loginType, setLoginType] = useState<ProjectLoginType>("SSO");
   const [memberToAdd, setMemberToAdd] = useState("");
 
-  // Test-login accounts (per environment × role) for the selected project.
-  const [accounts, setAccounts] = useState<ProjectAccount[]>([]);
-  const [acctEnv, setAcctEnv] = useState("");
-  const [acctRole, setAcctRole] = useState("");
-  const [acctIdentifier, setAcctIdentifier] = useState("");
-  const [acctPassword, setAcctPassword] = useState("");
-  const [acctLabel, setAcctLabel] = useState("");
+  // Reachability probe results for the selected project's saved environments.
+  const [connChecks, setConnChecks] = useState<EnvConnectionStatus[] | null>(null);
+  const [checkingConns, setCheckingConns] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -111,24 +113,8 @@ export function ProjectAdminDashboard() {
     setProviders(selected.enabled_providers ?? []);
     setEnvironments(selected.environments ?? []);
     setAppRoles(selected.app_roles ?? []);
-    setLoginType(selected.login_type ?? "SSO");
+    setConnChecks(null);
   }, [selected]);
-
-  const reloadAccounts = useCallback(async (projectId: string | null) => {
-    if (!projectId) {
-      setAccounts([]);
-      return;
-    }
-    try {
-      setAccounts(await listProjectAccounts(projectId));
-    } catch (err) {
-      setError(getSafeApiErrorMessage(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    reloadAccounts(selectedId);
-  }, [selectedId, reloadAccounts]);
 
   const usersById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
 
@@ -156,13 +142,20 @@ export function ProjectAdminDashboard() {
         enabled_providers: providers,
         environments: cleanEnvironments(environments),
         app_roles: appRoles,
-        login_type: loginType,
       });
       setStatus("Project configuration saved.");
       await reload();
-      // A config save can drop environments/app_roles; refresh the accounts table so it
-      // does not keep showing rows bound to an env/role that no longer exists.
-      await reloadAccounts(selected.id);
+      // On a successful save, automatically probe whether this app server can reach each
+      // saved environment so the admin learns immediately if a firewall is blocking it.
+      setConnChecks(null);
+      setCheckingConns(true);
+      try {
+        setConnChecks(await checkConnections(selected.id));
+      } catch {
+        // A failed probe is non-fatal — the configuration is already saved.
+      } finally {
+        setCheckingConns(false);
+      }
     } catch (err) {
       setError(getSafeApiErrorMessage(err));
     } finally {
@@ -201,55 +194,6 @@ export function ProjectAdminDashboard() {
     }
   }
 
-  async function handleSaveAccount() {
-    if (!selected || !acctEnv || !acctRole || !acctIdentifier.trim()) {
-      setError("Environment, role and login identifier are required.");
-      return;
-    }
-    const hasExistingPassword = accounts.some(
-      (a) => a.environment === acctEnv && a.role === acctRole && a.has_password,
-    );
-    if (loginType === "PASSWORD" && !acctPassword.trim() && !hasExistingPassword) {
-      setError("A password is required for a password-login project.");
-      return;
-    }
-    setIsBusy(true);
-    setError(null);
-    try {
-      await upsertProjectAccount(selected.id, {
-        environment: acctEnv,
-        role: acctRole,
-        login_identifier: acctIdentifier.trim(),
-        password: loginType === "PASSWORD" ? acctPassword || null : null,
-        label: acctLabel.trim() || null,
-      });
-      setAcctIdentifier("");
-      setAcctPassword("");
-      setAcctLabel("");
-      setStatus("Account saved.");
-      await reloadAccounts(selected.id);
-    } catch (err) {
-      setError(getSafeApiErrorMessage(err));
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
-  async function handleDeleteAccount(accountId: string) {
-    if (!selected) return;
-    setIsBusy(true);
-    setError(null);
-    try {
-      await deleteProjectAccount(selected.id, accountId);
-      setStatus("Account removed.");
-      await reloadAccounts(selected.id);
-    } catch (err) {
-      setError(getSafeApiErrorMessage(err));
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
   const memberIds = useMemo(
     () => new Set((selected?.memberships ?? []).map((m) => m.user_id)),
     [selected],
@@ -281,23 +225,64 @@ export function ProjectAdminDashboard() {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <div className="hidden md:block text-right">
-            <div className="text-sm font-semibold text-slate-900">
-              {(user as { display_name?: string })?.display_name || user?.name}
-            </div>
-            <div className="text-xs text-slate-500">
-              {user?.email} · <span className="text-indigo-600 font-medium">{user?.role}</span>
-            </div>
+          <div className="relative">
+            <button
+              onClick={() => setUserMenuOpen(!userMenuOpen)}
+              className="flex items-center hover:opacity-80 transition-opacity focus:outline-none"
+              title="User menu"
+            >
+              <UserBadge user={user} roleClassName="text-indigo-600" displayRole="Project Admin" />
+            </button>
+
+            {userMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setUserMenuOpen(false)}
+                />
+                <div className="absolute right-0 mt-2 w-56 bg-white rounded-md shadow-lg py-1 border border-slate-200 z-50">
+                  {onNavigateToAdmin && (
+                    <button
+                      onClick={() => {
+                        onNavigateToAdmin();
+                        setUserMenuOpen(false);
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
+                    >
+                      <Shield className="w-4 h-4" />
+                      Admin Dashboard
+                    </button>
+                  )}
+                  {onBackToWorkspace && (
+                    <button
+                      onClick={() => {
+                        onBackToWorkspace();
+                        setUserMenuOpen(false);
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                      User UI
+                    </button>
+                  )}
+                  <div className="h-px bg-slate-200 my-1" />
+                  <div className="px-4 py-2 text-xs text-slate-500">
+                    Version: <AppVersion className="inline" />
+                  </div>
+                  <button
+                    onClick={() => {
+                      Promise.resolve(logout()).catch(console.error);
+                      setUserMenuOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Logout
+                  </button>
+                </div>
+              </>
+            )}
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => Promise.resolve(logout()).catch(console.error)}
-            className="flex items-center gap-2 text-slate-600 border-slate-300"
-          >
-            <LogOut className="w-4 h-4" />
-            Logout
-          </Button>
         </div>
       </nav>
 
@@ -348,7 +333,8 @@ export function ProjectAdminDashboard() {
             </div>
 
             {selected && (
-              <div className="grid gap-6 lg:grid-cols-2">
+              <>
+                <div className="grid gap-6 lg:grid-cols-2">
                 {/* Configuration */}
                 <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
                   <div className="p-5 border-b border-slate-100 font-semibold text-slate-800">
@@ -397,21 +383,6 @@ export function ProjectAdminDashboard() {
                     </div>
                     <EnvironmentsEditor environments={environments} onChange={setEnvironments} />
                     <AppRolesEditor roles={appRoles} onChange={setAppRoles} />
-                    <div>
-                      <Label htmlFor="login-type" className="text-slate-700 block mb-1.5">
-                        Login type
-                      </Label>
-                      <select
-                        id="login-type"
-                        aria-label="Login type"
-                        value={loginType}
-                        onChange={(e) => setLoginType(e.target.value as ProjectLoginType)}
-                        className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                      >
-                        <option value="SSO">SSO (corporate IdP — capture session manually)</option>
-                        <option value="PASSWORD">Username / Password</option>
-                      </select>
-                    </div>
                     <Button
                       type="submit"
                       disabled={isBusy}
@@ -419,6 +390,45 @@ export function ProjectAdminDashboard() {
                     >
                       Save configuration
                     </Button>
+
+                    {/* Per-environment reachability, probed automatically after a save. */}
+                    {(checkingConns || connChecks) && (
+                      <div className="space-y-1.5" data-testid="env-connection-status">
+                        <Label className="text-slate-700 block">Environment connectivity</Label>
+                        {checkingConns ? (
+                          <p className="text-xs text-slate-500">Checking…</p>
+                        ) : (connChecks ?? []).length === 0 ? (
+                          <p className="text-xs italic text-slate-500">
+                            No saved environments to check.
+                          </p>
+                        ) : (
+                          (connChecks ?? []).map((c) => (
+                            <div
+                              key={c.name}
+                              className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-medium text-slate-700">
+                                  {c.name}
+                                  <span className="ml-2 font-normal text-slate-400">{c.url}</span>
+                                </span>
+                                {c.reachable ? (
+                                  <span className="font-medium text-green-700">✓ Connected</span>
+                                ) : (
+                                  <span className="font-medium text-red-600">✗ Failed</span>
+                                )}
+                              </div>
+                              {!c.reachable && (
+                                <p className="mt-1 text-red-600">
+                                  Please contact Administrator to open firewall from this app
+                                  server to your app
+                                </p>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
                   </form>
                 </div>
 
@@ -495,132 +505,7 @@ export function ProjectAdminDashboard() {
                   </div>
                 </div>
               </div>
-            )}
-
-            {selected && (
-              <div className="mt-6 rounded-xl border border-slate-200 bg-white shadow-sm">
-                <div className="p-5 border-b border-slate-100 font-semibold text-slate-800">
-                  Test-login Accounts
-                  <span className="ml-2 text-xs font-normal text-slate-400">
-                    {loginType === "SSO"
-                      ? "SSO — store the email/username only; testers capture their own session."
-                      : "Password — stored encrypted; never shown again."}
-                  </span>
-                </div>
-                <div className="p-5 space-y-4">
-                  <div className="flex flex-wrap items-end gap-2">
-                    <div>
-                      <Label className="text-slate-700 block text-xs mb-1">Environment</Label>
-                      <select
-                        aria-label="Account environment"
-                        value={acctEnv}
-                        onChange={(e) => setAcctEnv(e.target.value)}
-                        className="rounded-md border border-slate-300 bg-white px-2 py-2 text-sm"
-                      >
-                        <option value="">Select…</option>
-                        {environments.map((env) => (
-                          <option key={env.name} value={env.name}>
-                            {env.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <Label className="text-slate-700 block text-xs mb-1">Role</Label>
-                      <select
-                        aria-label="Account role"
-                        value={acctRole}
-                        onChange={(e) => setAcctRole(e.target.value)}
-                        className="rounded-md border border-slate-300 bg-white px-2 py-2 text-sm"
-                      >
-                        <option value="">Select…</option>
-                        {appRoles.map((role) => (
-                          <option key={role} value={role}>
-                            {role}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="flex-1 min-w-[160px]">
-                      <Label className="text-slate-700 block text-xs mb-1">Email / username</Label>
-                      <Input
-                        aria-label="Account login identifier"
-                        value={acctIdentifier}
-                        onChange={(e) => setAcctIdentifier(e.target.value)}
-                        placeholder="qa-admin@corp"
-                      />
-                    </div>
-                    {loginType === "PASSWORD" && (
-                      <div className="min-w-[140px]">
-                        <Label className="text-slate-700 block text-xs mb-1">Password</Label>
-                        <Input
-                          type="password"
-                          aria-label="Account password"
-                          value={acctPassword}
-                          onChange={(e) => setAcctPassword(e.target.value)}
-                          placeholder="••••••"
-                        />
-                      </div>
-                    )}
-                    <div className="min-w-[120px]">
-                      <Label className="text-slate-700 block text-xs mb-1">Label</Label>
-                      <Input
-                        aria-label="Account label"
-                        value={acctLabel}
-                        onChange={(e) => setAcctLabel(e.target.value)}
-                        placeholder="optional"
-                      />
-                    </div>
-                    <Button
-                      type="button"
-                      onClick={handleSaveAccount}
-                      disabled={isBusy}
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white"
-                    >
-                      Save account
-                    </Button>
-                  </div>
-
-                  {accounts.length === 0 ? (
-                    <div className="text-xs text-slate-500 italic">No accounts yet.</div>
-                  ) : (
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-left text-xs uppercase text-slate-400 border-b border-slate-200">
-                          <th className="py-2 pr-3">Environment</th>
-                          <th className="py-2 pr-3">Role</th>
-                          <th className="py-2 pr-3">Login</th>
-                          <th className="py-2 pr-3">Password</th>
-                          <th className="py-2 pr-3">Label</th>
-                          <th className="py-2" />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {accounts.map((a) => (
-                          <tr key={a.id} className="border-b border-slate-100">
-                            <td className="py-2 pr-3">{a.environment}</td>
-                            <td className="py-2 pr-3">{a.role}</td>
-                            <td className="py-2 pr-3">{a.login_identifier}</td>
-                            <td className="py-2 pr-3">{a.has_password ? "✓" : "—"}</td>
-                            <td className="py-2 pr-3 text-slate-500">{a.label ?? ""}</td>
-                            <td className="py-2 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteAccount(a.id)}
-                                disabled={isBusy}
-                                aria-label={`Remove account ${a.environment} ${a.role}`}
-                                className="text-red-500 hover:text-red-700 font-bold disabled:opacity-50"
-                              >
-                                ×
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              </div>
+              </>
             )}
           </>
         )}

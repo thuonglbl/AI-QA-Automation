@@ -79,6 +79,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       const accessibleProjects = await getUserProjects();
       setProjects(accessibleProjects);
       const storedProjectId = localStorage.getItem(SELECTED_PROJECT_KEY);
+      let nextSelectedId = storedProjectId;
+
       if (
         storedProjectId &&
         !accessibleProjects.some((project) => project.id === storedProjectId)
@@ -86,6 +88,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         clearSelectedProject(
           "Your previous project selection is no longer available.",
         );
+        nextSelectedId = null;
+      }
+
+      if (!nextSelectedId && accessibleProjects.length === 1 && accessibleProjects[0]) {
+        const onlyProjectId = accessibleProjects[0].id;
+        localStorage.setItem(SELECTED_PROJECT_KEY, onlyProjectId);
+        setSelectedProjectId(onlyProjectId);
       }
     } catch (error) {
       setProjects([]);

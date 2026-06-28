@@ -14,7 +14,6 @@ from sqlalchemy.orm import sessionmaker
 from ai_qa.browser.agent import BrowserAgent
 from ai_qa.browser.session import SessionManager
 from ai_qa.db.base import Base
-from ai_qa.db.models import User
 from ai_qa.exceptions import BrowserError
 
 
@@ -66,66 +65,47 @@ class TestBrowserAgentIntegration:
 
 @pytest.mark.integration
 class TestSessionManagerIntegration:
-    """Integration tests for SessionManager with real file system."""
+    """Integration tests for SessionManager (Chrome path is transient/config-derived)."""
 
-    def test_session_manager_persistence(self):
-        """Test that SessionManager persists Chrome path across instances."""
+    def test_session_manager_transient_path(self):
+        """A transiently-set Chrome path is held in-process (no DB persistence)."""
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         session_local = sessionmaker(bind=engine)
         db = session_local()
 
         user_id = uuid.uuid4()
-        user = User(
-            id=user_id,
-            email="test@test.com",
-            display_name="test",
-            password_hash="hash",
-            role="user",
-            is_active=True,
-        )
-        db.add(user)
-        db.commit()
-
         chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 
-        # First instance saves the path
-        manager1 = SessionManager(db=db, user_id=user_id)
-        manager1.save_chrome_path(chrome_path)
+        with patch("ai_qa.browser.session.AppSettings") as mock_settings:
+            mock_settings.return_value.chrome_path = ""
+            manager = SessionManager(db=db, user_id=user_id)
+            manager.set_chrome_path(chrome_path)
+            assert manager.chrome_path == chrome_path
 
-        # Second instance loads the path
-        manager2 = SessionManager(db=db, user_id=user_id)
-        assert manager2.chrome_path == chrome_path
+            # A second instance does NOT see the first's transient path.
+            manager2 = SessionManager(db=db, user_id=user_id)
+            assert manager2.chrome_path is None
 
         db.close()
         engine.dispose()
 
     def test_session_manager_get_chrome_path_priority(self):
-        """Test that saved config takes priority over AppSettings."""
+        """Test that a transiently-set path takes priority over AppSettings."""
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         session_local = sessionmaker(bind=engine)
         db = session_local()
 
         user_id = uuid.uuid4()
-        user = User(
-            id=user_id,
-            email="test@test.com",
-            display_name="test",
-            password_hash="hash",
-            role="user",
-            is_active=True,
-        )
-        db.add(user)
-        db.commit()
-
         saved_path = "/saved/chrome/path"
 
-        manager = SessionManager(db=db, user_id=user_id)
-        manager.save_chrome_path(saved_path)
-
-        # Even if AppSettings has a different path, saved config should win
-        assert manager.get_chrome_path() == saved_path
+        with patch("ai_qa.browser.session.AppSettings") as mock_settings:
+            mock_settings.return_value.chrome_path = "/settings/path"
+            manager = SessionManager(db=db, user_id=user_id)
+            manager.set_chrome_path(saved_path)
+            # Even if AppSettings has a different path, the transient value wins.
+            assert manager.get_chrome_path() == saved_path
 
         db.close()
         engine.dispose()

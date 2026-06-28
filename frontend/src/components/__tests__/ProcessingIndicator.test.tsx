@@ -35,4 +35,9 @@ describe("ProcessingIndicator", () => {
       expect(dot).not.toHaveClass("animate-bounce");
     });
   });
+
+  it("displays the agent name", () => {
+    render(<ProcessingIndicator message="Loading" agentName="Sarah" />);
+    expect(screen.getByText("Sarah")).toBeInTheDocument();
+  });
 });

@@ -19,6 +19,33 @@ if (!process.env.BASE_URL) {
 
 const slowMo = parseInt(process.env.PLAYWRIGHT_SLOW_MO || "0");
 
+// Resolve + validate the app base URL. BASE_URL can arrive from the shell, the
+// in-app admin runner (which copies the backend's os.environ), or `.env`. A
+// truthy-but-malformed value (missing scheme like "localhost:5173", a stray
+// space, or an un-stripped trailing comment) makes Playwright fail EVERY
+// page.goto("/") with a cryptic "Cannot navigate to invalid URL". Fail fast
+// here with an actionable message that names the offending value instead.
+const DEFAULT_BASE_URL = "http://localhost:5173"; // Vite dev server
+function resolveBaseURL(): string {
+  const raw = process.env.BASE_URL?.trim();
+  if (!raw) return DEFAULT_BASE_URL; // unset/blank → local default
+  try {
+    const { protocol } = new URL(raw);
+    if (protocol !== "http:" && protocol !== "https:") {
+      throw new Error(`unsupported protocol "${protocol}"`);
+    }
+    return raw;
+  } catch {
+    throw new Error(
+      `Invalid BASE_URL=${JSON.stringify(process.env.BASE_URL)} — it must be an ` +
+        `absolute http(s) URL (e.g. ${DEFAULT_BASE_URL} or ` +
+        `https://ai-qa.ai-uat.corpdev.local). Fix it in .env, or unset it in the ` +
+        `shell/process that launches the run to use the default.`,
+    );
+  }
+}
+const baseURL = resolveBaseURL();
+
 // 3. Config
 export default defineConfig({
   testDir: "./e2e",
@@ -44,7 +71,7 @@ export default defineConfig({
   use: {
     actionTimeout: 15 * 1000,
     navigationTimeout: 60 * 1000,
-    baseURL: process.env.BASE_URL || "http://localhost:5173", // Default for Vite local
+    baseURL, // validated above; falls back to the Vite local default
     // The in-app runner targets the deployed HTTPS app on the server, which may
     // use an internal/self-signed certificate. Only relaxed when explicitly opted in.
     ignoreHTTPSErrors: process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS === "1",

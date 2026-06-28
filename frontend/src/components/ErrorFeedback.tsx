@@ -30,17 +30,19 @@ export function ErrorFeedback({
       </p>
 
       {/* Retry button */}
-      <div className="pl-7 pt-1">
-        <Button
-          onClick={onRetry}
-          size="sm"
-          className="gap-2 bg-blue-500 hover:bg-blue-600 text-white"
-          autoFocus
-        >
-          <RefreshCw className="h-4 w-4" aria-hidden="true" />
-          <span>Retry this action</span>
-        </Button>
-      </div>
+      {onRetry && (
+        <div className="pl-7 pt-1">
+          <Button
+            onClick={onRetry}
+            size="sm"
+            className="gap-2 bg-blue-500 hover:bg-blue-600 text-white"
+            autoFocus
+          >
+            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+            <span>Retry this action</span>
+          </Button>
+        </div>
+      )}
 
       {/* Screen reader only error type */}
       <span className="sr-only">Error type: {error.type}</span>

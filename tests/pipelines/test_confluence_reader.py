@@ -11,7 +11,7 @@ from ai_qa.exceptions import MCPConnectionError, MCPToolError
 from ai_qa.mcp.tools import ToolResult
 from ai_qa.pipelines.confluence_reader import (
     ConfluenceReader,
-    _extract_parent_id,
+    _extract_parent_and_ancestors,
     _resolve_page_url,
 )
 
@@ -19,18 +19,18 @@ from ai_qa.pipelines.confluence_reader import (
 def test_resolve_page_url_no_double_append_when_base_is_full_page_url() -> None:
     """Bug fix: a base URL that is itself a full page URL must NOT get /pages/{id}
     appended again — derive the site root instead."""
-    base = "https://domain/spaces/SPACES/pages/12345/some-prj"
+    base = "https://confluence.svc.corp.ch/spaces/EXPERTGROUP/pages/1238866187/PTP+-+Personal+Travel+Plan"
     assert (
-        _resolve_page_url(base, {}, "12345")
-        == "https://domain/pages/12345"
+        _resolve_page_url(base, {}, "1238866187")
+        == "https://confluence.svc.corp.ch/pages/1238866187"
     )
 
 
 def test_resolve_page_url_prefers_server_links() -> None:
-    base = "https://domain/spaces/X/pages/1/Whatever"
+    base = "https://confluence.svc.corp.ch/spaces/X/pages/1/Whatever"
     # _links.webui (relative) joins onto the site root.
     assert _resolve_page_url(base, {"_links": {"webui": "/spaces/X/pages/9/Title"}}, "9") == (
-        "https://domain/spaces/X/pages/9/Title"
+        "https://confluence.svc.corp.ch/spaces/X/pages/9/Title"
     )
     # A top-level url is used verbatim.
     assert (
@@ -41,28 +41,27 @@ def test_resolve_page_url_prefers_server_links() -> None:
 
 def test_resolve_page_url_site_root_base() -> None:
     assert (
-        _resolve_page_url("https://domain", {}, "42")
-        == "https://domain/pages/42"
+        _resolve_page_url("https://confluence.svc.corp.ch", {}, "42")
+        == "https://confluence.svc.corp.ch/pages/42"
     )
 
 
-def test_extract_parent_id_prefers_ancestors_chain() -> None:
-    """The immediate parent is the LAST entry of the ancestors chain."""
+def test_extract_parent_and_ancestors_prefers_ancestors_chain() -> None:
+    """The immediate parent is the LAST entry of the ancestors chain, and the chain itself is returned."""
     page = {"id": "5", "ancestors": [{"id": "1"}, {"id": "3"}]}
-    assert _extract_parent_id(page, "root") == "3"
+    assert _extract_parent_and_ancestors(page, "root") == ("3", ["1", "3"])
 
 
-def test_extract_parent_id_falls_back_to_parentid_then_parent_obj() -> None:
-    assert _extract_parent_id({"id": "5", "parentId": "9"}, "root") == "9"
-    assert _extract_parent_id({"id": "5", "parent": {"id": "7"}}, "root") == "7"
+def test_extract_parent_and_ancestors_falls_back_to_parentid_then_parent_obj() -> None:
+    assert _extract_parent_and_ancestors({"id": "5", "parentId": "9"}, "root") == ("9", ["9"])
+    assert _extract_parent_and_ancestors({"id": "5", "parent": {"id": "7"}}, "root") == ("7", ["7"])
 
 
-def test_extract_parent_id_falls_back_to_root_when_unavailable() -> None:
-    """No ancestors/parent (server didn't expand) → nest under the extraction root."""
-    assert _extract_parent_id({"id": "5"}, "root") == "root"
-    assert _extract_parent_id({"id": "5", "ancestors": []}, "root") == "root"
+def test_extract_parent_and_ancestors_falls_back_to_root_when_unavailable() -> None:
+    assert _extract_parent_and_ancestors({"id": "5"}, "root") == ("root", ["root"])
+    assert _extract_parent_and_ancestors({"id": "5", "ancestors": []}, "root") == ("root", ["root"])
     # The root itself has no fallback.
-    assert _extract_parent_id({"id": "root"}, None) is None
+    assert _extract_parent_and_ancestors({"id": "root"}, None) == (None, [])
 
 
 @pytest.fixture
@@ -544,6 +543,24 @@ class TestConfluenceReaderChildrenAndSearch:
         assert result.data[0].page_id == "111"
         assert result.data[0].title == "Child 1"
         assert result.data[0].url == "url1"
+
+    async def test_get_children_by_id_extracts_version(
+        self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
+    ) -> None:
+        """Child version (Confluence revision) is surfaced on PageSummary for change detection."""
+        mock_mcp_client.call_tool.return_value = ToolResult.from_data(
+            {
+                "results": [
+                    {"id": "111", "title": "Child 1", "version": {"number": 7}},
+                    {"id": "222", "title": "Child 2"},  # no version → None
+                ]
+            }
+        )
+        result = await confluence_reader.get_children_by_id("123", "SPACE")
+        assert result.success is True
+        assert result.data is not None
+        assert result.data[0].version == 7
+        assert result.data[1].version is None
 
     async def test_get_children_by_id_error(
         self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock

@@ -35,7 +35,6 @@ def db_session() -> Generator[Session]:
         email="test@example.com",
         role="standard",
         display_name="Test User",
-        password_hash="fakehash",
     )
     project = Project(id=TEST_PROJECT_ID, name="Test Project", created_by_user_id=TEST_USER_ID)
 

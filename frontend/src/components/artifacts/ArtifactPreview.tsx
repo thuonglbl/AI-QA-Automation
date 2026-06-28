@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import { X, FileText, Pencil, Trash2 } from "lucide-react";
+import { X, FileText, Pencil, Trash2, Download } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import type { CSSProperties } from "react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, API_BASE_PATH } from "@/lib/api";
 import { updateArtifactContent, deleteArtifact } from "@/lib/artifacts";
 import { ReviewContent } from "@/components/ReviewContent";
 import { MermaidDiagram } from "@/components/artifacts/MermaidDiagram";
 import type { Artifact } from "@/components/conversations/ProjectSidebar";
+import { useFocusTrap } from "@/lib/useFocusTrap";
 
 // Type for SyntaxHighlighter style (matches react-syntax-highlighter internals)
 const syntaxHighlighterStyle: { [key: string]: CSSProperties } = vscDarkPlus;
@@ -66,8 +67,26 @@ export function ArtifactPreview({ artifact, onClose, onSelfMutation }: ArtifactP
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Focus traps for a11y (Story 16.6)
+  const previewRef = useFocusTrap(true, onClose);
+  const deleteTrapRef = useFocusTrap(isConfirmingDelete, () => setIsConfirmingDelete(false));
+
+  // Binary report artifacts (Playwright trace.zip / video) are large and not previewable as
+  // text — skip the 1 MB /content fetch and offer a direct download instead.
+  const downloadOnly = artifact.kind === "trace" || artifact.kind === "video";
+  const downloadUrl = `${API_BASE_PATH}/projects/${artifact.project_id}/artifacts/${artifact.id}/download`;
+
   useEffect(() => {
     let cancelled = false;
+
+    if (downloadOnly) {
+      setContent(""); // sentinel: lets renderBody show the download UI without a /content call
+      setContentEncoding("base64");
+      setIsLoading(false);
+      setError(null);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     setContent(null);
@@ -92,7 +111,7 @@ export function ArtifactPreview({ artifact, onClose, onSelfMutation }: ArtifactP
     return () => {
       cancelled = true;
     };
-  }, [artifact.project_id, artifact.id]);
+  }, [artifact.project_id, artifact.id, downloadOnly]);
 
   // AC4 — creator/updater + updated-at for the header subtitle
   const updatedAt = artifact.updated_at
@@ -104,7 +123,9 @@ export function ArtifactPreview({ artifact, onClose, onSelfMutation }: ArtifactP
       }).format(new Date(artifact.updated_at))
     : null;
 
-  const isEditable = artifact.kind !== "image" && artifact.kind !== "screenshot";
+  const isEditable = !["image", "screenshot", "trace", "video", "execution_screenshot"].includes(
+    artifact.kind,
+  );
 
   function handleEditClick() {
     setEditValue(content || "");
@@ -165,6 +186,60 @@ export function ArtifactPreview({ artifact, onClose, onSelfMutation }: ArtifactP
 
     const kind = artifact.kind;
 
+    // Playwright trace — not previewable; offer download + how to open it.
+    if (kind === "trace") {
+      return (
+        <div className="flex flex-col gap-3 text-sm text-[#334155]">
+          <p>
+            Playwright trace — a full step-by-step replay of the run (DOM snapshots, network,
+            console, timeline).
+          </p>
+          <a
+            href={downloadUrl}
+            className="inline-flex w-fit items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700"
+          >
+            <Download className="w-4 h-4" />
+            Download trace.zip
+          </a>
+          <p className="text-xs text-[#64748b]">
+            Open it in the Playwright Trace Viewer: drop the file onto{" "}
+            <span className="font-mono">trace.playwright.dev</span>, or run{" "}
+            <span className="font-mono">npx playwright show-trace &lt;file&gt;</span>.
+          </p>
+        </div>
+      );
+    }
+
+    // Playwright video → inline player (streamed from the download endpoint, no 1 MB cap).
+    if (kind === "video") {
+      return (
+        <div className="flex flex-col gap-3">
+          <video
+            controls
+            src={downloadUrl}
+            className="max-w-full rounded border border-[#e2e8f0]"
+          />
+          <a href={downloadUrl} className="text-sm text-indigo-600 hover:underline w-fit">
+            Download video
+          </a>
+        </div>
+      );
+    }
+
+    // Execution screenshot (.png, base64) → inline image.
+    if (kind === "execution_screenshot" && contentEncoding === "base64") {
+      const mime = mimeFromName(artifact.name);
+      if (mime !== "application/octet-stream") {
+        return (
+          <img
+            src={`data:${mime};base64,${content}`}
+            alt={artifact.name}
+            className="max-w-full h-auto rounded"
+          />
+        );
+      }
+    }
+
     // Image / screenshot with base64 encoding → <img data:…>
     if ((kind === "image" || kind === "screenshot") && contentEncoding === "base64") {
       const mime = mimeFromName(artifact.name);
@@ -212,7 +287,7 @@ export function ArtifactPreview({ artifact, onClose, onSelfMutation }: ArtifactP
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-white">
+    <div ref={previewRef as any} tabIndex={-1} className="flex-1 flex flex-col overflow-hidden bg-white outline-none">
       {/* Header — FROZEN: h3 name node + Close preview aria-label must remain unchanged */}
       <div className="px-5 py-3.5 border-b border-[#e2e8f0] flex items-center gap-3 bg-white flex-shrink-0">
         <div className="w-9 h-9 rounded-full flex items-center justify-center bg-[#f1f5f9] text-[#64748b] flex-shrink-0">
@@ -242,7 +317,7 @@ export function ArtifactPreview({ artifact, onClose, onSelfMutation }: ArtifactP
         </div>
         <div className="flex items-center gap-1">
           {isConfirmingDelete ? (
-            <div className="flex items-center bg-[#fee2e2] rounded-md px-2 py-1 mr-2 text-xs">
+            <div ref={deleteTrapRef as any} tabIndex={-1} className="flex items-center bg-[#fee2e2] rounded-md px-2 py-1 mr-2 text-xs outline-none">
               <span className="text-[#ef4444] font-medium mr-3">Delete artifact?</span>
               <button
                 onClick={handleDelete}
@@ -278,6 +353,14 @@ export function ArtifactPreview({ artifact, onClose, onSelfMutation }: ArtifactP
             </div>
           ) : (
             <>
+              <a
+                href={downloadUrl}
+                className="p-1.5 text-[#64748b] hover:bg-[#f1f5f9] rounded-md transition-colors inline-flex"
+                aria-label="Download artifact"
+                title="Download artifact"
+              >
+                <Download className="w-4 h-4" />
+              </a>
               {isEditable && (
                 <button
                   onClick={handleEditClick}
@@ -314,7 +397,7 @@ export function ArtifactPreview({ artifact, onClose, onSelfMutation }: ArtifactP
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-5">
         {isLoading && (
-          <div className="flex items-center justify-center py-12 text-[#94a3b8] text-sm">
+          <div className="flex items-center justify-center py-12 text-[#64748b] text-sm">
             Loading artifact content…
           </div>
         )}

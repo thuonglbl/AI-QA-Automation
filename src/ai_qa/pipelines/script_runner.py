@@ -214,6 +214,7 @@ def build_pytest_command(
     output_dir: str | None = None,
     capture_screenshots: bool = False,
     capture_traces: bool = False,
+    capture_videos: bool = False,
     per_test_timeout: int | None = None,
 ) -> list[str]:
     """Build the isolated pytest command line (no repo addopts/coverage inheritance).
@@ -243,7 +244,11 @@ def build_pytest_command(
     if capture_screenshots:
         cmd += ["--screenshot", "only-on-failure"]
     if capture_traces:
-        cmd += ["--tracing", "retain-on-failure"]
+        # "on" (not retain-on-failure): record a trace for EVERY test so a passing headless
+        # run is still reviewable. Persistence is gated separately (execution_capture_traces).
+        cmd += ["--tracing", "on"]
+    if capture_videos:
+        cmd += ["--video", "on"]
     if headed:
         cmd.append("--headed")
     if run_policy == "stop_on_first_failure":
@@ -381,7 +386,10 @@ def build_subprocess_env(
     var — e.g. ``DATABASE_URL`` or ``SEAWEEDFS_ACCESS_KEY`` — can never leak (convention #1).
     """
     env = {k: v for k, v in base_env.items() if _env_allowed(k)}
-    env["APP_BASE_URL"] = base_url
+    # Strip a trailing slash so scripts that build URLs as f"{BASE_URL}/path" (the
+    # generated convention) produce a single slash — a configured env URL like
+    # "https://host/" would otherwise yield "https://host//path".
+    env["APP_BASE_URL"] = base_url.rstrip("/")
     env["FORCE_COLOR"] = "0"
     env["PLAYWRIGHT_HTML_REPORT_OPEN"] = "never"
     if server_mode:
@@ -523,6 +531,7 @@ def run_scripts(
     headed: bool = False,
     capture_screenshots: bool = True,
     capture_traces: bool = True,
+    capture_videos: bool = False,
     base_env: dict[str, str] | None = None,
     server_mode: bool = False,
     workdir: str | None = None,
@@ -589,6 +598,7 @@ def run_scripts(
                 output_dir=inv_out,
                 capture_screenshots=capture_screenshots,
                 capture_traces=capture_traces,
+                capture_videos=capture_videos,
                 per_test_timeout=execution_timeout,
             )
             stderr = ""
@@ -726,6 +736,8 @@ def _collect_output_files(output_dir: str, browser: str) -> list[ProducedFile]:
             kind = "execution_screenshot"
         elif suffix == ".zip":
             kind = "trace"
+        elif suffix in (".webm", ".mp4"):
+            kind = "video"
         else:
             kind = "log"
         rel = path.relative_to(base).as_posix().replace("/", "__")

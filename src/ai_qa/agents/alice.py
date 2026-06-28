@@ -163,8 +163,17 @@ PROVIDER_OPTIONS: list[dict[str, Any]] = [
 AGENT_PURPOSES: dict[str, str] = {
     "bob": "Requirements conversion from Confluence and Jira",
     "mary": "Test case generation",
-    "sarah": "Test script generation with browser automation",
+    "sarah": "Script generation — writes Playwright from the captured trace (coding)",
+    "sarah_explore": "Browser exploration — drives the live app to capture real selectors (vision)",
     "jack": "Test execution and analysis",
+}
+
+# Display labels for the model-assignment UI. ``sarah_explore`` is not a pipeline step — it is
+# the SECOND model Sarah uses (a vision model drives the browser-use explore; the coding model
+# above writes the script). Defaults to ``capitalize()`` for anything not listed.
+_AGENT_DISPLAY_NAME: dict[str, str] = {
+    "sarah": "Sarah · Script gen",
+    "sarah_explore": "Sarah · Browser explore",
 }
 
 # Tool assignments per agent
@@ -291,6 +300,7 @@ _AGENT_CAPABILITY_RANK: dict[str, list[str]] = {
     "bob": _VISION_RANK,
     "mary": _INSTRUCTION_RANK,
     "sarah": _CODING_RANK,
+    "sarah_explore": _VISION_RANK,
     "jack": _FAST_RANK,
 }
 
@@ -301,6 +311,7 @@ _AGENT_CAPABILITY_NAME: dict[str, str] = {
     "bob": "vision",
     "mary": "instruction",
     "sarah": "coding",
+    "sarah_explore": "vision",
     "jack": "fast",
 }
 
@@ -338,7 +349,13 @@ _AGENT_RATIONALE: dict[str, str] = {
     ),
     "sarah": (
         "'{model}' — top open coding & agentic model in the discovered pool "
-        "(state-of-the-art SWE-Bench Pro, 2026); best for script generation and tools."
+        "(state-of-the-art SWE-Bench Pro, 2026); writes the Playwright script from the "
+        "captured browser trace."
+    ),
+    "sarah_explore": (
+        "'{model}' — best vision model in the discovered pool; DRIVES Sarah's browser-use "
+        "exploration so it can SEE the live app and capture real selectors (the coding model "
+        "above then turns that trace into the script)."
     ),
     "jack": (
         "'{model}' — strong, lower-latency model for fast summarization and execution analysis."
@@ -382,6 +399,13 @@ _ACTIVE_RE = re.compile(r"^a\d")  # a22b / a3b -> active-param count
 # version token like "-v3" / "-v32".
 _VISION_NAME_HINTS = ("vl", "vision", "multimodal", "maverick", "scout", "pixtral", "llava")
 _VISION_FAMILY_HINTS = ("gemma",)
+# Text-only flagships that are NEVER vision even when a provider gateway falsely advertises
+# supports_vision (the on-prem gateway mis-flags e.g. deepseek-v32 / gpt-oss as vision, which
+# would otherwise let a blind model win Bob's vision role + drive Sarah's explore). Checked
+# AFTER the positive vision-name signals, so a genuine multimodal variant (e.g. a "deepseek-vl")
+# still counts. Substring match against the lowercased id. Mirrors project-context's
+# "keep GLM-5.1 / DeepSeek / GPT-OSS out of vision" rule — a capability FACT, not a score.
+_TEXT_ONLY_VISION_DENY = ("deepseek", "gpt-oss")
 
 
 def _version_from_token(token: str) -> tuple[int, ...] | None:
@@ -462,14 +486,28 @@ def _model_score_key(parsed: ParsedModel) -> tuple[int, tuple[int, ...], int]:
 
 
 def _has_vision_signal(model: dict[str, Any]) -> bool:
-    """Vision = advertised capability OR a vision name signal (union; flag unreliable)."""
-    if model.get("supports_vision") is True:
-        return True
+    """Vision = a reliable name signal, OR the advertised flag for models not known to be
+    text-only. The provider gateway's ``supports_vision`` flag is unreliable (it false-flags
+    text-only on-prem models like deepseek-v32 / gpt-oss), so positive NAME signals win first
+    and a known text-only family is rejected even when the flag is set; only then is the flag
+    trusted (reliable for hosted providers + anything not on the text-only denylist)."""
     low = str(model.get("id", "")).lower()
     tokens = set(low.replace("/", "-").split("-"))
+    # 1) Positive vision name signals win outright (incl. a genuine "-vl" multimodal variant).
     if tokens & set(_VISION_NAME_HINTS):
         return True
-    return any(h in low for h in _VISION_FAMILY_HINTS)
+    # Vision variants that append "v" to a version (e.g. glm-5v / glm-5.1v / glm-4.6v —
+    # all listed in _VISION_RANK). Without this, name-only detection (used when the
+    # supports_vision flag is absent, e.g. resolving from a stored model id) misses them.
+    if any(re.fullmatch(r"\d+(?:\.\d+)?v", t) for t in tokens):
+        return True
+    if any(h in low for h in _VISION_FAMILY_HINTS):
+        return True
+    # 2) Known text-only flagships are never vision, even if the gateway flag says so.
+    if any(t in low for t in _TEXT_ONLY_VISION_DENY):
+        return False
+    # 3) Otherwise trust the advertised capability (reliable for hosted providers).
+    return model.get("supports_vision") is True
 
 
 def _breakdown(parsed: ParsedModel) -> str:
@@ -545,7 +583,9 @@ def _select_model_for(
 
     eligible = models
     degraded = False
-    if agent == "bob":
+    # Vision-role agents (Bob's image extraction; Sarah's browser-explore) are restricted to
+    # vision-capable models. Soft gate: degrades to the full pool (flagged) if none look visual.
+    if _AGENT_CAPABILITY_NAME.get(agent) == "vision":
         vision = [m for m in models if _has_vision_signal(m)]
         if vision:
             eligible = vision
@@ -553,10 +593,18 @@ def _select_model_for(
             degraded = True
     eligible_ids = [str(m["id"]) for m in eligible]
 
-    # Tier 0: operator-supplied scores (admin dashboard) win outright.
-    scored = [(mid, admin[mid]) for mid in eligible_ids if mid in admin]
-    if scored:
-        chosen, score = max(scored, key=lambda kv: (kv[1], _model_score_key(parse_model_id(kv[0]))))
+    # Tier 0: operator-supplied scores (admin dashboard) win outright — but guard against
+    # benchmark/seed noise. A non-positive score is treated as UNSCORED (a 0.0 row must not
+    # let a model beat a curated pick), and a stale "-GRC" duplicate never wins while its
+    # non-GRC sibling is also scored (mirrors the Tier-1 non_grc preference in
+    # _select_best_model). Without this, a stale-seeded inference-qwen3-vl-235b-GRC row
+    # (left behind by a partial benchmark migration) hijacked Tier-0 for every agent.
+    scored = [(mid, admin[mid]) for mid in eligible_ids if mid in admin and admin[mid] > 0.0]
+    non_grc_scored = [kv for kv in scored if "grc" not in kv[0].lower()] or scored
+    if non_grc_scored:
+        chosen, score = max(
+            non_grc_scored, key=lambda kv: (kv[1], _model_score_key(parse_model_id(kv[0])))
+        )
         source, base_breakdown = "admin", f"admin score={score}"
     else:
         # Tier 1: curated benchmark preference list (version-aware).
@@ -1540,7 +1588,7 @@ class AliceAgent(BaseAgent):
             prompt_template="default_v1",
             tools=[],
         )
-        for agent_name in ["bob", "mary", "sarah", "jack"]:
+        for agent_name in ["bob", "mary", "sarah", "sarah_explore", "jack"]:
             agents[agent_name] = AgentModelConfig(
                 model=model_mappings.get(agent_name, alice_model),
                 temperature=0.0,
@@ -1554,8 +1602,15 @@ class AliceAgent(BaseAgent):
         )
 
         # Store rationale for display in the review panel (threaded through
-        # _get_model_assignments_display / _format_model_assignments).
-        self._model_reasoning = reasoning
+        # _get_model_assignments_display / _format_model_assignments). Alice's own
+        # rationale is only carried on the bootstrap trace (bootstrap_rationale), so
+        # prepend it here too — otherwise her row in the confirm/review table (and the
+        # persisted agent_configs) would render with a blank rationale. Kept out of the
+        # trace ``assignments`` above so the bootstrap card never lists Alice twice.
+        self._model_reasoning = [
+            {"agent": "alice", "model": alice_model, "rationale": alice_rationale},
+            *reasoning,
+        ]
 
         # Immediately update the thread with the provider info so it's not null in the DB
         # before the user approves the agent configurations.
@@ -1649,13 +1704,24 @@ class AliceAgent(BaseAgent):
                 purpose = "Provider Selection & Configuration"
             else:
                 purpose = AGENT_PURPOSES.get(agent_name, "Agent task")
-            agent_display = agent_name.capitalize()
+            agent_display = _AGENT_DISPLAY_NAME.get(agent_name, agent_name.capitalize())
+            # Prefer the real (possibly degraded-annotated) rationale; fall back to the
+            # canonical per-agent template so resumed/legacy threads whose stored
+            # rationale is blank still render a reason that matches the bootstrap card.
+            rationale = reasoning_map.get(agent_name, "")
+            if not rationale:
+                template = _AGENT_RATIONALE.get(agent_name, "")
+                rationale = template.format(model=agent_config.model) if template else ""
             assignments.append(
                 {
+                    # ``key`` is the stable config/override key (e.g. "sarah_explore"); ``agent``
+                    # is the human label. The review UI overrides by ``key`` so two Sarah rows
+                    # (script-gen + browser-explore) never collide.
+                    "key": agent_name,
                     "agent": agent_display,
                     "model": agent_config.model,
                     "purpose": purpose,
-                    "rationale": reasoning_map.get(agent_name, ""),
+                    "rationale": rationale,
                 }
             )
         return assignments
@@ -1784,7 +1850,7 @@ class AliceAgent(BaseAgent):
         rows = admin_score_rows or []
         mappings: dict[str, str] = {}
         reasoning: list[dict[str, str]] = []
-        for agent in ["bob", "mary", "sarah", "jack"]:
+        for agent in ["bob", "mary", "sarah", "sarah_explore", "jack"]:
             admin = _merge_scores(rows, _AGENT_CAPABILITY_NAME[agent])
             pick = _select_model_for(agent, available_models, admin)
             chosen = pick["model"] if pick else alice_model

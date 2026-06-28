@@ -209,25 +209,7 @@ describe("ProviderSelector", () => {
     ).toBe("");
   });
 
-  it("validates required fields before submitting", async () => {
-    const onSelect = vi.fn();
 
-    render(<ProviderSelector options={mockProviders} onSelect={onSelect} />);
-
-    // Click on Claude provider
-    fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
-
-    // Click start without entering credentials
-    fireEvent.click(screen.getByRole("button", { name: /Start/i }));
-
-    // Should show validation error
-    await waitFor(() => {
-      expect(screen.getByText(/API Key is required/i)).toBeInTheDocument();
-    });
-
-    // onSelect should not have been called
-    expect(onSelect).not.toHaveBeenCalled();
-  });
 
   it("calls onSelect with provider and credentials when valid", async () => {
     const onSelect = vi.fn();
@@ -266,6 +248,44 @@ describe("ProviderSelector", () => {
       .getByText(/Claude \(Anthropic\)/)
       .closest("div.border");
     expect(claudeCard).toHaveClass("opacity-50");
+  });
+
+  it("disables Start button and shows 'enter credentials' when credentials are missing", () => {
+    render(<ProviderSelector options={mockProviders} onSelect={vi.fn()} />);
+    fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
+
+    const startBtn = screen.getByRole("button", { name: "Start" });
+    expect(startBtn).toBeDisabled();
+    expect(screen.getByText("enter credentials")).toBeInTheDocument();
+
+    // Type a credential to enable it
+    fireEvent.change(screen.getByPlaceholderText(/personal API key/i), {
+      target: { value: "sk-1234" },
+    });
+
+    expect(startBtn).not.toBeDisabled();
+    expect(screen.queryByText("enter credentials")).not.toBeInTheDocument();
+  });
+
+  it("shows 'connection failed, fix and retry' when testing an invalid provider", () => {
+    render(
+      <ProviderSelector
+        options={mockProviders}
+        onSelect={vi.fn()}
+        invalidProvider="claude"
+      />
+    );
+    fireEvent.click(screen.getByText(/Claude \(Anthropic\)/));
+
+    // Fill credentials so it's not disabled for missing creds
+    fireEvent.change(screen.getByPlaceholderText(/Your API key is invalid/i), {
+      target: { value: "sk-wrong" },
+    });
+
+    const startBtn = screen.getByRole("button", { name: "Start" });
+    // The button shouldn't be disabled (they can retest), but it shows the error
+    expect(startBtn).not.toBeDisabled();
+    expect(screen.getByText("connection failed, fix and retry")).toBeInTheDocument();
   });
 
   it("disables providers not in enabledProviders list", () => {

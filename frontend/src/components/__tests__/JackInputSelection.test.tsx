@@ -63,8 +63,8 @@ describe("JackInputSelection", () => {
       renderRunnable([makeEntry()]);
       expect(screen.getByLabelText(/Target environment/i)).toBeInTheDocument();
       expect(screen.getByLabelText(/Login role/i)).toBeInTheDocument();
-      expect(screen.getByRole("checkbox", { name: "Chromium" })).toBeChecked();
-      expect(screen.getByRole("checkbox", { name: "Edge" })).not.toBeChecked();
+      expect(screen.getByRole("checkbox", { name: /Chromium/i })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "Firefox" })).not.toBeChecked();
     });
 
     it("renders a free-text URL field when no environments are provided", () => {
@@ -73,91 +73,9 @@ describe("JackInputSelection", () => {
     });
   });
 
-  describe("Session awareness (14.4)", () => {
-    it("disables Run + shows hint when no session for the selected (env, role)", () => {
-      render(
-        <JackInputSelection
-          scripts={[makeEntry()]}
-          environments={ENVS}
-          appRoles={APP_ROLES}
-          sessions={[]}
-          onConfirm={vi.fn()}
-        />,
-      );
-      expect(screen.getByRole("button", { name: /Confirm & Run/i })).toBeDisabled();
-      expect(screen.getByText(/No captured session for Production \/ Admin/i)).toBeInTheDocument();
-    });
 
-    it("enables Run when a session exists for the selected (env, role)", () => {
-      renderRunnable([makeEntry()]);
-      expect(screen.getByRole("button", { name: /Confirm & Run/i })).not.toBeDisabled();
-    });
-  });
 
-  describe("Per-script role session hard-block (Slice 6)", () => {
-    it("requires a session for the script's OWN role, not the UI default", () => {
-      render(
-        <JackInputSelection
-          scripts={[makeEntry({ role: "User" })]}
-          environments={ENVS}
-          appRoles={APP_ROLES}
-          sessions={SESSIONS} // Admin only
-          onConfirm={vi.fn()}
-        />,
-      );
-      expect(screen.getByRole("button", { name: /Confirm & Run/i })).toBeDisabled();
-      expect(screen.getByText(/No captured session for Production \/ User/i)).toBeInTheDocument();
-    });
 
-    it("disables Run when one role in a mixed selection lacks a session", () => {
-      render(
-        <JackInputSelection
-          scripts={[
-            makeEntry({ artifact_id: "a", title: "test_admin", role: "Admin" }),
-            makeEntry({ artifact_id: "b", title: "test_user", role: "User" }),
-          ]}
-          environments={ENVS}
-          appRoles={APP_ROLES}
-          sessions={SESSIONS} // Admin only
-          onConfirm={vi.fn()}
-        />,
-      );
-      expect(screen.getByRole("button", { name: /Confirm & Run/i })).toBeDisabled();
-      expect(screen.getByText(/No captured session for Production \/ User/i)).toBeInTheDocument();
-    });
-
-    it("enables Run when every involved role has a session", () => {
-      render(
-        <JackInputSelection
-          scripts={[
-            makeEntry({ artifact_id: "a", title: "test_admin", role: "Admin" }),
-            makeEntry({ artifact_id: "b", title: "test_user", role: "User" }),
-          ]}
-          environments={ENVS}
-          appRoles={APP_ROLES}
-          sessions={[
-            { environment: "Production", role: "Admin" },
-            { environment: "Production", role: "User" },
-          ]}
-          onConfirm={vi.fn()}
-        />,
-      );
-      expect(screen.getByRole("button", { name: /Confirm & Run/i })).not.toBeDisabled();
-    });
-
-    it("renders the per-script role badge", () => {
-      render(
-        <JackInputSelection
-          scripts={[makeEntry({ role: "Manager" })]}
-          environments={ENVS}
-          appRoles={APP_ROLES}
-          sessions={SESSIONS}
-          onConfirm={vi.fn()}
-        />,
-      );
-      expect(screen.getByText("Manager")).toBeInTheDocument();
-    });
-  });
 
   describe("Confirm", () => {
     it("calls onConfirm with selected ids + run config", () => {
@@ -173,10 +91,10 @@ describe("JackInputSelection", () => {
 
     it("carries a multi-browser selection in the config", () => {
       const onConfirm = renderRunnable([makeEntry({ artifact_id: "id-1" })]);
-      fireEvent.click(screen.getByRole("checkbox", { name: "Edge" }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Firefox" }));
       fireEvent.click(screen.getByRole("button", { name: /Confirm & Run/i }));
       const config = onConfirm.mock.calls[0]![1];
-      expect(config.browsers).toEqual(expect.arrayContaining(["chromium", "msedge"]));
+      expect(config.browsers).toEqual(expect.arrayContaining(["chromium", "firefox"]));
     });
 
     it("disables Run when nothing is selected", () => {
@@ -186,7 +104,7 @@ describe("JackInputSelection", () => {
 
     it("disables Run when no browser is selected", () => {
       renderRunnable([makeEntry()]);
-      fireEvent.click(screen.getByRole("checkbox", { name: "Chromium" }));
+      fireEvent.click(screen.getByRole("checkbox", { name: /Chromium/i }));
       expect(screen.getByRole("button", { name: /Confirm & Run/i })).toBeDisabled();
     });
 

@@ -3,10 +3,8 @@ import { apiFetch } from "@/lib/api";
 import type {
   AdminProject,
   AssignableUser,
-  ProjectAccount,
   ProjectAdminProject,
   ProjectEnvironment,
-  ProjectLoginType,
 } from "@/types/project";
 
 export interface ProjectConfigPayload {
@@ -15,35 +13,6 @@ export interface ProjectConfigPayload {
   enabled_providers: string[];
   environments: ProjectEnvironment[];
   app_roles: string[];
-  login_type: ProjectLoginType;
-}
-
-export interface AccountUpsertPayload {
-  environment: string;
-  role: string;
-  login_identifier: string;
-  password?: string | null;
-  label?: string | null;
-}
-
-export function listProjectAccounts(projectId: string): Promise<ProjectAccount[]> {
-  return apiFetch<ProjectAccount[]>(`/project-admin/projects/${projectId}/accounts`);
-}
-
-export function upsertProjectAccount(
-  projectId: string,
-  payload: AccountUpsertPayload,
-): Promise<ProjectAccount> {
-  return apiFetch<ProjectAccount>(`/project-admin/projects/${projectId}/accounts`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function deleteProjectAccount(projectId: string, accountId: string): Promise<void> {
-  return apiFetch<void>(`/project-admin/projects/${projectId}/accounts/${accountId}`, {
-    method: "DELETE",
-  });
 }
 
 /** Projects the current user administers (platform admin sees all). */

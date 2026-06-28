@@ -74,7 +74,6 @@ def skip_client() -> Generator[TestClient]:
         id=user_id,
         email="test@example.com",
         display_name="Test User",
-        password_hash="hash",
         role="standard",
         is_active=True,
     )

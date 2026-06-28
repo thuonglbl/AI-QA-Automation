@@ -17,7 +17,7 @@ from ai_qa.api.app import create_app
 from ai_qa.api.artifacts import get_artifact_storage
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.session import SessionManager
-from ai_qa.auth.password import hash_password
+from ai_qa.artifacts.storage import StorageObjectNotFoundError
 from ai_qa.auth.service import ADMIN_ROLE, STANDARD_ROLE
 from ai_qa.db.base import Base
 from ai_qa.db.models import Artifact, ArtifactVersion, Project, ProjectMembership, User
@@ -51,7 +51,9 @@ class ArtifactStorageFake:
         try:
             return self.contents[storage_path]
         except KeyError as exc:
-            raise FileNotFoundError(storage_path) from exc
+            # Mirror the real backends' contract: a missing object raises the
+            # storage-agnostic StorageObjectNotFoundError (a FileNotFoundError subclass).
+            raise StorageObjectNotFoundError(storage_path) from exc
 
     def delete(self, storage_path: str) -> None:
         self.deleted.append(storage_path)
@@ -118,7 +120,6 @@ def _create_user(client: TestClient, email: str, role: str, *, active: bool = Tr
         user = User(
             email=email,
             display_name=email.split("@")[0],
-            password_hash=hash_password("super-secret"),
             role=role,
             is_active=active,
         )
@@ -218,7 +219,6 @@ def test_member_creates_lists_reads_and_versions_text_artifact(artifact_client: 
     assert artifact["agent_run_id"] == str(agent_run.id)
     assert artifact["current_version"] == 1
     assert "storage_path" not in artifact
-    assert "password_hash" not in str(artifact)
 
     listed = artifact_client.get(
         f"/api/projects/{project.id}/artifacts?kind=markdown",
@@ -249,6 +249,36 @@ def test_member_creates_lists_reads_and_versions_text_artifact(artifact_client: 
     assert versioned.json()["current_version"] == 2
     assert "storage_path" not in versioned.json()
     assert all("storage_path" not in version for version in detail.json()["versions"])
+
+
+def test_read_content_returns_404_when_blob_missing(artifact_client: TestClient) -> None:
+    """A DB row whose backing object was deleted yields 404, not a 500."""
+    member = _create_user(artifact_client, "member@example.com", STANDARD_ROLE)
+    project = _create_project(artifact_client, "Scoped")
+    agent_run = _create_agent_run(artifact_client, project, member)
+    _add_membership(artifact_client, project, member)
+
+    created = artifact_client.post(
+        f"/api/projects/{project.id}/artifacts",
+        headers=_auth_headers(artifact_client, member),
+        json={
+            "kind": "markdown",
+            "name": "requirements.md",
+            "content": "# Requirements",
+            "agent_run_id": str(agent_run.id),
+        },
+    )
+    assert created.status_code == 200
+    artifact_id = created.json()["id"]
+
+    # Simulate the backing object being deleted on the filesystem while the DB row remains.
+    cast(FastAPI, artifact_client.app).state.test_artifact_storage.contents.clear()
+
+    content = artifact_client.get(
+        f"/api/projects/{project.id}/artifacts/{artifact_id}/content",
+        headers=_auth_headers(artifact_client, member),
+    )
+    assert content.status_code == 404
 
 
 def test_artifact_api_supports_base64_binary_content(artifact_client: TestClient) -> None:

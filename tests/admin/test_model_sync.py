@@ -149,9 +149,15 @@ async def test_sync_drops_vision_for_non_vision_models(
 ) -> None:
     # A text-only model (supports_vision None/False) must not carry a vision score,
     # even if the benchmark source returned one; a vision-capable model keeps it.
+    # Vision is decided by the UNION (advertised flag OR vision name signal), so a
+    # name-obvious vision model (e.g. gemma) keeps its score even with the flag off.
     adapters = {
         "on-premises": _FakeAdapter(
-            models=[_model("glm-6", vision=None), _model("pixel-vlm", vision=True)]
+            models=[
+                _model("glm-6", vision=None),
+                _model("pixel-vlm", vision=True),
+                _model("inference-gemma4-31b", vision=False),
+            ]
         )
     }
     bench = BenchmarkResult(
@@ -159,6 +165,7 @@ async def test_sync_drops_vision_for_non_vision_models(
         scores_by_model={
             "glm-6": {"global": 80.0, "vision": 40.0},
             "pixel-vlm": {"global": 70.0, "vision": 60.0},
+            "inference-gemma4-31b": {"global": 29.4, "vision": 80.0},
         },
     )
     _patch(monkeypatch, adapters, bench)
@@ -171,7 +178,9 @@ async def test_sync_drops_vision_for_non_vision_models(
         by_model.setdefault(row.model_id, {})[row.capability] = row.score
     assert "vision" not in by_model["glm-6"]  # text-only -> vision dropped
     assert by_model["glm-6"]["global"] == 80.0
-    assert by_model["pixel-vlm"]["vision"] == 60.0  # vision-capable -> kept
+    assert by_model["pixel-vlm"]["vision"] == 60.0  # advertised vision -> kept
+    # gemma's flag is off, but the name signal keeps its vision score (the dashboard bug).
+    assert by_model["inference-gemma4-31b"]["vision"] == 80.0
 
 
 @pytest.mark.asyncio

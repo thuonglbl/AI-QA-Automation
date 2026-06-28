@@ -272,6 +272,11 @@ class BaseAgent(ABC):
 
         await broadcast_message(status_msg)
 
+    def _get_conversation_language(self) -> str:
+        """Read the conversation language preference from the pipeline context."""
+        ctx = self.project_context
+        return getattr(ctx, "conversation_language", "en") if ctx else "en"
+
     # ------------------------------------------------------------------
     # Abstract interface
     # ------------------------------------------------------------------

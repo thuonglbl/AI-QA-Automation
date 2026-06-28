@@ -3,7 +3,7 @@ baseline_commit: d97e58533b04901b688a1c04f24032cfc8dc0e53
 ---
 # Story 16.8: Hierarchical Requirements Tree Mirroring Source Structure
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -30,26 +30,26 @@ so that I can navigate generated requirements with the same parent/child structu
 - [x] **Task 0 — Schema approach DECIDED (AC: 1)**
   - [x] **Approach (A) — persist the full ancestor chain on the artifact** (new nullable column + migration mirroring `7c2f9a3b1e84`/`c98f775f0b00`). Approved by Thuong 2026-06-22. (Approach (B) FE-only reconstruction is rejected — it cannot satisfy AC1/AC3 when an intermediate page is filtered out of the result set, which is the current bug.)
 
-- [ ] **Task 1 — Capture the full ancestor chain at read time (AC: 1)**
-  - [ ] `_extract_parent_id` keeps only `ancestors[-1]` (the immediate parent) and discards the rest ([src/ai_qa/pipelines/confluence_reader.py:26](src/ai_qa/pipelines/confluence_reader.py:26)). Add extraction of the FULL ordered ancestor id list from the Confluence `ancestors` array (root → immediate parent), with the existing `parentId`/`parent`/root fallbacks for the immediate parent.
-  - [ ] Carry the chain on `PageSummary` (add an `ancestor_ids: list[str]` field next to `parent_id`) ([src/ai_qa/pipelines/models.py](src/ai_qa/pipelines/models.py)).
-  - [ ] NOTE the MCP caveat: `confluence_search` does not accept an `expand` param, so some responses omit `ancestors` ([confluence_reader.py:736](src/ai_qa/pipelines/confluence_reader.py:736)). When the chain is absent, fall back to the single immediate parent (AC3 handles partial chains). Document this limit.
+- [x] **Task 1 — Capture the full ancestor chain at read time (AC: 1)**
+  - [x] `_extract_parent_id` keeps only `ancestors[-1]` (the immediate parent) and discards the rest ([src/ai_qa/pipelines/confluence_reader.py:26](src/ai_qa/pipelines/confluence_reader.py:26)). Add extraction of the FULL ordered ancestor id list from the Confluence `ancestors` array (root → immediate parent), with the existing `parentId`/`parent`/root fallbacks for the immediate parent.
+  - [x] Carry the chain on `PageSummary` (add an `ancestor_ids: list[str]` field next to `parent_id`) ([src/ai_qa/pipelines/models.py](src/ai_qa/pipelines/models.py)).
+  - [x] NOTE the MCP caveat: `confluence_search` does not accept an `expand` param, so some responses omit `ancestors` ([confluence_reader.py:736](src/ai_qa/pipelines/confluence_reader.py:736)). When the chain is absent, fall back to the single immediate parent (AC3 handles partial chains). Document this limit.
 
-- [ ] **Task 2 — Persist the chain on the artifact (AC: 1)**
-  - [ ] Add a nullable `ancestor_source_ids` column to `Artifact` (JSON/text list, mirroring how `parent_source_id` was added) ([src/ai_qa/db/models.py](src/ai_qa/db/models.py), Artifact ~line 227). Keep `parent_source_id` for back-compat.
-  - [ ] New Alembic migration (mirror `alembic/versions/7c2f9a3b1e84_*.py` and the `c98f775f0b00` server_default backfill pattern). Nullable, no backfill required (AC5 of the source story: pre-existing rows stay readable).
-  - [ ] Stamp the chain on approve in Bob's auto-save where `parent_source_id` is set today ([src/ai_qa/agents/bob.py](src/ai_qa/agents/bob.py) `_auto_save_requirements`, ~line 1269). Jira stays `None` (non-hierarchical).
-  - [ ] Expose the chain on `ArtifactResponse`/`ArtifactTreeEntry` ([src/ai_qa/api/artifacts.py](src/ai_qa/api/artifacts.py)) and the tree endpoint.
+- [x] **Task 2 — Persist the chain on the artifact (AC: 1)**
+  - [x] Add a nullable `ancestor_source_ids` column to `Artifact` (JSON/text list, mirroring how `parent_source_id` was added) ([src/ai_qa/db/models.py](src/ai_qa/db/models.py), Artifact ~line 227). Keep `parent_source_id` for back-compat.
+  - [x] New Alembic migration (mirror `alembic/versions/7c2f9a3b1e84_*.py` and the `c98f775f0b00` server_default backfill pattern). Nullable, no backfill required (AC5 of the source story: pre-existing rows stay readable).
+  - [x] Stamp the chain on approve in Bob's auto-save where `parent_source_id` is set today ([src/ai_qa/agents/bob.py](src/ai_qa/agents/bob.py) `_auto_save_requirements`, ~line 1269). Jira stays `None` (non-hierarchical).
+  - [x] Expose the chain on `ArtifactResponse`/`ArtifactTreeEntry` ([src/ai_qa/api/artifacts.py](src/ai_qa/api/artifacts.py)) and the tree endpoint.
 
-- [ ] **Task 3 — Reconstruct the multi-level tree on the FE (AC: 2, 3, 4)**
-  - [ ] Update the TS `Artifact` interface (add `ancestor_source_ids?: string[] | null`) in [frontend/src/components/conversations/ProjectSidebar.tsx](frontend/src/components/conversations/ProjectSidebar.tsx).
-  - [ ] Update `buildResultTree` to nest using the full ancestor chain: when an intermediate ancestor is NOT in the result set, attach the node to the nearest **present** ancestor (or root) instead of orphaning it to depth 0 — preserving correct relative depth (AC3). Keep the cycle guard + dedup (draft vs approved) + stable sort.
-  - [ ] Verify expand/collapse (`collapsedNodes` keyed by artifact id) and selection do not reset chat input/scroll (AC4).
+- [x] **Task 3 — Reconstruct the multi-level tree on the FE (AC: 2, 3, 4)**
+  - [x] Update the TS `Artifact` interface (add `ancestor_source_ids?: string[] | null`) in [frontend/src/components/conversations/ProjectSidebar.tsx](frontend/src/components/conversations/ProjectSidebar.tsx).
+  - [x] Update `buildResultTree` to nest using the full ancestor chain: when an intermediate ancestor is NOT in the result set, attach the node to the nearest **present** ancestor (or root) instead of orphaning it to depth 0 — preserving correct relative depth (AC3). Keep the cycle guard + dedup (draft vs approved) + stable sort.
+  - [x] Verify expand/collapse (`collapsedNodes` keyed by artifact id) and selection do not reset chat input/scroll (AC4).
 
-- [ ] **Task 4 — Tests (all ACs)**
-  - [ ] Backend: extend `tests/pipelines/test_confluence_reader.py` for full-chain extraction (multi-level ancestors) + partial/absent chain fallback; add an artifact round-trip test for the new column ([tests/unit/test_artifact_service_provenance.py](tests/unit/test_artifact_service_provenance.py) pattern); extend `tests/test_agents/test_bob.py` to assert the chain is stamped on save.
-  - [ ] Frontend: extend `ProjectSidebar.helpers.test.ts` for a 3+ level tree where an intermediate ancestor is missing (must attach to nearest present ancestor at correct depth, not flatten) + cycle/dedup preserved.
-  - [ ] Backend: `uv run alembic upgrade head` then `uv run pytest` (whole suite or `--no-cov`). FE: `npm run typecheck` + `npm test`.
+- [x] **Task 4 — Tests (all ACs)**
+  - [x] Backend: extend `tests/pipelines/test_confluence_reader.py` for full-chain extraction (multi-level ancestors) + partial/absent chain fallback; add an artifact round-trip test for the new column ([tests/unit/test_artifact_service_provenance.py](tests/unit/test_artifact_service_provenance.py) pattern); extend `tests/test_agents/test_bob.py` to assert the chain is stamped on save.
+  - [x] Frontend: extend `ProjectSidebar.helpers.test.ts` for a 3+ level tree where an intermediate ancestor is missing (must attach to nearest present ancestor at correct depth, not flatten) + cycle/dedup preserved.
+  - [x] Backend: `uv run alembic upgrade head` then `uv run pytest` (whole suite or `--no-cov`). FE: `npm run typecheck` + `npm test`.
 
 ## Dev Notes
 

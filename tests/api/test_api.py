@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from ai_qa.api.app import create_app
 from ai_qa.api.auth.session import SessionManager
+from ai_qa.config import AppSettings
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +52,9 @@ class TestHealthCheck:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
-        assert data["version"] == "0.1.0"
+        # Version reflects the deployed image tag (DOCKER_IMAGE_VERSION); compare to
+        # the configured value rather than a hardcoded literal.
+        assert data["version"] == AppSettings().docker_image_version
 
 
 # --- Start Endpoint ---
@@ -253,7 +256,8 @@ class TestAppFactory:
 
     def test_app_has_api_routes(self) -> None:
         app = create_app()
-        routes = [getattr(route, "path", "") for route in app.routes]
+        routes = app.openapi()["paths"].keys()
+
         assert "/api/start" in routes
         assert "/api/approve" in routes
         assert "/api/reject" in routes
@@ -262,5 +266,8 @@ class TestAppFactory:
 
     def test_app_has_websocket_route(self) -> None:
         app = create_app()
+
+        # WebSockets are not in OpenAPI, so we check app.routes directly
+        # The websocket route is added via add_api_websocket_route so it has a path attribute
         routes = [getattr(route, "path", "") for route in app.routes]
         assert "/ws" in routes

@@ -101,7 +101,7 @@ Distinct from **app-under-test roles** (`Project.app_roles`, e.g. Admin/User/Gue
 Jack **does not exist** (only alice/bob/mary/sarah). Jack = **Epic 14** (now top priority; `epics.md:1432-1567`). All of WS-F is greenfield, gated on Epic 14.
 
 - **Role selector:** pick ONE role per run (one role = one account = one session context).
-- **Browser multi-select:** Playwright 1.60 offers **Chromium / Chrome / Edge (`msedge`) / Firefox**. **⚠ Safari/WebKit cannot run on Windows** (needs macOS) → on Windows fleet offer Chrome/Chromium/Edge/Firefox; grey out Safari until a macOS runner exists. → **Q4**.
+- **Browser multi-select:** Playwright 1.60 offers **Chromium / Chrome / Edge (`msedge`) / Firefox**. **⚠ Safari/WebKit cannot run on Windows** (needs macOS) → on the CORP Windows fleet offer Chrome/Chromium/Edge/Firefox; grey out Safari until a macOS runner exists. → **Q4**.
 - **Session feed:** for the chosen role, resolve the current user's `CapturedSession` via `resolve_storage_state`, validate freshness (fail loud "re-capture needed" if stale), run each script in the group across selected browsers in isolated contexts.
 
 ---

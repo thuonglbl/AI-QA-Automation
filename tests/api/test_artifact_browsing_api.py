@@ -25,7 +25,6 @@ from ai_qa.api.app import create_app
 from ai_qa.api.artifacts import get_artifact_storage
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.session import SessionManager
-from ai_qa.auth.password import hash_password
 from ai_qa.auth.service import ADMIN_ROLE, STANDARD_ROLE
 from ai_qa.db.base import Base
 from ai_qa.db.models import Artifact, ArtifactVersion, Project, ProjectMembership, User
@@ -126,7 +125,6 @@ def _create_user(client: TestClient, email: str, role: str, *, active: bool = Tr
         user = User(
             email=email,
             display_name=email.split("@")[0],
-            password_hash=hash_password("super-secret"),
             role=role,
             is_active=active,
         )
@@ -610,7 +608,6 @@ def test_artifact_list_excludes_storage_path(browsing_client: TestClient) -> Non
     assert response.status_code == 200
     for artifact in response.json():
         assert "storage_path" not in artifact
-        assert "password_hash" not in str(artifact)
 
 
 def test_artifact_detail_excludes_storage_path(browsing_client: TestClient) -> None:
@@ -917,7 +914,7 @@ def test_tree_null_creator_yields_null_display(browsing_client: TestClient) -> N
 
 
 def test_tree_pii_canary(browsing_client: TestClient) -> None:
-    """The /artifacts/tree response body contains no email, password_hash, or storage_path."""
+    """The /artifacts/tree response body contains no email or storage_path."""
     member = _create_user(browsing_client, "pii-canary@example.com", STANDARD_ROLE)
     project = _create_project(browsing_client, "Tree PII Canary Project")
     _add_membership(browsing_client, project, member)
@@ -936,7 +933,6 @@ def test_tree_pii_canary(browsing_client: TestClient) -> None:
     body = response.text
 
     assert "pii-canary@example.com" not in body
-    assert "password_hash" not in body
     assert "storage_path" not in body
 
 

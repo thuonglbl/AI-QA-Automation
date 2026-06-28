@@ -31,8 +31,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
     # registration is locked down (Story 8.7); user accounts are created only
     # by admins via POST /api/admin/users.
     PUBLIC_PATHS = {
-        "/auth/login",
         "/auth/callback",
+        # Azure SSO user-login flow (Epic 23) — the user is not yet authenticated
+        # when hitting these (login -> IdP -> callback), so they must be public.
+        "/auth/sso/login",
+        "/auth/sso/callback",
+        "/auth/sso/authorize",
         "/auth/logout",
         "/auth/me",
         "/auth/status",
@@ -107,10 +111,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     status_code=401,
                     media_type="application/json",
                 )
-            # Redirect to login for page requests
+            # Redirect to root for page requests (SSO login is there)
             return Response(
                 status_code=307,  # Temporary redirect
-                headers={"Location": "/auth/login"},
+                headers={"Location": "/"},
             )
 
         # Check session expiration
@@ -123,7 +127,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
             return Response(
                 status_code=307,
-                headers={"Location": "/auth/login"},
+                headers={"Location": "/"},
             )
 
         # Attach user to request state

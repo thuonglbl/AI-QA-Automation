@@ -44,7 +44,6 @@ def _make_user(session: Session) -> User:
     user = User(
         email=f"user-{uuid4()}@test.com",
         display_name="Test User",
-        password_hash="hash",
         role="standard",
         is_active=True,
     )

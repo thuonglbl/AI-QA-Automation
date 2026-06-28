@@ -27,8 +27,8 @@ User-initiated UX + capability request. The UX spec already anticipated this: Cl
 
 - Provider order is backend-owned: `get_provider_options()` returns `PROVIDER_OPTIONS` in array order; the frontend renders that order verbatim ([ProviderSelector.tsx:159](frontend/src/components/ProviderSelector.tsx)). **Current order:** `browser-use-cloud` → `claude` → `gemini` → `openai` → `on-premises`.
 - Claude today authenticates with an `api_key` stored as encrypted per-user secret type `claude` ([secrets/\_\_init\_\_.py:13](src/ai_qa/secrets/__init__.py)); runtime builds `ChatAnthropic` with `x-api-key` ([client.py:62](src/ai_qa/ai_connection/client.py)).
-- The company uses **Claude Team plan** under tenant "Information Technology Vietnam" (confirmed by the user from the Claude desktop app). Anthropic supports **OAuth 2.1 + PKCE (S256)** browser login (the same mechanism `ant auth login` / Claude Code uses); the resulting token authenticates the API via `Authorization: Bearer <token>` + `anthropic-beta: oauth-2025-04-20` (grounded via the `claude-api` reference). For a Team/Enterprise tenant, that browser login federates to the company IdP (Microsoft / Azure Entra) where the user types email + password.
-- E2E seed values for the new flow: **`TEST_CLAUDE_SSO_EMAIL`** + **`TEST_CLAUDE_SSO_PASSWORD`** (new). `TEST_CLAUDE_KEY` remains the **personal API key** for the API-key option and is **unrelated** to SSO.
+- The company uses **Claude Team plan** under tenant "CORP Information Technology Vietnam" (confirmed by the user from the Claude desktop app). Anthropic supports **OAuth 2.1 + PKCE (S256)** browser login (the same mechanism `ant auth login` / Claude Code uses); the resulting token authenticates the API via `Authorization: Bearer <token>` + `anthropic-beta: oauth-2025-04-20` (grounded via the `claude-api` reference). For a Team/Enterprise tenant, that browser login federates to the company IdP (Microsoft / Azure Entra) where the user types email + password.
+- E2E seed values for the new flow: **`TEST_CLAUDE_SSO_EMAIL`** + **`TEST_CLAUDE_SSO_PASSWORD`** (new). `TEST_CLAUDE_KEY` remains the **personal API key** for the API-key option and is **unrelated** to SSO. (`.env` currently has a legacy `TEST_CLAUDE_SSO=thuong.lambale@corp.vn` that is superseded by `TEST_CLAUDE_SSO_EMAIL`.)
 
 ---
 
@@ -102,7 +102,7 @@ Runtime: claude-sso → ChatAnthropic(base_url, auth via Bearer + anthropic-beta
 
 **Configurable authorization server** via new settings in [config.py](src/ai_qa/config.py):
 
-- `CLAUDE_SSO_AUTHORIZE_URL` — empty ⇒ use the **built-in self-hosted mock IdP page** (`GET /api/auth/claude-sso/authorize`) for dev/E2E (Playwright fills `TEST_CLAUDE_SSO_EMAIL`/`TEST_CLAUDE_SSO_PASSWORD`); set ⇒ redirect to the **real Anthropic OAuth** endpoint, which federates to IdP for the Team plan.
+- `CLAUDE_SSO_AUTHORIZE_URL` — empty ⇒ use the **built-in self-hosted mock IdP page** (`GET /api/auth/claude-sso/authorize`) for dev/E2E (Playwright fills `TEST_CLAUDE_SSO_EMAIL`/`TEST_CLAUDE_SSO_PASSWORD`); set ⇒ redirect to the **real Anthropic OAuth** endpoint, which federates to CORP's IdP for the Team plan.
 - `CLAUDE_SSO_TOKEN_URL`, `CLAUDE_SSO_CLIENT_ID`, `CLAUDE_SSO_REDIRECT_URI` — real-OAuth params (unused in mock mode).
 
 This satisfies the user's exact UX ("open a tab, type email+password, tool gets logged in"), is **fully E2E-testable today** via the mock IdP (no dependency on a live external IdP, MFA, or captcha), and upgrades to real Anthropic Team-plan SSO by setting env vars — no code change.
@@ -180,13 +180,13 @@ Endpoints: `POST /start` (build authorize URL + PKCE challenge, persist verifier
 - **Scope: Major** (new auth subsystem) → primary owner **Developer agent**, with **Architect** sign-off on the OAuth/SSO component (state store, token lifecycle, mock-vs-real switch).
 - **Sequencing:** SSO-1 (reorder + registry) and SSO-6 (admin) first — small, immediately verifiable. Then SSO-2 → SSO-3 → SSO-5 (the OAuth subsystem + runtime). SSO-4 (FE login UX) pairs with SSO-3. SSO-7 (tests) throughout.
 - **Success criteria:** Alice shows the 6 options in the target order; "Login SSO" opens a tab, accepts email+password (mock IdP in dev/E2E), and the tool proceeds to model assignment; `claude-sso` makes a real Claude call at runtime; Admin Dashboard lists and gates `claude-sso`; backend `uv run pytest` green, `npm run typecheck`/`build`/`lint` green, E2E mock-IdP login spec green.
-- **Deferred / external:** wiring the *real* Anthropic Team-plan OAuth (client registration, IdP federation, redirect URI allow-listing) is config-only and validated against a live tenant outside automated tests.
+- **Deferred / external:** wiring the *real* Anthropic Team-plan OAuth (client registration, CORP IdP federation, redirect URI allow-listing) is config-only and validated against a live tenant outside automated tests.
 
 ---
 
 ## Section 6 — Post-implementation finding: subscription SSO ≠ API access (researched 2026-06-17)
 
-After implementation, a viability question surfaced: the user holds **only** a corporate SSO username/password for the Claude **Team plan** (org "Information Technology Vietnam") and **no Anthropic API key** (IT manages keys). Question: can that login power the tool's Claude calls in local/UAT? A 4-stream + 3-skeptic adversarial research pass (all three skeptics **REFUTED**, high confidence) concluded:
+After implementation, a viability question surfaced: the user holds **only** a corporate SSO username/password for the Claude **Team plan** (org "CORP Information Technology Vietnam") and **no Anthropic API key** (IT manages keys). Question: can that login power the tool's Claude calls in local/UAT? A 4-stream + 3-skeptic adversarial research pass (all three skeptics **REFUTED**, high confidence) concluded:
 
 **No — a Team-plan SSO login alone cannot give a custom app Claude Messages API access, in any environment.** Three independent grounds:
 
@@ -202,13 +202,13 @@ The shipped flow works **as a UX**, but its real model calls run on the server-s
 
 ### Compliant options for local + UAT (ranked)
 
-1. **Enterprise gateway (best — infra already exists).** Route Claude through the company AI gateway already in `.env` (`ON_PREMISES_API_BASE_URL`, with `TEST_ON_PREMISES_KEY`). The gateway holds the org Claude key server-side and authenticates the developer by SSO/identity; the app just points `base_url` at it + sends a per-user token. Fully compliant (billed to a real org key). If that gateway serves Claude models, **this is the legitimate "Claude via SSO" path** and largely overlaps the existing **On-Premises** provider. ([Anthropic LLM gateway docs](https://code.claude.com/docs/en/llm-gateway))
+1. **Enterprise gateway (best — infra already exists).** Route Claude through the company AI gateway already in `.env` (`ON_PREMISES_API_BASE_URL=https://ai.svc.corp.ch/api`, with `TEST_ON_PREMISES_KEY`). The gateway holds the org Claude key server-side and authenticates the developer by SSO/identity; the app just points `base_url` at it + sends a per-user token. Fully compliant (billed to a real org key). If that gateway serves Claude models, **this is the legitimate "Claude via SSO" path** and largely overlaps the existing **On-Premises** provider. ([Anthropic LLM gateway docs](https://code.claude.com/docs/en/llm-gateway))
 2. **IT-provisioned Console API key**, workspace-scoped, for local/UAT. The officially supported path for building on the API; blocker is organizational (IT controls keys).
 3. **Do NOT** wire a subscription OAuth/`setup-token` into the app — ToS-banned and server-side blocked.
 
 ### Decision (2026-06-17)
 
-Thuong's call: **do not change code yet** — record this finding and confirm with IT first (a) whether the Anthropic LLM gateway serves Claude models and supports per-user SSO auth, and (b) whether IT will issue a scoped Console key for local/UAT. The future code direction (point `claude-sso` at the gateway vs. keep the SSO UX behind an IT key vs. fold into the API-key/On-Premises path) is deferred to that answer. The implemented `claude-sso` code stays as-is (green suite) pending that decision.
+Thuong's call: **do not change code yet** — record this finding and confirm with IT first (a) whether `ai.svc.corp.ch` serves Claude models and supports per-user SSO auth, and (b) whether IT will issue a scoped Console key for local/UAT. The future code direction (point `claude-sso` at the gateway vs. keep the SSO UX behind an IT key vs. fold into the API-key/On-Premises path) is deferred to that answer. The implemented `claude-sso` code stays as-is (green suite) pending that decision.
 
 ## Sprint-status note
 

@@ -8,9 +8,13 @@ export interface AuthUser {
   givenName?: string;
   familyName?: string;
   role?: string;
+  /** Full platform role set (Epic 23). Falls back to [role] when only the single role is present. */
+  roles?: string[];
   is_active?: boolean;
   /** IANA timezone (set by admin at user creation); used to format message times. */
   timezone?: string;
+  /** Backend-served Azure avatar URL (Epic 23); null/absent => initials fallback. */
+  avatarUrl?: string | null;
 }
 
 export interface AuthStatus {
@@ -23,6 +27,8 @@ interface AuthStatusResponse {
   email?: string;
   name?: string;
   role?: string;
+  roles?: string[];
+  avatar_url?: string | null;
   timezone?: string;
 }
 
@@ -35,6 +41,8 @@ interface AuthProfileResponse {
   given_name?: string;
   family_name?: string;
   role?: string;
+  roles?: string[];
+  avatar_url?: string | null;
   is_active?: boolean;
   timezone?: string;
 }
@@ -44,6 +52,14 @@ export function normalizeUser(
 ): AuthUser | null {
   if (!data.email) return null;
   const displayName = "display_name" in data ? data.display_name : data.name;
+  // Prefer the full role set; fall back to [role] for back-compat with payloads
+  // that predate the multi-role model.
+  const roles =
+    data.roles && data.roles.length > 0
+      ? data.roles
+      : data.role
+        ? [data.role]
+        : [];
   return {
     id: "id" in data ? data.id : undefined,
     email: data.email,
@@ -52,8 +68,10 @@ export function normalizeUser(
     givenName: "given_name" in data ? data.given_name : undefined,
     familyName: "family_name" in data ? data.family_name : undefined,
     role: data.role,
+    roles,
     is_active: "is_active" in data ? data.is_active : undefined,
     timezone: data.timezone,
+    avatarUrl: data.avatar_url ?? null,
   };
 }
 

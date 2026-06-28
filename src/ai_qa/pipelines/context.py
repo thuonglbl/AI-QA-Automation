@@ -18,3 +18,4 @@ class PipelineContext:
     thread_id: UUID | None = None
     artifact_service: ArtifactService | None = None
     agent_run_id: UUID | None = None
+    conversation_language: str = "en"

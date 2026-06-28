@@ -145,6 +145,9 @@ function mockFetchForUser(projects: Array<Record<string, unknown>>) {
       if (url.startsWith("/api/projects/") && url.endsWith("/artifacts")) {
         return jsonResponse([]);
       }
+      if (url.startsWith("/api/projects/") && url.endsWith("/artifacts/tree")) {
+        return jsonResponse({ folders: [], files: [] });
+      }
       if (url === "/api/threads") {
         if (method === "POST") {
           const body = init?.body ? JSON.parse(String(init.body)) : {};
@@ -220,7 +223,10 @@ describe("App auth and workspace shell routing", () => {
 
     renderApp();
 
-    expect(await screen.findByText(/sign in to access/i)).toBeInTheDocument();
+    // SSO-only login screen (Epic 23): a single "Sign in with SSO" button, no pipeline.
+    expect(
+      await screen.findByRole("button", { name: /sign in with sso/i }),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/Browser Use Cloud/i)).not.toBeInTheDocument();
   });
 
@@ -384,6 +390,81 @@ describe("App auth and workspace shell routing", () => {
     expect(threadMock.postCount).toBe(0);
   });
 
+  it("lands a multi-role (admin+standard) user on the workspace with entitled dashboard links, and switches view on click (Epic 23)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url === "/auth/status") {
+        return jsonResponse({
+          authenticated: true,
+          id: "multi-1",
+          email: "boss@example.com",
+          name: "Boss",
+          role: "admin",
+          roles: ["admin", "standard"],
+        });
+      }
+      if (url === "/api/projects") {
+        return jsonResponse([{ ...project, current_user_role: null }]);
+      }
+      if (url === "/api/admin/users") return jsonResponse([]);
+      if (url.endsWith("/artifacts")) return jsonResponse([]);
+      if (url.includes("/artifacts/tree")) return jsonResponse({ folders: [], files: [] });
+      if (url === "/api/threads") return jsonResponse([]);
+      if (url === "/api/admin/discovered-models") return jsonResponse([]);
+      if (url === "/api/admin/model-scores") return jsonResponse([]);
+      return jsonResponse({}, 404);
+    });
+
+    renderApp();
+
+    // Default landing = workspace (NOT the admin dashboard) for a user who also
+    // holds the standard role — even though they are an admin.
+    const userMenuButton = await screen.findByTitle("User menu");
+    fireEvent.click(userMenuButton);
+    const adminLink = await screen.findByRole("button", {
+      name: "Admin Dashboard",
+    });
+    expect(adminLink).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Project Admin Dashboard" }),
+    ).toBeInTheDocument();
+    // The admin dashboard heading is not shown until they navigate.
+    expect(
+      screen.queryByRole("heading", { name: /admin dashboard/i }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(adminLink);
+
+    // Clicking the link switches the view to the Admin Dashboard.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: /admin dashboard/i }),
+      ).toBeInTheDocument(),
+    );
+    // And it offers a way back to the workspace.
+    fireEvent.click(screen.getByTitle("User menu"));
+    expect(
+      screen.getByRole("button", { name: /back to workspace/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no dashboard links for a standard-only user (Epic 23)", async () => {
+    mockFetchForUser([project]);
+    renderApp();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Which AI provider would you like to use/i),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTitle("User menu"));
+    expect(
+      screen.queryByRole("button", { name: "Admin Dashboard" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Project Admin Dashboard" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("keeps a standard user in the workspace shell when navigating directly to /admin, never rendering the admin dashboard (Story 8.1 AC2)", async () => {
     // Represent a direct /admin URL entry. The SPA is a render-switch with no
     // router, so the path is irrelevant — the same <App /> renders and falls
@@ -445,6 +526,8 @@ describe("Bob confirm parent URL popup", () => {
     pipelineStateMock.status = "idle";
     pipelineStateMock.messages = [];
     pipelineStateMock.isLoaded = true;
+    // Fresh spy so we can assert exactly what was echoed to the chat this test.
+    pipelineStateMock.addUserMessage = vi.fn();
     threadMock.existing = [];
     threadMock.created = [];
     threadMock.postedProjectIds = [];
@@ -537,6 +620,92 @@ describe("Bob confirm parent URL popup", () => {
     expect((sent.data as Record<string, unknown>).confirmed_page_name).toBe(
       "https://test.atlassian.net/wiki/spaces/TEST/pages/999/New",
     );
+    // Regression: the submitted URL must be echoed as a user chat bubble so it
+    // stays visible after the confirm-parent panel unmounts.
+    expect(pipelineStateMock.addUserMessage).toHaveBeenCalledWith(
+      "https://test.atlassian.net/wiki/spaces/TEST/pages/999/New",
+    );
+
+    // And it must survive the chat render filter — the link the bug actually
+    // lived in. Simulate the hook appending the echoed bubble, then assert it
+    // renders as a "You" bubble instead of being filtered/collapsed away.
+    pipelineStateMock.messages = [
+      {
+        id: "user-parent-echo",
+        sender: "user",
+        content: "https://test.atlassian.net/wiki/spaces/TEST/pages/999/New",
+        timestamp: new Date().toISOString(),
+        messageType: "text",
+      },
+    ];
+    rerender(
+      <AuthProvider>
+        <ProjectProvider>
+          <App />
+        </ProjectProvider>
+      </AuthProvider>,
+    );
+    expect(
+      await screen.findByText(
+        "https://test.atlassian.net/wiki/spaces/TEST/pages/999/New",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a Continue button on a resume_available message and sends a resume start action", async () => {
+    mockFetchForUser([project]);
+    websocketMock.isConnectedOverride = true;
+
+    const { rerender } = renderApp();
+
+    // Advance past Alice onto the Bob step.
+    expect(
+      await screen.findByText(/Which AI provider would you like to use/i),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/Browser Use Cloud/i));
+    fireEvent.change(screen.getByPlaceholderText(/personal API key/i), {
+      target: { value: "test-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    // Bob step reset to "start" by the reconciler, with a resume_available message.
+    pipelineStateMock.currentStep = 2;
+    pipelineStateMock.status = "start";
+    pipelineStateMock.messages = [
+      {
+        id: "msg-resume-1",
+        sender: "system",
+        content:
+          "⚠ The previous run was interrupted because the server restarted. " +
+          "Click Continue to resume from where it stopped, or start this step again.",
+        timestamp: new Date().toISOString(),
+        messageType: "warning",
+        metadata: { resume_available: true },
+      },
+    ];
+    rerender(
+      <AuthProvider>
+        <ProjectProvider>
+          <App />
+        </ProjectProvider>
+      </AuthProvider>,
+    );
+
+    const continueBtn = await screen.findByRole("button", { name: "Continue" });
+    fireEvent.click(continueBtn);
+
+    // handleBobContinue sends type="start" step=2 with inputData.resume === true.
+    await waitFor(() => {
+      const last = websocketMock.sentMessages[
+        websocketMock.sentMessages.length - 1
+      ] as Record<string, unknown>;
+      expect(last?.type).toBe("start");
+    });
+    const sent = websocketMock.sentMessages[
+      websocketMock.sentMessages.length - 1
+    ] as Record<string, unknown>;
+    expect(sent.step).toBe(2);
+    expect((sent.inputData as Record<string, unknown>).resume).toBe(true);
   });
 
   it("sends a skip action when the parent link is left blank", async () => {
@@ -600,6 +769,8 @@ describe("Bob confirm parent URL popup", () => {
     expect(sent.step).toBe(2);
     expect((sent.data as Record<string, unknown>).action).toBe("skip");
     expect((sent.data as Record<string, unknown>).confirmed_page_name).toBeUndefined();
+    // Regression: the skip action is echoed as a user chat bubble too.
+    expect(pipelineStateMock.addUserMessage).toHaveBeenCalledWith("Skip");
   });
 });
 
@@ -679,5 +850,26 @@ describe("artifactNoticeTypeFor", () => {
   it("defaults unknown or missing change types to the update notice", () => {
     expect(artifactNoticeTypeFor("moved")).toBe("update");
     expect(artifactNoticeTypeFor(undefined)).toBe("update");
+  });
+});
+
+describe("16.6 AC3 — Accessibility", () => {
+  it("renders a skip to main content link and a main landmark", async () => {
+    mockFetchForUser([]);
+    renderApp();
+    
+    // Wait for the app to render past loading state
+    await waitFor(() => {
+      expect(screen.queryByText(/Loading.../)).not.toBeInTheDocument();
+    });
+    
+    // Check for skip link
+    const skipLink = await screen.findByRole("link", { name: /Skip to main content/i });
+    expect(skipLink).toBeInTheDocument();
+    expect(skipLink).toHaveAttribute("href", "#main-content");
+    
+    // Check for main landmark
+    const mainRegion = await screen.findByRole("main");
+    expect(mainRegion).toHaveAttribute("id", "main-content");
   });
 });

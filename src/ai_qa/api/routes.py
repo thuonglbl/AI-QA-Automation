@@ -256,6 +256,7 @@ async def _build_pipeline_context(
             thread_id=thread_id,
             artifact_service=ArtifactService(db, storage),
             agent_run_id=agent_run_id,
+            conversation_language=getattr(current_user, "conversation_language", "en"),
         )
 
     project = await require_project_member_or_admin(project_id, current_user, db)
@@ -279,6 +280,7 @@ async def _build_pipeline_context(
         thread_id=thread_id,
         artifact_service=ArtifactService(db, storage),
         agent_run_id=agent_run_id,
+        conversation_language=getattr(current_user, "conversation_language", "en"),
     )
 
 
@@ -611,4 +613,8 @@ async def health_check(http_request: Request) -> dict[str, object]:
     settings = getattr(http_request.app.state, "settings", AppSettings())
     database = check_database_health(settings)
     status = "healthy" if database.status in {"healthy", "not_configured"} else "degraded"
-    return {"status": status, "version": "0.1.0", "database": database.as_dict()}
+    return {
+        "status": status,
+        "version": settings.docker_image_version,
+        "database": database.as_dict(),
+    }

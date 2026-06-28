@@ -302,15 +302,27 @@ class ThreadService:
         )
         for thread in stuck_threads:
             thread.status = "start"
+            # If a Bob extraction persisted its confirmed parent before dying, the run is
+            # resumable — flag the message so the frontend can offer a "Continue" button
+            # (the metadata is persisted on the Message, so it survives a reload).
+            resume_available = bool(thread.bob_resume_parent)
+            if resume_available:
+                content = (
+                    "⚠ The previous run was interrupted because the server restarted. "
+                    "Click Continue to resume from where it stopped, or start this step again."
+                )
+            else:
+                content = (
+                    "⚠ The previous run was interrupted because the server "
+                    "restarted. Please start this step again."
+                )
             self.db.add(
                 Message(
                     thread_id=thread.id,
                     sender="system",
-                    content=(
-                        "⚠ The previous run was interrupted because the server "
-                        "restarted. Please start this step again."
-                    ),
+                    content=content,
                     message_type="warning",
+                    message_metadata={"resume_available": True} if resume_available else None,
                 )
             )
 

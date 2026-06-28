@@ -1,5 +1,5 @@
 # generated: 2026-05-29T00:14:09.493182
-# last_updated: 2026-06-12T17:00:00.000000
+# last_updated: 2026-06-25T14:28:00.000000Z
 # project: ai qa automation
 # project_key: NOKEY
 # tracking_system: file-system
@@ -36,7 +36,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-29T00:14:09.493182
-last_updated: 2026-06-22T23:55:00.000000
+last_updated: 2026-06-26T10:55:00.000000Z
 project: ai qa automation
 project_key: NOKEY
 tracking_system: file-system
@@ -260,7 +260,7 @@ development_status:
   epic-15-retrospective: done
 
   # Epic 16 — Conversational UX System & Accessibility. (was Epic 15 in the 2026-06-20 plan)
-  epic-16: in-progress
+  epic-16: done
   # 2026-06-22 — added via sprint planning (user request). PRIORITY 0 (bug) —
   #   work BEFORE 16-1..16-11. Sarah cannot drive Chrome to write scripts: browser-use
   #   ChatAnthropic (claude/claude-sso) fails with "Could not resolve authentication
@@ -270,13 +270,56 @@ development_status:
   #   Areas: agents/sarah.py::_build_explore_llm, browser/llm_factory.py, pipelines/
   #   script_generator.py (explore gating + fallback), agents/base.py::get_llm_config.
   16-12-fix-sarah-browser-use-chrome-driven-script-generation: done
-  16-1-agent-based-conversational-shell: ready-for-dev
-  16-2-stateful-workflow-controls: ready-for-dev
-  16-3-processing-and-progress-indicators: ready-for-dev
-  16-4-rich-review-panels: ready-for-dev
-  16-5-error-empty-and-recovery-states: ready-for-dev
-  16-6-keyboard-and-accessibility-support: ready-for-dev
-  16-7-alice-configuration-review-ux-integration: ready-for-dev
+  # ============================================================
+  # 2026-06-22 — UAT finding #1 (post-UAT test) added via sprint planning (Thuong).
+  #   Placed in Epic 16 right AFTER 16-12; dev order = next P0/P1 bucket BEFORE resuming
+  #   16-1..16-11/16-13. Forensic root cause (4-dimension workflow, all adversarially
+  #   confirmed + re-read; see memory uat-model-selection-grc-and-freeze-rootcause.md).
+  #   Decision (Thuong): fix via CODE/MIGRATION + redeploy UAT (not UI override / DB surgery).
+  #   Stories still need bmad-create-story (status=backlog until story files exist).
+  #   NB: this bug class is INVISIBLE to the SQLite suite — both seed migrations early-return
+  #   unless dialect == postgresql.
+  #
+  #   16-14 (P0 — gating): model-benchmark SEED BLEND bug. Refresh 273b69541e94 does
+  #     DELETE-then-INSERT only for ids it re-lists, so the initial-seed (173fb95ecc4c) HIGH
+  #     scores for inference-qwen3-vl-235b-GRC (reasoning 87 / vision 95 / instruction 86 /
+  #     coding 78) SURVIVE, and Tier-0 (alice.py:557-560, NO -GRC penalty — that filter is
+  #     Tier-1-only at :500) picks qwen-vl-235b-GRC for Alice/Bob/Mary/Sarah on UAT (local stays
+  #     glm/gemma/gpt-oss). Fix: make the refresh a TRUE replace-snapshot (delete the UNION of all
+  #     previously-seeded ids before insert) + Tier-0 robustness (treat 0.0 as unscored; ignore/
+  #     penalize -GRC duplicates; fix the `fast`=500/200/150 throughput-as-quality scale that also
+  #     mis-elects gpt-oss for Jack). Areas: alembic refresh migration + agents/alice.py.
+  #   16-15 (P0 — freeze): per-request DB engine/pool LEAK. db/session.py:23-36 get_db_session
+  #     builds a NEW create_engine (fresh pool, pool_pre_ping) on EVERY request and never dispose()s
+  #     it (finally only session.close()). Under a long slow-235B session, Postgres max_connections
+  #     exhausts → thread create/delete freeze (the Bob-stage whole-system freeze in the screenshot;
+  #     local hides it via fast models + GC). Fix: module/lifespan-singleton engine (or dispose).
+  #   16-16 (P1 — freeze, Sarah step): Sarah sync invoke blocks the single event loop.
+  #     script_generator.py:413/494/575 call synchronous llm_client.invoke() inside async def (the
+  #     ONLY sync .invoke in the repo) → a slow on-prem call freezes WS + every HTTP route. Fix:
+  #     ainvoke / asyncio.to_thread + an asyncio.wait_for wall-clock guard (the timeout=120 kwarg is
+  #     NOT the real bound — httpx read timeout = LLMConfig.timeout 600s).
+  #   16-17 (P1): Bob convert resilience on a slow on-prem model. requirement_formatter.py:322-325
+  #     text _format_story (await wait_for(ainvoke, 600s)) raises on the 235B model → "Failed to
+  #     convert" most pages (per-page try/except, does NOT abort/freeze). Fix: configurable timeout +
+  #     decouple a fast text model for _format_story from the vision model + chunk/truncate oversized
+  #     page markdown.
+  #   16-18 (P2): restore/replace src/ai_qa/admin/model_transfer.py — MISSING from source + git
+  #     (only a gitignored .pyc) yet migration 273's docstring says it generated the seed — plus an
+  #     offline benchmark-score provisioning path for the air-gapped UAT host.
+  # ============================================================
+  16-14-fix-model-benchmark-seed-blend-and-tier0-robustness: done
+  16-15-fix-per-request-db-engine-pool-leak: done
+  16-16-fix-sarah-sync-invoke-event-loop-block: done
+  16-17-bob-convert-resilience-on-slow-onprem-model: done
+  16-18-restore-model-transfer-and-offline-benchmark-provisioning: done
+  16-1-agent-based-conversational-shell: done
+  16-2-stateful-workflow-controls: done
+  16-3-processing-and-progress-indicators: done
+  16-4-rich-review-panels: done
+  16-5-error-empty-and-recovery-states: done
+  16-6-keyboard-and-accessibility-support: done
+  16-7-alice-configuration-review-ux-integration: done
   # 2026-06-21 — added via sprint planning (user request):
   #   16-8: Requirements tree must mirror the multi-level Confluence hierarchy
   #         (today the FE result tree flattens to one level). Builds on the
@@ -284,8 +327,8 @@ development_status:
   #   16-9: Per-user conversation language (Admin Dashboard config) — agents chat
   #         in the user's language and understand replies in it, but ALL persisted
   #         specs/artifacts stay English (App-UI-English-only convention preserved).
-  16-8-hierarchical-requirements-tree-mirroring-source-structure: ready-for-dev
-  16-9-multilingual-agent-conversation-with-english-specifications: ready-for-dev
+  16-8-hierarchical-requirements-tree-mirroring-source-structure: done
+  16-9-multilingual-agent-conversation-with-english-specifications: done
   # 2026-06-21 — added via sprint planning (user request):
   #   16-10: Test cases / scripts no longer saved under a per-role sub-folder
   #          (e.g. Attributor/) — one case can apply to multiple roles and the role
@@ -293,13 +336,13 @@ development_status:
   #          Mary (test cases) and Sarah (scripts); drop role_to_folder from the storage
   #          paths; resolve name-uniqueness across the flat folder; downstream role-aware
   #          grouping (Jack) reads role from content/metadata, not the folder path.
-  16-10-flat-test-case-and-script-storage-remove-per-role-sub-folders: ready-for-dev
+  16-10-flat-test-case-and-script-storage-remove-per-role-sub-folders: done
   # 2026-06-22 — added via sprint planning (user request):
   #   16-11: Display the current frontend version in the UI. Version sourced from
   #          frontend package.json (optionally + short build/commit) injected at build
   #          time; shown unobtrusively (footer / user menu / About) under the
   #          App-UI-English-only convention; safe fallback (dev/unknown) when missing.
-  16-11-display-current-frontend-version-in-ui: ready-for-dev
+  16-11-display-current-frontend-version-in-ui: done
   # 2026-06-22 — added via sprint planning (user request). LOW priority bug — work at
   #   the END of Epic 16 (after 16-1..16-11). Admin Dashboard → Users Management → Edit:
   #   when a user is ALREADY a Project Admin, no project selector is shown, so the platform
@@ -310,8 +353,8 @@ development_status:
   #     BE api/admin.py::update_user + AdminUserUpdateRequest — project_id is only consumed on the
   #        standard→project_admin transition; add a branch to manage membership for an existing project_admin.
   #   Preserve many-to-many project_admin↔project + platform-admin immutability (Epic 15).
-  16-13-fix-project-selection-when-editing-a-project-admin-user: ready-for-dev
-  epic-16-retrospective: optional
+  16-13-fix-project-selection-when-editing-a-project-admin-user: done
+  epic-16-retrospective: done
 
   # Epic 17 — Document Attachment Reading (NEW). Read excel/word/pdf attached in Confluence/Jira. After UX. (was Epic 16)
   # 2026-06-22 — all 4 stories created via bmad-create-story ("toàn bộ epic 17").
@@ -343,15 +386,16 @@ development_status:
   #   (3) content_hash = SHA-256 (ArtifactVersion.content_hash, String(128)); hash the RAW source, not the LLM .md.
   #   (4) THE LINEAGE GAP (crux): no artifact→artifact FK. Mary→requirement link is dropped at save
   #     (in mem as tc.source_requirement_id), Sarah→test-case link is in a .metadata.json sidecar,
-  #     only Jack→script/test-case is a real FK (TestExecutionResult). 18-3 DECISION GATE: Approach A
-  #     (RECOMMENDED) adds self-referential Artifact.derived_from_artifact_id, populated forward from
-  #     values already in memory at save time; Approach B = brittle name-match reconstruction.
+  #     only Jack→script/test-case is a real FK (TestExecutionResult). 18-3 DECISION (CONFIRMED Thuong
+  #     2026-06-22 = Approach A): add self-referential Artifact.derived_from_artifact_id, populated
+  #     forward from values already in memory at save time. Approach B (name-match) REJECTED.
   #   (5) Cross-agent auto-handoff does NOT exist; agents are human-review-gated (base.py:341/349).
-  #     18-4 DECISION GATE: cascade = GUIDED (respect review gates, pre-load inputs), per-source
-  #     granularity, user-chosen depth (requirements→test_cases→scripts→execution) — NOT auto-approve.
+  #     18-4 DECISION (CONFIRMED Thuong 2026-06-22 = GUIDED + per-source): cascade respects review
+  #     gates + pre-loads inputs, per-source granularity, user-chosen depth (requirements→test_cases→
+  #     scripts→execution). AUTO-approve REJECTED.
   #   (6) AUDIT TABLE ALREADY EXISTS (AuditEvent, db/models.py:291; audit_events in initial schema) —
   #     corrects the roadmap note: 18-5 writes audit with NO migration + NO Epic-20 dependency
-  #     (Epic 20 builds only the read/view side). NB: AuditEvent has no TimestampMixin → set created_at.
+  #     (Epic 21 builds only the read/view side). NB: AuditEvent has no TimestampMixin → set created_at.
   #   Dev order: 18-1 (snapshot table+migration+Jira updated) → 18-2 (detection report) →
   #     18-3 (lineage FK migration + staleness mapper) → 18-4 (guided cascade, biggest) →
   #     18-5 (notice+realtime+audit, cross-cutting). Two migrations total (18-1, 18-3), chained.
@@ -373,32 +417,231 @@ development_status:
   19-5-visual-regression-and-conventions-guardrail: backlog
   epic-19-retrospective: optional
 
-  # Epic 20 — Audit, Metrics & Leadership Visibility. (was Epic 19; originally old Epic 14, lower value, before the SSO epics)
-  # Audit-logger foundation/extended folds into 20-1/20-2; metrics into 20-4/20-5.
+  # ============================================================
+  # 2026-06-23 - NEW Epic 20 inserted after Epic 19 via sprint planning (Thuong).
+  #   Roadmap shift: former Epic 20 Audit/Metrics -> 21, Claude SSO 21 -> 22, Company SSO
+  #   22 -> 23 (epics.md headings + sprint-status keys updated). No story files existed for
+  #   those epics (all backlog) -> nothing to rename on disk.
+  #
+  #   Epic 20 - Retrieval-Augmented Requirements (RAG) for context-bounded generation.
+  #   PROBLEM: Mary loads ALL of Bob's extracted requirements (whole Confluence space) + the
+  #   Jira ticket before reasoning; a small project already eats >100k context and a larger
+  #   space overflows. Goal: read only the few RELEVANT pages, like a dev opening just the
+  #   Confluence pages that matter.
+  #   RECOMMENDED APPROACH (Thuong to confirm): hierarchy-aware SEMANTIC retrieval over
+  #   LLM-enriched page-level descriptions. NOT full Graph RAG (overkill; parent/child tree
+  #   already captured via Artifact.parent_source_id / 16-8 ancestor chain). NOT plain
+  #   keyword/JSON (brittle on terse titles = the core complaint). Page-level (read whole
+  #   relevant pages), not chunk-level. Each page indexed by title + enriched description
+  #   (LLM-generated from the page's own content + bottom-up roll-up of child-page summaries)
+  #   + embedding; query (Jira ticket / test target) -> top-K relevant pages -> Mary loads
+  #   only those, with a full-load fallback below a size threshold (small projects unchanged).
+  #   DECISION GATES (bake into the PRD/stories):
+  #     (1) Embedding model MUST run on the air-gapped on-prem host (LiteLLM proxy
+  #         https://ai.svc.corp.ch/api) - confirm an embedding endpoint exists; else fall back
+  #         to lexical/BM25 or a small bundled local embedder. (see memory
+  #         uat-airgapped-egress-model-transfer.md - UAT has NO internet/proxy)
+  #     (2) Vector storage: pgvector (Postgres-only) vs embedding-as-JSON + cosine in Python
+  #         (cross-dialect default; also works in the SQLite suite). Default JSON+Python at
+  #         project scale (hundreds of pages).
+  #     (3) Retrieval tuning: top-K, similarity threshold, hierarchy expansion for parent context.
+  #   Conventions: persisted descriptions/index data stay English (App-UI-English-only);
+  #   embedding calls follow per-user-secret + no-leak rules; index works under Postgres + SQLite.
+  #   SYNERGY: 20-6 reuses Epic 18 source-change detection to re-index only deltas.
+  #   Graph RAG (entity/relationship extraction) explicitly DEFERRED.
+  #   Stories still need bmad-create-story (status=backlog until story files exist).
+  #   Dev order: 20-1 (index table+migration) -> 20-2 (enriched descriptions) -> 20-3
+  #     (embeddings + on-prem/lexical fallback) -> 20-4 (semantic retrieval) -> 20-5 (Mary
+  #     integration + full-load fallback = the payoff) -> 20-6 (incremental re-index) -> 20-7
+  #     (transparency + tuning).
+  # ============================================================
   epic-20: backlog
-  20-1-audit-event-model-and-persistence: backlog
-  20-2-pipeline-audit-logging: backlog
-  20-3-admin-audit-trail-view: backlog
-  20-4-execution-metrics-aggregation: backlog
-  20-5-leadership-metrics-dashboard: backlog
-  20-6-llm-cost-tracking: backlog
-  20-7-provider-comparison-backlog-support: backlog
+  20-1-page-retrieval-index-foundation: backlog
+  20-2-llm-enriched-page-descriptions-with-hierarchy-rollup: backlog
+  20-3-embedding-generation-via-onprem-compatible-provider: backlog
+  20-4-semantic-retrieval-of-relevant-pages: backlog
+  20-5-mary-context-bounded-retrieval-integration: backlog
+  20-6-incremental-index-maintenance-and-reindex-on-source-change: backlog
+  20-7-retrieval-transparency-and-tuning: backlog
   epic-20-retrospective: optional
 
-  # Epic 21 — Claude SSO Authentication for Browser Use (NEW, IT-gated). After Audit. (was Epic 20)
+  # Epic 21 — Audit, Metrics & Leadership Visibility. (was Epic 20; before that Epic 19; originally old Epic 14, lower value, before the SSO epics)
+  # Audit-logger foundation/extended folds into 21-1/21-2; metrics into 21-4/21-5.
   epic-21: backlog
-  21-1-confirm-it-supported-claude-credential-path: backlog
-  21-2-source-claude-credential-from-sso-or-gateway: backlog
-  21-3-drive-browser-use-via-sso-claude-credential: backlog
-  21-4-validate-claude-sso-connection-and-models: backlog
-  21-5-claude-capable-gateway-mcp-fallback: backlog
+  21-1-audit-event-model-and-persistence: backlog
+  21-2-pipeline-audit-logging: backlog
+  21-3-admin-audit-trail-view: backlog
+  21-4-execution-metrics-aggregation: backlog
+  21-5-leadership-metrics-dashboard: backlog
+  21-6-llm-cost-tracking: backlog
+  21-7-provider-comparison-backlog-support: backlog
   epic-21-retrospective: optional
 
-  # Epic 22 — Company SSO & User Directory Sync (NEW; Azure Entra + Oracle SharedERP). LOW priority, policy-gated. (was Epic 21)
+  # ============================================================
+  # 2026-06-23 — Epic 22 RESHAPED via sprint planning (Thuong). Company IT confirmed the
+  #   Claude credential mechanism: a company-issued Anthropic API KEY (not an OAuth/SSO token),
+  #   created per-employee in the company Anthropic workspace (login platform.claude.com with
+  #   @corp.ch; IT grants workspace via Change Request; user creates own sk-ant key; credits via
+  #   Manager/CR). This RESOLVES the old "confirm the credential path" unknown -> mechanism (a),
+  #   a real per-user API key. Renamed "Claude SSO Authentication for Browser Use" ->
+  #   "Company-Provided Claude API Key (separate from personal keys)". Status stays BACKLOG:
+  #   the key is REQUESTED from IT but NOT YET provisioned (plan now, implement when it arrives).
+  #   Decisions (Thuong 2026-06-23):
+  #     (1) SEPARATION = per-user dedicated secret slot `claude_company` alongside personal
+  #         `claude`; each user pastes their own company key; encrypted per-user; tagged
+  #         company-scope with stricter handling/audit. (the headline security concern)
+  #     (2) SELECTION = user chooses per provider-config / per-thread which Claude credential
+  #         to use (company vs personal).
+  #     (3) SCOPE = simplify but KEEP the gateway fallback: dropped the OAuth-token story;
+  #         kept the internal gateway/MCP story (22-5) for air-gapped hosts.
+  #   AIR-GAPPED CAVEAT: a company Claude key still needs egress to api.anthropic.com; the
+  #     no-internet/no-proxy UAT host cannot use it without an IT egress proxy -> UAT keeps
+  #     falling back to on-prem models; 22-5 (gateway/MCP) is the air-gapped Claude path.
+  #     See memory uat-airgapped-egress-model-transfer.md.
+  #   Story keys renamed (no story files exist on disk yet -> nothing to rename). Stories
+  #     still need bmad-create-story before dev.
+  # ============================================================
+  # Epic 22 — Company-Provided Claude API Key (separate from personal keys). Planning; IT-gated. (was "Claude SSO Authentication"; was Epic 21; before that Epic 20)
   epic-22: backlog
-  22-1-entra-sso-login-foundation: backlog
-  22-2-sso-identity-account-linking: backlog
-  22-3-sharederp-user-directory-sync: backlog
-  22-4-sso-auth-mode-and-local-fallback: backlog
-  22-5-admin-directory-sync-management-ui: backlog
+  22-1-company-claude-api-key-secret-slot-separate-from-personal: backlog
+  22-2-per-thread-company-vs-personal-claude-credential-selection: backlog
+  22-3-drive-browser-use-with-selected-company-claude-key: backlog
+  22-4-validate-company-claude-connection-and-discover-models: backlog
+  22-5-claude-via-internal-company-gateway-mcp-fallback: backlog
   epic-22-retrospective: optional
+
+  # ============================================================
+  # 2026-06-24 — Epic 23 RESHAPED via sprint planning (Thuong). Idea: force end-user
+  #   login via company SSO. RESHAPED from the vague "Company SSO + SharedERP sync" into a
+  #   concrete TWO-ORIGIN auth topology: SSO-only end users at `/` (single "Sign in with SSO"
+  #   button, AUTO-PROVISIONED on first login — admin no longer adds users by hand) vs
+  #   local username/password admins + project-admins at a separate `/admin` path.
+  #   Decisions (Thuong 2026-06-24):
+  #     (1) SPIKE FIRST — reuse topology is genuinely unknown; 23-1 is a feasibility
+  #         investigation before production code.
+  #     (2) TWO-ORIGIN account model — standard users = SSO-only/auto-provisioned/no password
+  #         at `/`; platform-admin + project-admin = local user/password at `/admin`. Avoids the
+  #         "SSO-provisioned project-admin has no password" gap.
+  #     (3) SharedERP directory sync STAYS ACTIVE in the epic (runs alongside auto-provisioning).
+  #   Reuse-SSO clarification: the UAT host's own OS SSO session is irrelevant to web users —
+  #     "reuse" = the user's browser already holds a corporate Entra session so an OIDC redirect
+  #     returns silently. Spike weighs (A) app-level OIDC [needs backend egress to
+  #     login.microsoftonline.com — AIR-GAPPED UAT BLOCKS this w/o an IT proxy; see memory
+  #     uat-airgapped-egress-model-transfer.md] vs (B) reverse-proxy SSO [Entra App Proxy / IIS
+  #     injects an identity header the app trusts — no backend egress; needs IT to stand up proxy].
+  #   Grounding (verified 2026-06-24): login today = local email/password only (api/auth/local.py
+  #     → /auth/login JWT cookie); FE = single password LoginPage.tsx, App.tsx renders by auth
+  #     state with NO URL routing / NO /admin path yet; UserSession already exposes
+  #     groups/given_name/family_name/preferred_username; claude_sso.py is browser-use provider
+  #     auth, NOT user login. Old keys (entra-foundation / identity-linking / etc.) replaced — no
+  #     story files existed on disk (all backlog) so nothing to rename. Stories still need
+  #     bmad-create-story before dev. Still IT/policy-gated, but 23-1 (spike) can start now.
+  #   Dev order: 23-1 (spike → topology + IT asks + UAT egress verdict) → 23-2 (SSO login
+  #     foundation + SSO-only `/` screen) → 23-3 (auto-provision on first login, role=standard) →
+  #     23-4 (separated `/admin` local login + URL routing + two-origin enforcement) → 23-5
+  #     (auth-mode config + break-glass admin) → 23-6 (SharedERP directory sync) → 23-7 (admin UI).
+  # ============================================================
+  # ============================================================
+  # 2026-06-25 — Epic 23 RESHAPED AGAIN via bmad-create-story (Thuong) — SUPERSEDES the
+  #   2026-06-24 two-origin block above. New direction: ONE login surface = a single
+  #   "Sign in with SSO" button, NO password field, NO separate /admin login. Roles come
+  #   from Azure App Roles (admin / project-admin / user); a user may hold MULTIPLE.
+  #   Multi-role users land on the user workspace by default with header links to the
+  #   dashboards they're entitled to; header shows name + role(s) + Azure-synced avatar.
+  #   admin = implicit project-admin over ALL projects + can assign project-admin users to
+  #   1..n projects. Local password auth REMOVED and users.password_hash DROPPED (the only
+  #   credential column left after c7e3a9f04b21; there is NO `account` column). Both local
+  #   AND UAT must complete SSO. Azure inputs already provisioned (tenant/client id+secret +
+  #   3 app roles); msal>=1.28 + python-jose already in pyproject (from reverted 73980bf).
+  #   Stories 23-1…23-6 created ready-for-dev (story files renamed to match the new model — old
+  #   two-origin keys retired; no files existed on disk for them). Decision gates baked into
+  #   stories: 23-1 topology+UAT-egress; 23-3 multi-role persistence (default derive-each-login,
+  #   no new col) + azure_oid; 23-4 nav (state-based default) + avatar storage; 23-6 break-glass
+  #   (default none).
+  #   Dev order: 23-1 (spike) → 23-2 (login foundation) → 23-3 (auto-provision + role map) →
+  #     23-4 (role-aware nav + avatar) → 23-5 (admin global PA + assignment, subsumes 16-13) →
+  #     23-6 (remove password auth + drop column, LAST among auth).
+  #   23-7 (directory sync) DROPPED 2026-06-25 (Thuong): the goal — assign a user to a project
+  #     BEFORE their first login — is already met by admin Create-User (identity-only post-23.6,
+  #     POST /admin/users) + existing project-admin member assignment (POST /projects/{id}/members;
+  #     GET /projects/{id}/users lists ALL active users so a never-logged-in user is pickable).
+  #     No bulk Azure/Graph user sync needed; story file deleted (was 23-7-azure-directory-sync-…).
+  #   Still IT/policy-gated, but 23-1 (spike) can start now.
+  # ============================================================
+  # Epic 23 — SSO-First Authentication, Azure App-Role Mapping & Auto-Provisioning (RESHAPED 2026-06-25). IT/policy-gated.
+  epic-23: done
+  23-1-sso-feasibility-spike-topology-egress-and-app-roles: done
+  23-2-sso-login-foundation-and-single-sso-login-screen: done
+  23-3-auto-provision-and-azure-app-role-mapping: done
+  23-4-role-aware-routing-and-header-identity-with-avatar: done
+  23-5-admin-global-project-admin-and-assignment: done
+  # 2026-06-25 — DEFERRED by Thuong: 23-6 is the irreversible "point of no return"
+  #   (drops users.password_hash, removes /auth/login + password bootstrap, de-passwords
+  #   ~30 test files). Per its own AC8 it must ship ONLY after SSO is proven end-to-end on
+  #   the REAL Azure tenant (local + UAT) — which is still deploy-time pending (no live
+  #   tenant in dev; the mock-IdP proves the flow in CI but not live). Held to avoid a
+  #   lock-out if real SSO doesn't work. Returns to dev once Thuong confirms live SSO works.
+  23-6-remove-local-password-auth-and-drop-credential-columns: done
+  # 23-7 (directory sync) DROPPED 2026-06-25 — see note above; goal covered by 23-6 (identity-only
+  #   create-user) + existing project-admin member assignment. Story file deleted.
+  epic-23-retrospective: done
+
+  # Epic 24 — DOM Snapshot Caching & Site Map for Faster Script Generation (NEW 2026-06-23, additive).
+  # Cache target web-app DOM ahead of time (per env/page, versioned + hashed) so Sarah skips slow
+  # live browser-use exploration. Admin "Get DOM" (session-auth) crawls site; reuse fresh cache,
+  # fall back to live + persist on miss/stale. Shares Epic 18 snapshot/hash design (diff source:
+  # live DOM vs Confluence/Jira docs). Proposal: sprint-change-proposal-2026-06-23-epic24-dom-cache.md.
+  # Provisional ACs (TBD via PRD/design, DG1-DG5). Stories need bmad-create-story (backlog until files exist).
+  # Dev order: 24-1 (schema+migration) -> 24-2 (Get DOM trigger+session) -> 24-3 (crawler) ->
+  #   24-4 (incremental diff) -> 24-6 (Sarah cache integration = payoff) -> 24-5 (scheduler) ->
+  #   24-7 (progress+download). New infra: crawler + APScheduler (none today).
+  epic-24: backlog
+  24-1-dom-snapshot-schema-and-storage: backlog
+  # 2026-06-25 — 24-2/24-3 now depend on Epic 25 dedicated test-account auto-login for the
+  #   crawl's auth (captured-session is prohibited; see sprint-change-proposal-2026-06-25-no-
+  #   session-capture.md). Sequence Epic 24 AFTER Epic 25.
+  24-2-get-dom-trigger-session-authenticated-crawl: backlog
+  24-3-bounded-full-site-crawler-and-element-extraction: backlog
+  24-4-incremental-recrawl-via-change-detection: backlog
+  24-5-scheduled-crawl-daily-weekly: backlog
+  24-6-sarah-cache-aware-script-generation: backlog
+  24-7-crawl-progress-and-dom-download-monitor: backlog
+  epic-24-retrospective: optional
+
+  # ============================================================
+  # 2026-06-25 — NEW Epic 25 inserted via correct-course (Thuong APPROVED). MAJOR change.
+  #   Source: planning-artifacts/sprint-change-proposal-2026-06-25-no-session-capture.md.
+  #   TRIGGER: Group Security flagged the test-login session-capture mechanism (capture-session.cmd
+  #   + backend CDP pull reading the employee's live cookies for int-progresstalkapplication.
+  #   corpnet.local) as cookie-stealing → session capture is PROHIBITED on managed machines.
+  #   FIX (Thuong's decisions): (1) primary mechanism = DEDICATED TEST-ACCOUNT AUTO-LOGIN — the
+  #   tool logs in itself, in its own clean browser, with purpose-built test-account credentials,
+  #   never reading the employee's session; (2) REMOVE the capture surface entirely (CDP pull +
+  #   capture-session.mjs/.cmd + import-blob endpoints); (3) reviewed in batch.
+  #   KEEP (reusable consumption seams): Tier-1 storage_state injection (browser/explorer.py),
+  #   Jack conftest injection (pipelines/script_runner.py), ScriptGenerator(role_sessions),
+  #   sarah._resolve_role_sessions, api/sessions.py::check_environment_connections, and the
+  #   c7e3a9f04b21 cleanup. Only the SOURCE of the session changes.
+  #   REQUIREMENT CONFLICTS resolved: revises FR12 + NFR10 (+ Story 13.4/14.4 framing) — see the
+  #   REVISED banners in epics.md; final wording reconciled in Story 25-7.
+  #   LOAD-BEARING RISK (like Epic 23 egress): MFA/Conditional-Access on internal Azure apps — a
+  #   scripted login cannot pass push-MFA. IT ASK (25-1): dedicated QA test account, MFA-exempt OR
+  #   TOTP seed + Security sign-off on storing test-account credentials encrypted.
+  #   PRIORITY: HIGH — the capture path is dead so Sarah/Jack are blocked against authenticated
+  #   corporate apps. Sequence Epic 25 BEFORE Epic 24; companion to Epic 23's live-validation.
+  #   SUPERSEDES: stories 16-19 + 16-21 (capture half) + design-test-login-credentials-and-
+  #   sessions-2026-06-20.md. Stories still need bmad-create-story (backlog until story files exist).
+  #   Dev order: 25-1 (spike + IT asks) → 25-2 (remove capture surface) → 25-3 (credential store) →
+  #     25-4 (auto-login → session) → 25-5 (wire Sarah/Jack + FE rework) → 25-6 (external apps:
+  #     user/pass + 3rd-party OAuth) → 25-7 (docs + FR/NFR reconcile + live validate).
+  # ============================================================
+  # Epic 25 — Security-Compliant Target-App Authentication (Dedicated Test-Account Auto-Login). HIGH priority; IT-gated.
+  epic-25: in-progress
+  25-1-auto-login-design-spike-and-it-asks: done
+  25-2-remove-prohibited-session-capture-surface: done
+  25-3-dedicated-test-account-credential-store: backlog
+  25-4-automated-login-to-generate-session: done
+  25-5-wire-auto-login-into-sarah-explore-and-jack-run: backlog
+  25-6-external-app-authentication-userpass-and-third-party-oauth: done
+  25-7-docs-fr-nfr-reconciliation-and-live-validation: done
+  epic-25-retrospective: done

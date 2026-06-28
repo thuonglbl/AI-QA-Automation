@@ -1,7 +1,7 @@
 """SSO session management for browser automation.
 
 This module provides SessionManager for detecting and reusing active
-Chrome SSO sessions, and managing Chrome path configuration.
+Chrome SSO sessions, and resolving the Chrome path configuration.
 """
 
 from pathlib import Path
@@ -10,21 +10,21 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from ai_qa.config import AppSettings
-from ai_qa.db.models import User
 from ai_qa.exceptions import SessionError
 
 
 class SessionManager:
-    """Manages SSO session detection and Chrome path configuration.
+    """Manages SSO session detection and Chrome path resolution.
 
     Detects active Chrome sessions with SSO cookies and reuses them
-    to avoid additional credential storage. Also manages Chrome path
-    configuration persistence.
+    to avoid additional credential storage. The Chrome path is resolved
+    from the instance configuration (``AppSettings.chrome_path``) or set
+    transiently for the current process — it is NOT persisted per user.
 
     Attributes:
         db: Database session.
         user_id: ID of the user owning the session.
-        chrome_path: Current Chrome executable path.
+        chrome_path: Current Chrome executable path (transient/config-derived).
     """
 
     def __init__(self, db: Session, user_id: UUID) -> None:
@@ -36,49 +36,19 @@ class SessionManager:
         """
         self.db = db
         self.user_id = user_id
-        self.chrome_path: str | None = self._load_chrome_path()
+        # Chrome path is no longer persisted per user; default to the configured path.
+        self.chrome_path: str | None = AppSettings().chrome_path or None
 
-    def _load_chrome_path(self) -> str | None:
-        """Load Chrome path from database for the user.
-
-        Returns:
-            Chrome path if configured, None otherwise.
-        """
-        try:
-            user = self.db.get(User, self.user_id)
-            if user and user.chrome_path:
-                return user.chrome_path
-            return None
-        except Exception as e:
-            raise SessionError(
-                f"Failed to load browser configuration from database: {e}",
-            ) from e
-
-    def save_chrome_path(self, chrome_path: str) -> None:
-        """Save Chrome path to database for persistence.
+    def set_chrome_path(self, chrome_path: str) -> None:
+        """Set the Chrome path for the current process (not persisted).
 
         Args:
             chrome_path: Path to Chrome executable.
-
-        Raises:
-            SessionError: If configuration cannot be saved.
         """
-        try:
-            user = self.db.get(User, self.user_id)
-            if not user:
-                raise SessionError(f"User {self.user_id} not found")
-
-            user.chrome_path = chrome_path
-            self.db.commit()
-            self.chrome_path = chrome_path
-        except Exception as e:
-            self.db.rollback()
-            raise SessionError(
-                f"Failed to save browser configuration to database: {e}",
-            ) from e
+        self.chrome_path = chrome_path
 
     def get_chrome_path(self) -> str:
-        """Get Chrome path from configuration or AppSettings.
+        """Get Chrome path from the transient value or AppSettings.
 
         Returns:
             Chrome executable path.
@@ -86,7 +56,7 @@ class SessionManager:
         Raises:
             SessionError: If Chrome path is not configured.
         """
-        # Try saved configuration first
+        # Try the transient value first
         if self.chrome_path:
             return self.chrome_path
 

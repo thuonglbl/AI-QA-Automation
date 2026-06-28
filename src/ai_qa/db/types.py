@@ -61,31 +61,6 @@ class EncryptedString(TypeDecorator[str]):
             return cast(str, value)
 
 
-class EncryptedText(TypeDecorator[str]):
-    """``EncryptedString`` for values whose ciphertext can exceed a varchar bound (TEXT-backed).
-
-    Same shared ``db_encryption_key`` and None / corrupt-value fallback semantics as
-    :class:`EncryptedString`, but TEXT-backed so a long plaintext — whose Fernet ciphertext
-    expands well past the plaintext length — cannot overflow the column on PostgreSQL.
-    """
-
-    impl = Text
-    cache_ok = True
-
-    def process_bind_param(self, value: Any, dialect: Any) -> str | None:
-        if value is None:
-            return None
-        return get_fernet().encrypt(str(value).encode("utf-8")).decode("utf-8")
-
-    def process_result_value(self, value: Any, dialect: Any) -> str | None:
-        if value is None:
-            return None
-        try:
-            return get_fernet().decrypt(value.encode("utf-8")).decode("utf-8")
-        except Exception:
-            return cast(str, value)
-
-
 class UserSecretEncryptedString(TypeDecorator[str]):
     """Encrypts per-user secrets with the dedicated user-secrets Fernet key.
 

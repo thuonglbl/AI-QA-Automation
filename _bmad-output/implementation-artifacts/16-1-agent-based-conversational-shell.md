@@ -3,7 +3,7 @@ baseline_commit: d97e58533b04901b688a1c04f24032cfc8dc0e53
 ---
 # Story 16.1: Agent-Based Conversational Shell
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -25,29 +25,29 @@ so that I can understand which agent is guiding each step.
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Audit the existing chat shell against AC1 (AC: 1)**
-  - [ ] Confirm `ChatMessage` renders agent/user/system styling, agent name, and timestamp for the three sender types ([frontend/src/components/ChatMessage.tsx](frontend/src/components/ChatMessage.tsx)). Verify the timestamp path uses the timezone-aware `MessageTime` ([frontend/src/components/MessageTime.tsx](frontend/src/components/MessageTime.tsx)) — see [[message-timestamps-feature]] for the empty-content carrier gotcha.
-  - [ ] Confirm `AgentTopBar` renders the active agent avatar + color + display name from the `AGENTS` registry ([frontend/src/components/AgentTopBar.tsx](frontend/src/components/AgentTopBar.tsx)).
-  - [ ] Confirm `ChatArea` keeps history and auto-scroll behavior ([frontend/src/components/ChatArea.tsx](frontend/src/components/ChatArea.tsx)).
-  - [ ] Record any AC1 gap as a subtask here; if none, mark AC1 verified-only in Completion Notes.
+- [x] **Task 1 — Audit the existing chat shell against AC1 (AC: 1)**
+  - [x] Confirm `ChatMessage` renders agent/user/system styling, agent name, and timestamp for the three sender types ([frontend/src/components/ChatMessage.tsx](frontend/src/components/ChatMessage.tsx)). Verify the timestamp path uses the timezone-aware `MessageTime` ([frontend/src/components/MessageTime.tsx](frontend/src/components/MessageTime.tsx)) — see [[message-timestamps-feature]] for the empty-content carrier gotcha.
+  - [x] Confirm `AgentTopBar` renders the active agent avatar + color + display name from the `AGENTS` registry ([frontend/src/components/AgentTopBar.tsx](frontend/src/components/AgentTopBar.tsx)).
+  - [x] Confirm `ChatArea` keeps history and auto-scroll behavior ([frontend/src/components/ChatArea.tsx](frontend/src/components/ChatArea.tsx)).
+  - [x] Record any AC1 gap as a subtask here; if none, mark AC1 verified-only in Completion Notes.
 
-- [ ] **Task 2 — Verify agent identity model is complete and consistent (AC: 2, 3)**
-  - [ ] Confirm the `AGENTS` registry has name/displayName/avatar/color/stepNumber/stepTitle for all five agents (Alice/Bob/Mary/Sarah/Jack) in `frontend/src/types/pipeline.ts` (the `AGENTS` record).
-  - [ ] Confirm `agentName` is stamped on each agent message at send time and survives a thread reload via `loadConversationFromAPI` (it maps backend `agent_name` → `AgentMessage.agentName`) in [frontend/src/hooks/usePipelineState.ts](frontend/src/hooks/usePipelineState.ts).
-  - [ ] Confirm pure-metadata carrier messages (content="" but `metadata.type` present, e.g. Alice's `provider_options`) still carry agent identity and are not dropped by the WS gate in [frontend/src/hooks/useWebSocket.ts](frontend/src/hooks/useWebSocket.ts).
+- [x] **Task 2 — Verify agent identity model is complete and consistent (AC: 2, 3)**
+  - [x] Confirm the `AGENTS` registry has name/displayName/avatar/color/stepNumber/stepTitle for all five agents (Alice/Bob/Mary/Sarah/Jack) in `frontend/src/types/pipeline.ts` (the `AGENTS` record).
+  - [x] Confirm `agentName` is stamped on each agent message at send time and survives a thread reload via `loadConversationFromAPI` (it maps backend `agent_name` → `AgentMessage.agentName`) in [frontend/src/hooks/usePipelineState.ts](frontend/src/hooks/usePipelineState.ts).
+  - [x] Confirm pure-metadata carrier messages (content="" but `metadata.type` present, e.g. Alice's `provider_options`) still carry agent identity and are not dropped by the WS gate in [frontend/src/hooks/useWebSocket.ts](frontend/src/hooks/useWebSocket.ts).
 
-- [ ] **Task 3 — Verify each agent frames its step in role on activation (AC: 2)**
-  - [ ] For each agent (`agents/alice.py`, `bob.py`, `mary.py`, `sarah.py`, `jack.py`), confirm the first message sent on `handle_start`/activation introduces the step in-role (uses `BaseAgent.send_message`). Note any agent that activates silently as a gap.
-  - [ ] Confirm history preservation on resume: `loadConversationFromAPI` rehydrates the thread's messages, step, status, and agent (do not regress the Alice start-state filtering that drops failed-attempt bubbles).
+- [x] **Task 3 — Verify each agent frames its step in role on activation (AC: 2)**
+  - [x] For each agent (`agents/alice.py`, `bob.py`, `mary.py`, `sarah.py`, `jack.py`), confirm the first message sent on `handle_start`/activation introduces the step in-role (uses `BaseAgent.send_message`). Note any agent that activates silently as a gap.
+  - [x] Confirm history preservation on resume: `loadConversationFromAPI` rehydrates the thread's messages, step, status, and agent (do not regress the Alice start-state filtering that drops failed-attempt bubbles).
 
-- [ ] **Task 4 — Close proven gaps only (AC: 1, 2, 3)**
-  - [ ] If the registry, identity stamping, or in-role framing has a concrete gap found in Tasks 1–3, fix it minimally. Otherwise add no new behavior.
-  - [ ] Strengthen the metadata typing only if it blocks an AC (see Dev Notes "Known partials"); otherwise defer to 16-3/16-5 where it bites.
+- [x] **Task 4 — Close proven gaps only (AC: 1, 2, 3)**
+  - [x] If the registry, identity stamping, or in-role framing has a concrete gap found in Tasks 1–3, fix it minimally. Otherwise add no new behavior.
+  - [x] Strengthen the metadata typing only if it blocks an AC (see Dev Notes "Known partials"); otherwise defer to 16-3/16-5 where it bites.
 
-- [ ] **Task 5 — Tests (AC: 1, 2, 3)**
-  - [ ] Add/extend Vitest tests asserting: agent-name + timestamp render for an agent message; user vs agent vs system styling differs; identity survives a simulated reload; a pure-metadata carrier keeps its `agentName`.
-  - [ ] Reuse the established patterns in `frontend/src/components/__tests__/ChatMessage.test.tsx`, `ChatArea.test.tsx`, and `frontend/src/hooks/__tests__/useWebSocket.test.tsx`.
-  - [ ] `npm run typecheck` + `npm run lint` + `npm test` green in `frontend/`.
+- [x] **Task 5 — Tests (AC: 1, 2, 3)**
+  - [x] Add/extend Vitest tests asserting: agent-name + timestamp render for an agent message; user vs agent vs system styling differs; identity survives a simulated reload; a pure-metadata carrier keeps its `agentName`.
+  - [x] Reuse the established patterns in `frontend/src/components/__tests__/ChatMessage.test.tsx`, `ChatArea.test.tsx`, and `frontend/src/hooks/__tests__/useWebSocket.test.tsx`.
+  - [x] `npm run typecheck` + `npm run lint` + `npm test` green in `frontend/`.
 
 ## Dev Notes
 
@@ -112,3 +112,24 @@ The conversational shell is largely delivered. The research map (against live co
 ### Completion Notes List
 
 ### File List
+- frontend/src/components/ChatMessage.tsx
+- frontend/src/hooks/__tests__/useWebSocket.test.tsx
+- frontend/src/hooks/__tests__/usePipelineState.test.tsx
+- src/ai_qa/agents/alice.py
+- src/ai_qa/agents/bob.py
+- src/ai_qa/agents/mary.py
+- src/ai_qa/agents/sarah.py
+- src/ai_qa/agents/jack.py
+
+### Change Log
+- Replaced `formatTimestamp(message.timestamp)` with `<MessageTime timestamp={message.timestamp} fallbackToNow />` in `ChatMessage.tsx`.
+- Removed `formatTimestamp` and `getTimestampStyle` methods from `ChatMessage.tsx`.
+- Added role framing message in `handle_start` for all 5 agents (alice, bob, mary, sarah, jack).
+- Added `expect(queued?.agentName).toBe("Alice");` to `useWebSocket.test.tsx`.
+- Created `usePipelineState.test.tsx` to verify pipeline state survives simulated reloads.
+
+### Completion Notes
+- Verified AC1 logic matches `AgentTopBar` and `ChatArea` as they exist.
+- Verified AC2/3 checks where `useWebSocket.ts` and `usePipelineState.ts` already handle pure-metadata carriers correctly.
+- Added role framing to all backend agents to fulfill AC2.
+- Testing complete for all frontend UI logic updates via vitest.

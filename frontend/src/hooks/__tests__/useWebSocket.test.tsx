@@ -87,6 +87,7 @@ describe("useWebSocket message gate", () => {
 
     expect(result.current.messageQueue).toHaveLength(1);
     const queued = result.current.messageQueue[0];
+    expect(queued?.agentName).toBe("Alice");
     expect(queued?.metadata?.type).toBe("provider_options");
     expect(queued?.timestamp).toBe("2026-04-16T10:00:00Z");
   });

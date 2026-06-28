@@ -180,14 +180,14 @@ class TestReadIssueRequestPayload:
 
     @pytest.mark.asyncio
     async def test_call_tool_uses_prefixed_tool_name(self, mock_mcp_client: MagicMock) -> None:
-        mock_mcp_client.settings.mcp_tool_prefix = "company_"
+        mock_mcp_client.settings.mcp_tool_prefix = "corp_"
         reader = JiraReader(mock_mcp_client, jira_base_url="https://jira.company.com")
         mock_mcp_client.call_tool.return_value = ToolResult.from_data(_REALISTIC_PAYLOAD)
 
         await reader.read_issue("PROJ-123")
 
         tool_name, payload = mock_mcp_client.call_tool.call_args.args
-        assert tool_name == "jira_get_issue"
+        assert tool_name == "corp_jira_get_issue"
         assert payload["issueKey"] == "PROJ-123"
         assert "issue_key" not in payload
         assert "issueIdOrKey" not in payload

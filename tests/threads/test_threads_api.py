@@ -14,8 +14,7 @@ from sqlalchemy.pool import StaticPool
 from ai_qa.api.app import create_app
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.session import SessionManager
-from ai_qa.auth.password import hash_password
-from ai_qa.auth.service import STANDARD_ROLE
+from ai_qa.auth.service import ADMIN_ROLE, STANDARD_ROLE
 from ai_qa.db.base import Base
 from ai_qa.db.models import Project, ProjectMembership, User
 from ai_qa.threads.models import AgentRun, Message, Thread
@@ -64,16 +63,17 @@ def _session_from_override(client: TestClient) -> Generator[Session]:
     return app.dependency_overrides[get_db_session_dependency]()
 
 
-def _create_user(client: TestClient, email: str) -> User:
+def _create_user(
+    client: TestClient, email: str, role: str = STANDARD_ROLE, active: bool = True
+) -> User:
     session_gen = _session_from_override(client)
     session = next(session_gen)
     try:
         user = User(
             email=email,
             display_name=email.split("@")[0],
-            password_hash=hash_password("super-secret"),
-            role=STANDARD_ROLE,
-            is_active=True,
+            role=role,
+            is_active=active,
         )
         session.add(user)
         session.commit()
@@ -231,23 +231,7 @@ _LEAK_MARKERS = (
 
 
 def _create_admin(client: TestClient, email: str) -> User:
-    session_gen = _session_from_override(client)
-    session = next(session_gen)
-    try:
-        user = User(
-            email=email,
-            display_name=email.split("@")[0],
-            password_hash=hash_password("super-secret"),
-            role="admin",
-            is_active=True,
-        )
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-        session.expunge(user)
-        return user
-    finally:
-        session_gen.close()
+    return _create_user(client, email, role=ADMIN_ROLE)
 
 
 def _remove_membership(client: TestClient, project_id: str, user_id: str) -> None:

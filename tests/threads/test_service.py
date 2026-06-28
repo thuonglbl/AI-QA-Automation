@@ -49,9 +49,7 @@ def db_session() -> Generator[Session]:
 
 @pytest.fixture
 def user(db_session: Session) -> User:
-    user = User(
-        email="test@example.com", display_name="Test", password_hash="hash", role="standard"
-    )
+    user = User(email="test@example.com", display_name="Test", role="standard")
     db_session.add(user)
     db_session.commit()
     db_session.refresh(user)
@@ -351,9 +349,7 @@ def test_get_user_threads_hides_removed_project_threads(
 
 def test_get_user_threads_admin_sees_own_threads(db_session: Session, project: Project) -> None:
     """An admin still sees their own threads even without project membership."""
-    admin = User(
-        email="admin@example.com", display_name="Admin", password_hash="hash", role="admin"
-    )
+    admin = User(email="admin@example.com", display_name="Admin", role="admin")
     db_session.add(admin)
     db_session.commit()
 
@@ -399,9 +395,7 @@ def test_assert_thread_access_allows_admin_without_membership(
     db_session: Session, project: Project
 ) -> None:
     """A global admin bypasses the project-membership requirement."""
-    admin = User(
-        email="admin2@example.com", display_name="Admin", password_hash="hash", role="admin"
-    )
+    admin = User(email="admin2@example.com", display_name="Admin", role="admin")
     db_session.add(admin)
     db_session.commit()
 

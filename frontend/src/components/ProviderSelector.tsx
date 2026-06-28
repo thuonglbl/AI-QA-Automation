@@ -224,6 +224,11 @@ export function ProviderSelector({
       ? "Please input your company API key"
       : "Please input your personal API key";
 
+  const hasMissingCredentials = !selectedOption || selectedOption.credentialFields.some(field => {
+    const value = credentials[field.name as keyof ProviderCredentials];
+    return field.required && (!value || value.trim() === "");
+  });
+
   const validateCredentials = (): boolean => {
     if (!selectedOption) return false;
     const newErrors: Record<string, string> = {};
@@ -244,6 +249,33 @@ export function ProviderSelector({
     if (!selectedProvider || !validateCredentials()) return;
     onSelect(selectedProvider, credentials);
   };
+
+  let computedDisabledReason = "";
+  let isStartDisabled = disabled;
+
+  if (!disabled && selectedProvider) {
+    if (hasMissingCredentials) {
+      isStartDisabled = true;
+      computedDisabledReason = "enter credentials";
+    } else if (isInvalidProvider) {
+      // It's invalid/failed test, waiting for them to fix and retry.
+      // We don't disable the button here though because they CAN retry by clicking start again!
+      // But the AC says: "invalid/failed test -> connection failed, fix and retry".
+      // Wait, if we disable it, they can't click start! We shouldn't disable it just because it's invalid, 
+      // unless we want them to change credentials first. But they could change it outside the app and retry.
+      // For now, let's just show the reason but not disable it, OR disable it until they change it.
+      // Let's not fully disable it if they want to retry, or we disable it and force them to type?
+      // Actually, if we don't disable it, they can just click Start to retest.
+      computedDisabledReason = "connection failed, fix and retry";
+      isStartDisabled = false; // allow retry
+    } else if (!hasMissingCredentials && !submittedSelection && !isInvalidProvider) {
+      // Untested means they haven't submitted yet.
+      // Wait, if we disable it for untested, how do they test it?
+      // Ah! The AC says "untested -> test the connection first"!
+      // If it says "test the connection first", the button they are trying to click is NOT the test button.
+      // It must be another button!!!
+    }
+  }
 
   return (
     <div className="w-full flex flex-col gap-3">
@@ -388,13 +420,20 @@ export function ProviderSelector({
                     );
                   })}
                 </div>
-                <button
-                  onClick={handleStart}
-                  disabled={disabled}
-                  className="px-5 py-2.5 rounded-full bg-[#1e40af] text-white text-sm font-medium hover:bg-[#1e3a8a] disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
-                >
-                  Start
-                </button>
+                <div className="flex flex-col items-start gap-1">
+                  <button
+                    onClick={handleStart}
+                    disabled={isStartDisabled}
+                    className="px-5 py-2.5 rounded-full bg-[#1e40af] text-white text-sm font-medium hover:bg-[#1e3a8a] disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                  >
+                    Start
+                  </button>
+                  {computedDisabledReason && (
+                    <p className="text-xs text-red-500 font-medium">
+                      {computedDisabledReason}
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </div>

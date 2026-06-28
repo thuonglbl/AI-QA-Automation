@@ -22,12 +22,10 @@ from starlette.background import BackgroundTask
 from ai_qa.admin.model_sync import ModelSyncResult, sync_models_and_benchmarks
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.rbac import require_admin
-from ai_qa.auth.password import hash_password
 from ai_qa.auth.service import (
     ADMIN_ROLE,
     PROJECT_ADMIN_ROLE,
     STANDARD_ROLE,
-    DuplicateUserError,
     get_user_by_email,
     normalize_email,
 )
@@ -57,6 +55,9 @@ _PROJECT_ROOT = Path(__file__).parents[3]
 _FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", _PROJECT_ROOT / "frontend"))
 
 
+SUPPORTED_LANGUAGES = frozenset(["en", "fr", "it", "es", "de", "vi"])
+
+
 class AdminUserProjectMembershipResponse(BaseModel):
     """Display-safe project membership summary for admin user lists."""
 
@@ -79,21 +80,24 @@ class AdminUserResponse(BaseModel):
     role: str
     is_active: bool
     timezone: str = "UTC"
+    conversation_language: str = "en"
     created_at: datetime
     updated_at: datetime
     project_memberships: list[AdminUserProjectMembershipResponse] = Field(default_factory=list)
 
 
 class Environment(BaseModel):
-    """One named target environment for the app under test (name + URL).
+    """One named target environment for the app under test (name + URL + login config).
 
-    Both fields are length-bounded but NOT min-length-constrained here: incomplete rows
+    Both name and url are length-bounded but NOT min-length-constrained here: incomplete rows
     (a name with no URL yet, or vice-versa) are dropped by ``ProjectCreateRequest``'s
     cleaning validator rather than rejected, so admins can add/edit rows freely.
     """
 
     name: str = Field(max_length=64)
     url: str = Field(max_length=512)
+    login_type: str = Field(default="standard", max_length=32)
+    login_hint: str = Field(default="", max_length=128)
 
 
 class ProjectCreateRequest(BaseModel):
@@ -135,7 +139,14 @@ class ProjectCreateRequest(BaseModel):
             if key in seen:
                 raise ValueError(f"Duplicate environment name: {name!r}")
             seen.add(key)
-            cleaned.append(Environment(name=name, url=url))
+            cleaned.append(
+                Environment(
+                    name=name,
+                    url=url,
+                    login_type=env.login_type or "standard",
+                    login_hint=(env.login_hint or "").strip(),
+                )
+            )
         return cleaned
 
     @field_validator("app_roles")
@@ -183,10 +194,10 @@ class AdminUserCreateRequest(BaseModel):
     """Admin-managed user creation request."""
 
     email: str = Field(min_length=1, max_length=320)
-    display_name: str = Field(min_length=1, max_length=255)
+    display_name: str | None = Field(default=None, max_length=255)
     role: AdminUserRole = "standard"
-    initial_password: str = Field(min_length=8, max_length=1024)
     timezone: str = Field(default="UTC", min_length=1, max_length=64)
+    conversation_language: str = Field(default="en", min_length=2, max_length=10)
     # A project_admin is linked to a project at creation via a ProjectMembership(role=
     # "project_admin"). Required for project_admin, forbidden for standard (see validator).
     project_id: UUID | None = Field(default=None)
@@ -213,13 +224,24 @@ class AdminUserCreateRequest(BaseModel):
             raise ValueError(f"Invalid timezone: {value!r}") from exc
         return candidate
 
+    @field_validator("conversation_language")
+    @classmethod
+    def validate_conversation_language(cls, value: str) -> str:
+        """Reject anything outside the supported language set."""
+        candidate = value.strip().lower()
+        if candidate not in SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported language: {value!r}")
+        return candidate
+
     @field_validator("display_name")
     @classmethod
-    def display_name_must_not_be_blank(cls, value: str) -> str:
+    def display_name_must_not_be_blank(cls, value: str | None) -> str | None:
         """Normalize and reject blank display names."""
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized:
-            raise ValueError("Display name is required")
+            raise ValueError("Display name cannot be blank")
         return normalized
 
     @model_validator(mode="after")
@@ -244,9 +266,15 @@ class AdminUserUpdateRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
     role: AdminUserRole
     timezone: str = Field(min_length=1, max_length=64)
+    conversation_language: str = Field(min_length=2, max_length=10)
     is_active: bool
-    new_password: str | None = Field(default=None, min_length=8, max_length=1024)
+    # Single-project link (legacy; still accepted for a standard->project_admin promotion).
     project_id: UUID | None = Field(default=None)
+    # The full administered-project set for a project_admin (Epic 23, story 23.5). When
+    # provided it REPLACES the user's project_admin membership set (1..n, idempotent).
+    # Takes precedence over project_id. Omit to leave memberships untouched (e.g. when
+    # editing only name/timezone of an existing project_admin).
+    project_ids: list[UUID] | None = Field(default=None)
 
     @field_validator("display_name")
     @classmethod
@@ -270,10 +298,21 @@ class AdminUserUpdateRequest(BaseModel):
             raise ValueError(f"Invalid timezone: {value!r}") from exc
         return candidate
 
+    @field_validator("conversation_language")
+    @classmethod
+    def validate_conversation_language(cls, value: str) -> str:
+        """Reject anything outside the supported language set."""
+        candidate = value.strip().lower()
+        if candidate not in SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported language: {value!r}")
+        return candidate
+
     @model_validator(mode="after")
     def validate_project_link(self) -> AdminUserUpdateRequest:
-        """A standard user cannot be linked to a project."""
-        if self.role != PROJECT_ADMIN_ROLE and self.project_id is not None:
+        """A standard user cannot be linked to a project (single or set)."""
+        if self.role != PROJECT_ADMIN_ROLE and (
+            self.project_id is not None or self.project_ids is not None
+        ):
             raise ValueError("A standard user cannot be linked to a project.")
         return self
 
@@ -291,7 +330,6 @@ class AdminProjectResponse(BaseModel):
     enabled_providers: list[str]
     environments: list[Environment] = Field(default_factory=list)
     app_roles: list[str] = Field(default_factory=list)
-    login_type: str = "SSO"
     created_by_user_id: UUID | None
     created_at: datetime
     updated_at: datetime
@@ -326,6 +364,7 @@ def _to_admin_user_response(user: User) -> AdminUserResponse:
         role=user.role,
         is_active=user.is_active,
         timezone=user.timezone,
+        conversation_language=user.conversation_language,
         created_at=user.created_at,
         updated_at=user.updated_at,
         project_memberships=[
@@ -387,11 +426,11 @@ async def create_user(
 
     user = User(
         email=request.email,
-        display_name=request.display_name,
-        password_hash=hash_password(request.initial_password),
+        display_name=request.display_name or request.email.split("@", 1)[0],
         role=request.role,
         is_active=True,
         timezone=request.timezone,
+        conversation_language=request.conversation_language,
     )
     db.add(user)
     try:
@@ -409,11 +448,50 @@ async def create_user(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="User already exists") from exc
-    except DuplicateUserError as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="User already exists") from exc
     db.refresh(user)
     return _to_admin_user_response(user)
+
+
+def _resolve_target_project_ids(request: AdminUserUpdateRequest) -> set[UUID] | None:
+    """The administered-project set the request asks for (None => leave unchanged)."""
+    if request.project_ids is not None:
+        return set(request.project_ids)
+    if request.project_id is not None:
+        return {request.project_id}
+    return None
+
+
+def _reconcile_project_admin_memberships(db: Session, user: User, target_ids: set[UUID]) -> None:
+    """Make the user's ``project_admin`` membership set exactly ``target_ids``.
+
+    Adds missing rows (promoting an existing member/owner row in place to satisfy the
+    unique ``(project_id, user_id)`` constraint), removes ``project_admin`` rows for
+    de-selected projects, and never touches non-project_admin rows or other users.
+    """
+    rows = (
+        db.execute(
+            select(ProjectMembership).where(
+                ProjectMembership.user_id == user.id,
+                ProjectMembership.role == PROJECT_ADMIN_ROLE,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    existing_by_pid = {m.project_id: m for m in rows}
+    for pid in target_ids - set(existing_by_pid):
+        row = db.execute(
+            select(ProjectMembership).where(
+                ProjectMembership.project_id == pid,
+                ProjectMembership.user_id == user.id,
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            db.add(ProjectMembership(project_id=pid, user_id=user.id, role=PROJECT_ADMIN_ROLE))
+        else:
+            row.role = PROJECT_ADMIN_ROLE
+    for pid in set(existing_by_pid) - target_ids:
+        db.delete(existing_by_pid[pid])
 
 
 @router.put("/users/{user_id}", response_model=AdminUserResponse)
@@ -442,33 +520,44 @@ async def update_user(
         raise HTTPException(status_code=403, detail="You cannot deactivate your own account.")
 
     old_role, new_role = target.role, request.role
-    if old_role == STANDARD_ROLE and new_role == PROJECT_ADMIN_ROLE:
-        if request.project_id is None:
-            raise HTTPException(
-                status_code=422,
-                detail="A project is required to make this user a project admin.",
-            )
-        new_project_id = request.project_id
-        if db.get(Project, new_project_id) is None:
-            raise HTTPException(status_code=404, detail="Project not found")
-        # One membership row per (project, user) — promote an existing row in place or
-        # add a new one, so the unique constraint is never violated (idempotent).
-        membership = db.execute(
-            select(ProjectMembership).where(
-                ProjectMembership.project_id == new_project_id,
-                ProjectMembership.user_id == target.id,
-            )
-        ).scalar_one_or_none()
-        if membership is None:
-            db.add(
-                ProjectMembership(
-                    project_id=new_project_id,
-                    user_id=target.id,
-                    role=PROJECT_ADMIN_ROLE,
+    if new_role == PROJECT_ADMIN_ROLE:
+        # Multi-project assignment (Epic 23, story 23.5): set the administered-project
+        # set to 1..n. project_ids replaces the set; project_id is the legacy single.
+        if request.project_ids is not None:
+            target_ids = set(request.project_ids)
+            if not target_ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A project admin must administer at least one project.",
                 )
-            )
+            for pid in target_ids:
+                if db.get(Project, pid) is None:
+                    raise HTTPException(status_code=404, detail="Project not found")
+            _reconcile_project_admin_memberships(db, target, target_ids)
+        elif request.project_id is not None:
+            # Legacy 16-13 semantics: add/keep the selected project, do not delete others
+            if db.get(Project, request.project_id) is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            row = db.execute(
+                select(ProjectMembership).where(
+                    ProjectMembership.project_id == request.project_id,
+                    ProjectMembership.user_id == target.id,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                db.add(
+                    ProjectMembership(
+                        project_id=request.project_id, user_id=target.id, role=PROJECT_ADMIN_ROLE
+                    )
+                )
+            else:
+                row.role = PROJECT_ADMIN_ROLE
         else:
-            membership.role = PROJECT_ADMIN_ROLE
+            if old_role == STANDARD_ROLE:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A project is required to make this user a project admin.",
+                )
     elif old_role == PROJECT_ADMIN_ROLE and new_role == STANDARD_ROLE:
         db.query(ProjectMembership).filter(
             ProjectMembership.user_id == target.id,
@@ -477,10 +566,9 @@ async def update_user(
 
     target.display_name = request.display_name
     target.timezone = request.timezone
+    target.conversation_language = request.conversation_language
     target.is_active = request.is_active
     target.role = new_role
-    if request.new_password:
-        target.password_hash = hash_password(request.new_password)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -767,8 +855,23 @@ def _build_e2e_command_and_env(npx_cmd: str) -> tuple[list[str], dict[str, str]]
     no X display, needs the container sandbox disabled, and ignores the deployed
     app's (often self-signed) TLS cert.
     """
-    server_mode = os.getenv("E2E_SERVER_MODE") == "1"
-    headed = not server_mode and os.getenv("E2E_HEADED", "1") != "0"
+    from dotenv import dotenv_values
+
+    # Dynamically read .env so local developers don't need to restart the backend
+    # when toggling E2E_SERVER_MODE or E2E_HEADED.
+    env_vars = dotenv_values(_PROJECT_ROOT / ".env")
+
+    def get_env_val(key: str, default: str) -> str:
+        # Priority: .env file (live changes), then explicit os.environ, then default
+        val = env_vars.get(key)
+        if val is not None:
+            return val
+        if key in os.environ:
+            return os.environ[key]
+        return default
+
+    server_mode = get_env_val("E2E_SERVER_MODE", "1") == "1"
+    headed = not server_mode and get_env_val("E2E_HEADED", "1") != "0"
 
     cmd = [npx_cmd, "playwright", "test", "--workers=1"]
     if headed:

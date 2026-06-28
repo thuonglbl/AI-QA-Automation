@@ -39,10 +39,10 @@ def test_on_premises_maps_to_openai_with_insecure_client() -> None:
         "on-premises",
         api_key="sk-onprem-789",
         model="deepseek-chat",
-        base_url="https://domain.com/api",
+        base_url="https://ai.svc.corp.ch/api",
     )
     assert type(llm).__name__ == "ChatOpenAI"
-    assert str(llm.base_url) == "https://domain.com/api"
+    assert str(llm.base_url) == "https://ai.svc.corp.ch/api"
     # Self-signed cert tolerance for on-prem (mirrors client.py verify_ssl rule).
     assert llm.http_client is not None
 

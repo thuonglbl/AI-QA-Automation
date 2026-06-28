@@ -224,16 +224,33 @@ describe("SarahInputSelection", () => {
       expect(onConfirm).toHaveBeenCalledWith(["abc-123"]);
     });
 
-    it("Confirm button is disabled when nothing is selected", () => {
+    it("shows an enabled Skip button (not Confirm) when nothing is selected", () => {
       render(
         <SarahInputSelection
           testCases={[makeEntry({ default_selected: false })]}
           onConfirm={vi.fn()}
+          onSkip={vi.fn()}
         />,
       );
       expect(
-        screen.getByRole("button", { name: /Confirm & Generate/i }),
-      ).toBeDisabled();
+        screen.queryByRole("button", { name: /Confirm & Generate/i }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^Skip/i })).not.toBeDisabled();
+    });
+
+    it("calls onSkip (not onConfirm) when Skip is clicked with nothing selected", () => {
+      const onConfirm = vi.fn();
+      const onSkip = vi.fn();
+      render(
+        <SarahInputSelection
+          testCases={[makeEntry({ default_selected: false })]}
+          onConfirm={onConfirm}
+          onSkip={onSkip}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /^Skip/i }));
+      expect(onSkip).toHaveBeenCalledTimes(1);
+      expect(onConfirm).not.toHaveBeenCalled();
     });
 
     it("Confirm button is enabled when at least one entry is selected", () => {

@@ -18,7 +18,7 @@ import { expect } from "@playwright/test";
 const apiBaseUrl = process.env.API_URL ?? "http://localhost:8000";
 
 export const PROJECT_PT_TOOL = "PT Tool";
-export const PROJECT_PTP = "PTP Personal Travel Plan";
+export const PROJECT_PTP = "PTP Tool";
 
 export type ProjectRecord = {
   id: string;

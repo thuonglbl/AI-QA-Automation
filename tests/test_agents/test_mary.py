@@ -1679,15 +1679,6 @@ class TestMaryRoleAwareness:
         # Bounded by wait_for, not the 30s sleep — proves the timeout actually fired.
         assert time.monotonic() - start < 5.0
 
-    def test_role_folder_sanitizes(self) -> None:
-        from ai_qa.agents.mary import MaryAgent
-
-        assert MaryAgent._role_folder("Admin") == "Admin"
-        assert MaryAgent._role_folder("Admin User") == "Admin_User"
-        assert MaryAgent._role_folder("a/b") == "a_b"
-        assert MaryAgent._role_folder(None) == ""
-        assert MaryAgent._role_folder("  ") == ""
-
 
 class TestTestCaseMarkdownRoundTrip:
     """TestCase.to_markdown / from_markdown round-trip (the single persisted form)."""
@@ -1788,16 +1779,15 @@ class TestMaryArtifactSave125:
         assert mock_adapter.save_metadata.call_count == 0
 
     @pytest.mark.asyncio
-    async def test_role_test_case_saved_under_role_subfolder(self, mary_agent: Any) -> None:
-        """A test case with a role lands under a ``<role>/`` sub-folder; body carries the role.
+    async def test_role_test_case_saved_flat_with_role_in_body(self, mary_agent: Any) -> None:
+        """A test case with a role lands at the flat root; body carries the role.
 
-        Per-role sub-foldering keeps Admin vs User cases apart so Sarah can group the
-        scripts by the account they must run as. The role also round-trips in the
-        Markdown body via the ``## Role`` section.
+        Per-role sub-foldering is removed (saved as <case>.md) but the role still
+        round-trips in the Markdown body via the ``## Role`` section.
         """
         tc = TestCase(
             title="Admin deletes a user",
-            role="Admin User",  # space → underscore in the folder segment
+            role="Admin User",
             steps=[TestCaseStep(number=1, action="Click delete", target="the Delete button")],
             expected_results=["The user is removed"],
         )
@@ -1812,10 +1802,36 @@ class TestMaryArtifactSave125:
         tc_call = mock_adapter.save_test_case.call_args
         saved_name = tc_call.args[0]
         saved_body = tc_call.args[1]
-        assert saved_name.startswith("Admin_User/")
+        assert "/" not in saved_name  # flat at root
         assert saved_name.endswith(".md")
         assert "## Role" in saved_body
         assert "Admin User" in saved_body
+
+    @pytest.mark.asyncio
+    async def test_cross_role_same_base_uniqueness(self, mary_agent: Any) -> None:
+        """Cross-role same-base cases disambiguate across the whole flat folder."""
+        # Two roles have a test case that normalizes to the same base name
+        tc1 = TestCase(
+            title="Login", role="Admin", steps=[TestCaseStep(number=1, action="X", target="Y")]
+        )
+        tc2 = TestCase(
+            title="Login", role="User", steps=[TestCaseStep(number=1, action="X", target="Y")]
+        )
+        mary_agent.test_cases = [tc1, tc2]
+
+        with patch("ai_qa.agents.mary.PipelineArtifactAdapter") as mock_adapter_class:
+            mock_adapter = MagicMock()
+            mock_adapter_class.return_value = mock_adapter
+            result = await mary_agent._write_approved_test_cases()
+
+        assert result is True
+        calls = mock_adapter.save_test_case.call_args_list
+        assert len(calls) == 2
+        name1 = calls[0].args[0]
+        name2 = calls[1].args[0]
+        assert name1 == "login.md"
+        # Since source_requirement_id is None, it falls back to position
+        assert name2 == "login-2.md"
 
     @pytest.mark.asyncio
     async def test_save_failure_no_done_error_message_rollback(self, mary_agent: Any) -> None:

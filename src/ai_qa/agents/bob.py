@@ -176,6 +176,108 @@ class BobAgent(BaseAgent):
 
         return db.get(Project, self.project_context.project_id)
 
+    def _set_resume_parent(self, value: str | None) -> None:
+        """Persist (or clear) the confirmed parent for resume-after-interruption.
+
+        Set before extraction so a worker restart can resume; cleared on success.
+        Best-effort — a persistence failure must never break extraction.
+        """
+        ctx = self.project_context
+        if not ctx or not ctx.artifact_service or not ctx.thread_id:
+            return
+        from ai_qa.threads.models import Thread
+
+        db = ctx.artifact_service.db
+        thread = db.get(Thread, ctx.thread_id)
+        if thread is None:
+            return
+        thread.bob_resume_parent = value
+        db.commit()
+
+    def _get_resume_parent(self) -> str | None:
+        """Read the persisted confirmed parent for this thread, if any."""
+        ctx = self.project_context
+        if not ctx or not ctx.artifact_service or not ctx.thread_id:
+            return None
+        from ai_qa.threads.models import Thread
+
+        thread = ctx.artifact_service.db.get(Thread, ctx.thread_id)
+        return thread.bob_resume_parent if thread else None
+
+    @staticmethod
+    def _reused_page_dict(
+        page_id: str,
+        title: str,
+        parent_id: str | None,
+        ancestor_ids: list[str],
+        source_url: str,
+        content: str,
+        version: int | None,
+    ) -> dict[str, Any]:
+        """Build a self.pages entry for a page reused without re-conversion."""
+        return {
+            "page_id": page_id,
+            "page_title": title,
+            "parent_id": parent_id,
+            "ancestor_ids": ancestor_ids,
+            "source_url": source_url,
+            # Not re-fetched; process() tolerates empty raw_html on edit.
+            "raw_html": "",
+            "requirement_md": content,
+            "parsed_markdown": content,
+            "warnings": [],
+            "source_version": version,
+        }
+
+    def _save_page_version(
+        self, adapter: PipelineArtifactAdapter, page_id: str, version: int | None
+    ) -> None:
+        """Persist the Confluence revision in the per-page metadata sidecar at convert
+        time, so a resume after an interruption can still detect a later change."""
+        if version is None:
+            return
+        adapter.save_metadata(
+            f"{page_id}/requirement.metadata.json",
+            {
+                "source_version": version,
+                "extracted_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    async def _handle_resume(self) -> None:
+        """Resume an interrupted extraction from the persisted confirmed parent.
+
+        Reuses the normal post-confirm flow: set phase to ``confirm_parent`` and delegate
+        to ``handle_approve``, which re-runs ``_extract_descendants`` (reusing already-saved
+        pages) then auto-save + select-id. No URL/parent/MCP re-entry is required.
+        """
+        parent = self._get_resume_parent()
+        if not parent:
+            await self.send_message(
+                content=(
+                    "**What happened:** There is no interrupted extraction to continue.\n\n"
+                    "**What to do:** Start requirements extraction from the form above."
+                ),
+                message_type="error",
+            )
+            return
+        # A fresh agent instance has no in-memory page/space context. handle_approve
+        # re-derives them from `parent`, but only if it parses as a URL — a parent
+        # confirmed as a bare title would leave both unset and dead-end the resume.
+        # Pre-resolve here, falling back to the project's Confluence URL (mirrors
+        # process()), so a title-only parent still resumes.
+        parser = ConfluenceURLParser()
+        self._page_id = parser.extract_page_id(parent) or self._page_id
+        self._space_key = parser.extract_space_key(parent) or self._space_key
+        if not self._page_id and not self._space_key:
+            project = self._load_project()
+            base_url = project.confluence_base_url if project else None
+            if base_url:
+                self._page_id = parser.extract_page_id(base_url)
+                self._space_key = parser.extract_space_key(base_url)
+        self.phase = "confirm_parent"
+        await self.handle_approve({"confirmed_page_name": parent})
+
     def _check_preconditions(self) -> list[str]:
         """Return list of blocking recovery messages; empty list means all good.
 
@@ -219,7 +321,7 @@ class BobAgent(BaseAgent):
 
         url = url.strip()
         if not url:
-            return "A Confluence page URL is required to start extraction."
+            return None
 
         if not ConfluenceURLParser.is_valid_confluence_url(url):
             return (
@@ -555,6 +657,7 @@ class BobAgent(BaseAgent):
 
     async def handle_start(self, input_data: dict[str, Any]) -> None:
         """Override to parse multiple pages immediately."""
+
         # Persist MCP PAT submitted via Bob's form before the precondition check so
         # that _check_preconditions can see it as configured in the DB.
         mcp_pat_input = str(input_data.get("mcp_pat") or "").strip()
@@ -567,6 +670,17 @@ class BobAgent(BaseAgent):
         blockers = self._check_preconditions()
         if blockers:
             await self.send_message(self._format_blocked_message(blockers), message_type="error")
+            return
+
+        await self.send_message(
+            "I'll read your Confluence and Jira documentation to extract testable requirements."
+        )
+
+        # --- Resume path: the user clicked "Continue" after an interrupted run. Replay
+        # extraction from the persisted parent (reusing already-saved pages inside
+        # _extract_descendants) without re-entering the URL/parent. ---
+        if input_data.get("resume"):
+            await self._handle_resume()
             return
 
         project = self._load_project()
@@ -628,6 +742,19 @@ class BobAgent(BaseAgent):
             return
 
         # --- existing extraction flow (UNCHANGED) ---
+        if not confluence_url and not self._jira_ref:
+            try:
+                from ai_qa.agents.pipeline_adapter import PipelineArtifactAdapter
+
+                adapter = PipelineArtifactAdapter(self.project_context)
+                self.pages = adapter.load_pages()
+            except Exception as exc:
+                logger.error("Failed to load existing pages: %s", exc, exc_info=True)
+                self.pages = []
+            self.output_files_saved = len(self.pages)
+            await self._prompt_select_id()
+            return
+
         self.phase = "confirm_parent"
         await self.transition_to(AgentState.PROCESSING)
 
@@ -709,7 +836,13 @@ class BobAgent(BaseAgent):
             try:
                 config = self.get_llm_config()
                 llm_client = LLMClient(config)
-                formatter = RequirementFormatter(llm_client)
+                settings = AppSettings()
+
+                formatter = RequirementFormatter(
+                    llm_client,
+                    timeout=settings.convert_llm_timeout,
+                    text_llm_client=llm_client,
+                )
                 page_model = ConfluencePage(
                     page_id=current_page["page_id"],
                     title=current_page.get("page_title", ""),
@@ -720,13 +853,29 @@ class BobAgent(BaseAgent):
                 new_md = await formatter.convert_page(page_model, feedback=feedback)
                 current_page["requirement_md"] = new_md
             except Exception as exc:
-                # Never crash the reject loop — re-present unchanged with a notice.
-                logger.error("Bob reprocess failed: %s", exc, exc_info=True)
-                await self.send_message(
-                    "I couldn't automatically regenerate this page. Please edit it "
-                    "directly and approve.",
-                    "warning",
-                )
+                import asyncio
+
+                if isinstance(exc, asyncio.TimeoutError):
+                    logger.error(
+                        "Bob reprocess timeout for page %s", current_page.get("page_title", "")
+                    )
+                    await self.send_message(
+                        "Conversion timed out (model too slow). Please edit it directly and approve.",
+                        "warning",
+                    )
+                else:
+                    # Never crash the reject loop — re-present unchanged with a notice.
+                    logger.error(
+                        "Bob reprocess failed for page %s: %s",
+                        current_page.get("page_title", ""),
+                        type(exc).__name__,
+                        exc_info=True,
+                    )
+                    await self.send_message(
+                        "I couldn't automatically regenerate this page (provider error). Please edit it "
+                        "directly and approve.",
+                        "warning",
+                    )
             # Refresh quality issues if 11.5's scanner is available
             if hasattr(self, "_detect_quality_issues"):
                 current_page["quality_issues"] = [
@@ -993,9 +1142,25 @@ class BobAgent(BaseAgent):
             summaries = []
             from ai_qa.pipelines.models import PageSummary
 
+            # The prepended parent must carry its REAL title + current version, not the
+            # raw URL/title string the user confirmed (which would show as the URL in the
+            # tree). Fetch it once; the page is cached so Phase 1 need not re-fetch it.
+            parent_page: ConfluencePage | None = None
             if self._page_id and parent_title:
+                parent_title_real = parent_title
+                parent_version: int | None = None
+                parent_res = await reader.read_page_by_id(self._page_id)
+                if parent_res.success and parent_res.data:
+                    parent_page = parent_res.data
+                    parent_title_real = parent_page.title or parent_title
+                    parent_version = parent_page.version
                 summaries.append(
-                    PageSummary(page_id=self._page_id, title=parent_title, url=parent_title)
+                    PageSummary(
+                        page_id=self._page_id,
+                        title=parent_title_real,
+                        url=parent_title,
+                        version=parent_version,
+                    )
                 )
 
             if desc_res.data:
@@ -1010,47 +1175,139 @@ class BobAgent(BaseAgent):
                     confidence=0.0,
                 )
 
-            # Map page id -> immediate parent id for tree rendering. The prepended
-            # root page has parent_id=None; descendants carry it from the reader
-            # (falling back to the root when their own parent can't be resolved).
             parent_map = {s.page_id: s.parent_id for s in summaries}
+            ancestor_map = {s.page_id: getattr(s, "ancestor_ids", []) for s in summaries}
 
             if self.project_context is None:
                 raise ValueError("BobAgent requires an active project context.")
 
             adapter = PipelineArtifactAdapter(self.project_context)
 
-            # Phase 1: Extract Raw HTML
+            # Resume / change-detection: a page is REUSED (skipping the LLM convert in
+            # Phase 2) only while its saved requirement exists AND its Confluence version
+            # is unchanged. A bumped version (or no saved copy) triggers a fresh
+            # (re-)extraction that overrides the stale requirement. Versions come from the
+            # per-page metadata sidecar written at convert time, so resume after an
+            # interruption still detects a later change.
+            saved_by_page: dict[str, str] = {}
+            for art in adapter.load_requirement_markdown():
+                name = art.name
+                # Approved copies are named "{page_id}/requirement.md"; per-page drafts
+                # are "{page_id}.md". Both map to the same page_id, but the approved copy
+                # is the post-clarify source of truth, so it takes precedence over a draft.
+                is_approved = "/" in name
+                pid = name.split("/")[0] if is_approved else name.removesuffix(".md")
+                if not art.content:
+                    continue
+                if pid in saved_by_page and not is_approved:
+                    continue
+                saved_by_page[pid] = art.content
+
+            # Load every metadata sidecar ONCE. (load_metadata re-lists and decodes ALL
+            # configuration artifacts on each call, so calling it per page would be
+            # O(pages x artifacts); the bulk map is a single O(artifacts) pass.)
+            saved_version: dict[str, int] = {}
+            all_meta = adapter.load_all_metadata()
+            for pid in saved_by_page:
+                meta = all_meta.get(f"{pid}/requirement.metadata.json")
+                ver = meta.get("source_version") if meta else None
+                if isinstance(ver, int):
+                    saved_version[pid] = ver
+
+            # Phase 1: Extract Raw HTML (reused pages are appended to self.pages directly
+            # and never enter raw_pages, so Phase 2 only converts what is new or changed).
+            self.pages = []
             raw_pages: list[ConfluencePage] = []
             for summary in summaries:
                 if not summary.page_id:
                     continue
-                await self.send_message(f"Extracting page '{summary.title}'...", "info")
+                pid = summary.page_id
+                has_saved = pid in saved_by_page
+                prior_v = saved_version.get(pid)
 
-                # Fetch directly by page ID instead of URL to avoid URL validation issues
-                page_result = await reader.read_page_by_id(summary.page_id)
-                if not page_result.success or not page_result.data:
-                    error_details = (
-                        ", ".join(page_result.errors) if page_result.errors else "Unknown error"
-                    )
-                    logger.error(
-                        f"Failed to extract page '{summary.title}' (ID: {summary.page_id}): {error_details}"
-                    )
+                # Fast path: the cheap listing version confirms the page is unchanged —
+                # reuse without any fetch or LLM convert.
+                if has_saved and prior_v is not None and summary.version == prior_v:
                     await self.send_message(
-                        f"⚠ Failed to extract: '{summary.title}' - {error_details}", "warning"
+                        f"✓ Reusing saved '{summary.title}' (unchanged, v{prior_v})", "info"
+                    )
+                    self.pages.append(
+                        self._reused_page_dict(
+                            pid,
+                            summary.title,
+                            parent_map.get(pid),
+                            ancestor_map.get(pid) or [],
+                            summary.url,
+                            saved_by_page[pid],
+                            prior_v,
+                        )
                     )
                     continue
 
-                page: ConfluencePage = page_result.data
+                # Otherwise fetch the page (reusing the cached parent fetch when possible)
+                # to obtain the authoritative version + content.
+                if pid == self._page_id and parent_page is not None:
+                    page: ConfluencePage = parent_page
+                else:
+                    await self.send_message(f"Extracting page '{summary.title}'...", "info")
+                    # Fetch by page ID instead of URL to avoid URL validation issues
+                    page_result = await reader.read_page_by_id(pid)
+                    if not page_result.success or not page_result.data:
+                        error_details = (
+                            ", ".join(page_result.errors) if page_result.errors else "Unknown error"
+                        )
+                        logger.error(
+                            f"Failed to extract page '{summary.title}' (ID: {pid}): {error_details}"
+                        )
+                        await self.send_message(
+                            f"⚠ Failed to extract: '{summary.title}' - {error_details}", "warning"
+                        )
+                        continue
+                    page = page_result.data
+
+                # The listing may not carry a version; confirm unchanged from the fetched
+                # page and reuse the saved requirement (still skipping the LLM convert).
+                if (
+                    has_saved
+                    and prior_v is not None
+                    and page.version is not None
+                    and page.version == prior_v
+                ):
+                    await self.send_message(
+                        f"✓ Reusing saved '{page.title}' (unchanged, v{prior_v})", "info"
+                    )
+                    self.pages.append(
+                        self._reused_page_dict(
+                            pid,
+                            page.title,
+                            parent_map.get(pid),
+                            ancestor_map.get(pid) or [],
+                            page.url,
+                            saved_by_page[pid],
+                            prior_v,
+                        )
+                    )
+                    continue
+
                 adapter.save_raw_html(page.page_id, page.content)
                 adapter._save_text(kind="raw_html", name=f"{page.page_id}.txt", content=page.url)
-                await self.send_message(f"✓ Extracted '{summary.title}'", "info")
+                if has_saved and prior_v is not None:
+                    await self.send_message(
+                        f"↻ Re-extracting '{page.title}' (changed: v{prior_v} → v{page.version})",
+                        "info",
+                    )
+                else:
+                    await self.send_message(f"✓ Extracted '{page.title}'", "info")
                 raw_pages.append(page)
 
             # Setup LLM for Bob
             config = self.get_llm_config()
             llm_client = LLMClient(config)
-            formatter = RequirementFormatter(llm_client)
+            settings = AppSettings()
+
+            formatter = RequirementFormatter(
+                llm_client, timeout=settings.convert_llm_timeout, text_llm_client=llm_client
+            )
             parser = ContentParser(adapter)
 
             # Image captioning fetches each in-page image's bytes through the MCP
@@ -1115,8 +1372,8 @@ class BobAgent(BaseAgent):
                     logger.warning("MCP download_attachment failed (%s): %s", att.get("id"), exc)
                     return None
 
-            # Phase 2: Parse + Convert to Requirement
-            self.pages = []
+            # Phase 2: Parse + Convert to Requirement (only the pages not reused above;
+            # reused pages were already appended to self.pages in Phase 1).
             for page in raw_pages:
                 await self.send_message(f"Parsing '{page.title}'...", "info")
                 parsed_result = await parser.parse(page)
@@ -1141,6 +1398,7 @@ class BobAgent(BaseAgent):
                         "No requirement story was generated to avoid fabricated content._\n"
                     )
                     adapter.save_requirement_page(page.page_id, stub_md)
+                    self._save_page_version(adapter, page.page_id, page.version)
                     await self.send_message(
                         f"⚠ '{page.title}' has no extractable content — skipped generation.",
                         "warning",
@@ -1150,10 +1408,12 @@ class BobAgent(BaseAgent):
                             "page_id": page.page_id,
                             "page_title": page.title,
                             "parent_id": parent_map.get(page.page_id),
+                            "ancestor_ids": ancestor_map.get(page.page_id) or [],
                             "source_url": page.url,
                             "raw_html": page.content,
                             "requirement_md": stub_md,
                             "parsed_markdown": clean_md,
+                            "source_version": page.version,
                             "warnings": warnings
                             + [
                                 "No extractable content on this page — "
@@ -1168,31 +1428,48 @@ class BobAgent(BaseAgent):
                         page, clean_md, image_fetcher=fetch_image_via_mcp
                     )
                     adapter.save_requirement_page(page.page_id, requirement_md)
+                    self._save_page_version(adapter, page.page_id, page.version)
                     await self.send_message(f"✓ Converted '{page.title}'", "info")
                     self.pages.append(
                         {
                             "page_id": page.page_id,
                             "page_title": page.title,
                             "parent_id": parent_map.get(page.page_id),
+                            "ancestor_ids": ancestor_map.get(page.page_id) or [],
                             "source_url": page.url,
                             "raw_html": page.content,
                             "requirement_md": requirement_md,
                             "parsed_markdown": clean_md,
+                            "source_version": page.version,
                             "warnings": warnings,
                         }
                     )
                 except Exception as e:
-                    logger.error(f"Failed to convert page {page.title}: {e}")
-                    await self.send_message(f"⚠ Failed to convert: '{page.title}'", "warning")
+                    import asyncio
+
+                    if isinstance(e, asyncio.TimeoutError):
+                        logger.error(f"Convert timeout for page {page.title}")
+                        await self.send_message(
+                            f"⚠ Conversion timed out (model too slow): '{page.title}'", "warning"
+                        )
+                    else:
+                        logger.error(
+                            f"Failed to convert page {page.title}: {type(e).__name__} - {e}"
+                        )
+                        await self.send_message(
+                            f"⚠ Conversion failed (provider error): '{page.title}'", "warning"
+                        )
                     self.pages.append(
                         {
                             "page_id": page.page_id,
                             "page_title": page.title,
                             "parent_id": parent_map.get(page.page_id),
+                            "ancestor_ids": ancestor_map.get(page.page_id) or [],
                             "source_url": page.url,
                             "raw_html": page.content,
                             "requirement_md": "",
                             "parsed_markdown": clean_md,
+                            "source_version": page.version,
                             "warnings": warnings
                             + [f"Conversion to requirement failed: {type(e).__name__}"],
                         }
@@ -1274,6 +1551,7 @@ class BobAgent(BaseAgent):
                 warnings=quality_issues,
                 title=str(page.get("page_title") or "") or None,
                 parent_source_id=page.get("parent_id"),
+                ancestor_source_ids=page.get("ancestor_ids") or None,
             )
             # D8: drop the pre-approval draft so Mary's loader sees only the approved copy.
             adapter.delete_draft_requirement(page["page_id"])
@@ -1284,6 +1562,9 @@ class BobAgent(BaseAgent):
                     "source_url": source_url,
                     "extracted_at": saved_at,
                     "source_type": source_type,
+                    # Preserve the Confluence revision so a later run can detect changes
+                    # (set in Phase 2 / on reuse; must survive the approve overwrite).
+                    "source_version": page.get("source_version"),
                     "quality_warnings_acknowledged": bool(quality_issues),
                     "acknowledged_quality_issues": quality_issues,
                     "acknowledged_at": saved_at,
@@ -1363,12 +1644,24 @@ class BobAgent(BaseAgent):
         return True
 
     async def _handle_select_id(self, data: dict[str, Any] | None) -> None:
-        """Resolve the user's single chosen id, persist it for Mary, then go DONE."""
+        """Resolve the user's chosen id, persist it for Mary, then go DONE.
+
+        A blank id means "skip test case generation": Bob bypasses Mary and hands
+        off straight to Sarah, which reuses approved test cases already saved in the
+        project (from a prior thread/session or a colleague). No id is persisted; the
+        frontend reads ``skip_to_sarah`` on the DONE message to route to Sarah.
+        """
         import re
 
         selected_id = str((data or {}).get("id") or "").strip()
         if not selected_id:
-            await self.send_message("Please enter a Confluence page id or Jira ticket id.", "error")
+            self.phase = "done"
+            await self.transition_to(AgentState.DONE)
+            await self.send_message(
+                "Skipping test case generation. Handing off to Sarah to reuse existing test cases.",
+                "success",
+                metadata={"skip_to_sarah": True},
+            )
             return
         if self.project_context is None:
             await self.send_message(
@@ -1572,7 +1865,7 @@ class BobAgent(BaseAgent):
                 "For ONLY the files that, considering the whole set, STILL have a genuine "
                 "unresolved gap, output one block per file in EXACTLY this format:\n"
                 "@@FILE: <id>\n<one concise, specific question — a few short sub-questions "
-                "max — about what is genuinely missing>\n@@END\n\n"
+                f"max — about what is genuinely missing. Write this question in {self._get_conversation_language()} language>\n@@END\n\n"
                 "Omit files whose gaps are answered by another file or that are wrappers. "
                 "Be specific to the real feature; never ask generic questions. If NOTHING "
                 f"needs clarification, output exactly: {_NO_CLARIFICATION_SENTINEL}\n"
@@ -1683,7 +1976,7 @@ class BobAgent(BaseAgent):
                 "If the whole-set context resolves the gaps, or this is a wrapper page, reply "
                 f"EXACTLY: {_NO_CLARIFICATION_SENTINEL}\n"
                 "Otherwise ask ONE concise, specific question about what is genuinely missing "
-                "for this file. Be specific to the real feature; do not ask generic questions. "
+                f"for this file. Write the question in {self._get_conversation_language()} language. Be specific to the real feature; do not ask generic questions. "
                 "Output only the question text (or the sentinel)."
             )
             resp = await asyncio.wait_for(
@@ -1793,7 +2086,7 @@ class BobAgent(BaseAgent):
                 "'## Acceptance Criteria'); keep everything already correct; keep the "
                 "existing title and the '**Source:**' line intact. You MAY rely on facts the "
                 "author references from the related files below, but do NOT invent anything "
-                "beyond those files and the clarification. Output ONLY the full revised "
+                "beyond those files and the clarification. IMPORTANT: The output MUST be entirely in English, regardless of the language of the clarification. Output ONLY the full revised "
                 "Markdown — no code fences, no commentary.\n\n"
                 f"Author's clarification:\n{answer}\n\n"
                 f"Related files in the same set (for referenced facts):\n{corpus}\n\n"
@@ -1824,6 +2117,7 @@ class BobAgent(BaseAgent):
                 warnings=fresh_issues,
                 title=title or None,
                 parent_source_id=page.get("parent_id"),
+                ancestor_source_ids=page.get("ancestor_ids") or None,
             )
         except Exception as exc:
             # The in-memory MD is updated; persistence is retried on the next save.
@@ -1870,7 +2164,8 @@ class BobAgent(BaseAgent):
         await self.send_message(
             content=(
                 f"Saved {self.output_files_saved} requirements from Confluence. Please input "
-                "1 Confluence page id or Jira ticket id to generate test cases."
+                "1 Confluence page id or Jira ticket id to generate test cases, or leave "
+                "blank to skip and reuse existing test cases."
             ),
             message_type="text",
             metadata={"is_select_id": True},
@@ -1937,6 +2232,9 @@ class BobAgent(BaseAgent):
                 self._space_key = new_space_key
 
             await self.transition_to(AgentState.PROCESSING)
+            # Persist the confirmed parent BEFORE extraction so a worker restart mid-batch
+            # can be resumed via the "Continue" affordance (cleared on success below).
+            self._set_resume_parent(confirmed_page)
             result = await self._extract_descendants(confirmed_page)
 
             if result.success and self.pages:
@@ -1967,6 +2265,8 @@ class BobAgent(BaseAgent):
                     )
                     return  # stay in confirm_parent; re-approve re-runs the save
                 self.output_files_saved = saved
+                # Extraction + auto-save completed: nothing left to resume.
+                self._set_resume_parent(None)
                 # Point 5: if any requirement has blocking quality issues, run the
                 # interactive clarification loop first; otherwise go straight to id
                 # selection. Either path ends at the select-id prompt.

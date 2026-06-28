@@ -79,7 +79,6 @@ def extended_client() -> Generator[TestClient]:
         id=user_id,
         email="test@example.com",
         display_name="Test User",
-        password_hash="hash",
         role="standard",
         is_active=True,
     )
@@ -246,7 +245,6 @@ def removed_member_client() -> Generator[tuple[TestClient, str]]:
             id=user_id,
             email="removed@example.com",
             display_name="Removed User",
-            password_hash="hash",
             role="standard",
             is_active=True,
         )

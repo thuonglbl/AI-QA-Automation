@@ -25,7 +25,6 @@ from sqlalchemy.pool import StaticPool
 from ai_qa.api.app import create_app
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.session import SessionManager
-from ai_qa.auth.password import hash_password
 from ai_qa.auth.service import ADMIN_ROLE, STANDARD_ROLE
 from ai_qa.db.base import Base
 from ai_qa.db.models import Project, ProjectMembership, User
@@ -79,7 +78,6 @@ def _make_user(session: Session, email: str, role: str, *, active: bool = True) 
     user = User(
         email=email,
         display_name=email.split("@")[0],
-        password_hash=hash_password("super-secret"),
         role=role,
         is_active=active,
     )

@@ -14,10 +14,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from ai_qa.agents.base import AgentState, BaseAgent
-from ai_qa.artifacts.storage import role_to_folder
 from ai_qa.browser.agent import BrowserAgent
 from ai_qa.config import AppSettings
-from ai_qa.models import StageResult, TestCase
+from ai_qa.models import StageResult, TestCase, bound_stage_messages
 from ai_qa.pipelines.artifact_adapter import PipelineArtifact, PipelineArtifactAdapter
 from ai_qa.pipelines.script_generator import ScriptGenerator
 from ai_qa.pipelines.script_validator import ScriptValidationError, validate_script
@@ -93,6 +92,11 @@ class SarahAgent(BaseAgent):
         self._test_cases: list[TestCase] = []
         self._chrome_path: str | None = None
         self._target_url: str | None = None
+        # The project environment NAME the user picked for this run. Sessions are keyed by
+        # environment name, so this is the AUTHORITATIVE key for resolving the captured
+        # session (no URL→name guesswork). Run-specific; reset each fresh run. May be empty
+        # when the project has no configured environments (free-text URL) → no session.
+        self._environment: str | None = None
         # CDP URL of a running Chrome to connect to (reuses its live SSO session).
         # Run-specific (like target_url); reset each fresh run.
         self._cdp_url: str | None = None
@@ -125,6 +129,9 @@ class SarahAgent(BaseAgent):
         self._script_generator: ScriptGenerator | None = None
         self._vision_locator: VisionLocator | None = None
         self._browser_agent: BrowserAgent | None = None
+        # Whether the browser-use explore may use screenshots — set by _build_explore_llm
+        # from the EXPLORE model's vision capability (never send images to a text-only model).
+        self._explore_use_vision: bool = False
 
     def _ensure_llm_ready(self) -> None:
         """Re-resolve the LLM config against the attached project context.
@@ -149,60 +156,6 @@ class SarahAgent(BaseAgent):
         self.config = self.get_llm_config()
 
     # -------------------------------------------------------------------------
-    # Chrome Path Persistence
-    # -------------------------------------------------------------------------
-
-    def _load_chrome_path(self) -> None:
-        """Load Chrome path from project context."""
-        if self.project_context is None or self.project_context.project_id is None:
-            return
-
-        try:
-            adapter = PipelineArtifactAdapter(self.project_context)
-            configuration_artifacts = adapter.service.list_artifacts(
-                project_id=self.project_context.project_id,
-                kind="configuration",
-            )
-            for artifact in configuration_artifacts:
-                if artifact.name != "chrome_path.json":
-                    continue
-                content = adapter.service.read_current_content(artifact)
-                data = json.loads(content.decode("utf-8"))
-                self._chrome_path = data.get("chrome_path")
-                logger.info("Loaded Chrome path from project artifacts")
-                return
-        except Exception as exc:
-            logger.warning("Failed to load project Chrome path: %s", exc)
-
-    async def _store_chrome_path(self, chrome_path: str) -> None:
-        """Store Chrome path for future sessions.
-
-        Args:
-            chrome_path: Path to Chrome executable
-
-        Raises:
-            ValueError: If chrome_path is empty or invalid format
-        """
-        # Validate Chrome path
-        if not chrome_path or not isinstance(chrome_path, str):
-            raise ValueError("Chrome path must be a non-empty string")
-        if len(chrome_path) < 3:
-            raise ValueError("Chrome path too short")
-        # Basic path format validation (contains path separators)
-        if "/" not in chrome_path and "\\" not in chrome_path and not chrome_path.endswith(".exe"):
-            raise ValueError("Chrome path appears invalid (expected path with separators or .exe)")
-
-        if self.project_context is None:
-            raise ValueError("SarahAgent requires an active project context.")
-
-        PipelineArtifactAdapter(self.project_context).save_metadata(
-            "chrome_path.json", {"chrome_path": chrome_path}
-        )
-        self._chrome_path = chrome_path
-        logger.info("Chrome path saved to project artifacts")
-        return
-
-    # -------------------------------------------------------------------------
     # BaseAgent Interface
     # -------------------------------------------------------------------------
 
@@ -225,17 +178,21 @@ class SarahAgent(BaseAgent):
             if feedback and self._current_review_index < len(self._generated_scripts):
                 return await self._regenerate_current_script(feedback)
 
-            # Extract Chrome path, target URL, and optional CDP URL from input
+            # Extract Chrome path, target URL, and optional CDP URL from input. The Chrome
+            # path is a transient, per-run launch hint (no longer persisted) — a server-side
+            # browser is planned (Phase C); until then the user supplies it each run.
             chrome_path = input_data.get("chrome_path", self._chrome_path)
             target_url = input_data.get("target_url", "")
             cdp_url = (input_data.get("cdp_url") or self._cdp_url or "").strip()
+            # The environment NAME picked by the user — the authoritative session-resolve key.
+            environment = (input_data.get("environment") or self._environment or "").strip()
 
-            # Store Chrome path if provided
-            if chrome_path and chrome_path != self._chrome_path:
-                await self._store_chrome_path(chrome_path)
+            if chrome_path:
+                self._chrome_path = chrome_path
 
             self._target_url = target_url
             self._cdp_url = cdp_url or None
+            self._environment = environment or None
 
             # Use the user-confirmed test cases when the selection gate has run;
             # otherwise fall back to the full artifact load (back-compat / regeneration).
@@ -369,14 +326,63 @@ class SarahAgent(BaseAgent):
                 message_type="warning",
             )
 
+    def _thread_agent_model(self, agent_name: str) -> str:
+        """Return the model id another agent is configured with on this thread (or "").
+
+        Used to borrow the project's VISION model (Bob's pick) to drive Sarah's explore.
+        """
+        ctx = self.project_context
+        if ctx is None or ctx.artifact_service is None or ctx.thread_id is None:
+            return ""
+        from ai_qa.threads.models import Thread
+
+        thread = ctx.artifact_service.db.get(Thread, ctx.thread_id)
+        if thread is None or not thread.agent_configs:
+            return ""
+        raw = thread.agent_configs.get(agent_name)
+        if isinstance(raw, dict):
+            model = raw.get("model") or raw.get("model_name")
+            return str(model) if model else ""
+        return raw if isinstance(raw, str) else ""
+
+    def _resolve_explore_model(self, codegen_model: str) -> tuple[str, bool]:
+        """Pick the model that DRIVES the browser-use explore + whether to use vision.
+
+        The explore (a browser-use agent navigating the REAL app to capture REAL selectors)
+        works far better with a VISION model, while Sarah's own model is chosen for code
+        generation. Alice assigns Sarah a dedicated, user-overridable explore model
+        (``sarah_explore`` in the config); prefer it. Older threads have no such slot, so fall
+        back to the project's vision model (Bob's pick), then to the codegen model.
+
+        Returns ``(model_id, use_vision)``. ``use_vision`` is True only when the chosen explore
+        model is actually vision-capable — browser-use sends screenshots a text-only model
+        cannot read (it only auto-disables vision for DeepSeek/some xAI), so a non-vision model
+        runs DOM-only instead of failing the explore and guessing selectors.
+        """
+        from ai_qa.agents.alice import _has_vision_signal
+
+        # 1) Explicit per-Sarah explore assignment (Alice's pick, user-overridable in review).
+        explore_override = self._thread_agent_model("sarah_explore")
+        if explore_override:
+            return explore_override, _has_vision_signal({"id": explore_override})
+        # 2) No explore slot (older thread) → borrow the project vision model (Bob's pick).
+        bob_vision = self._thread_agent_model("bob")
+        if bob_vision and _has_vision_signal({"id": bob_vision}):
+            return bob_vision, True
+        # 3) Last resort: Sarah's own model (rarely vision-capable).
+        if codegen_model and _has_vision_signal({"id": codegen_model}):
+            return codegen_model, True
+        return codegen_model, False
+
     def _build_explore_llm(self) -> Any:
         """Build a browser-use LLM from the thread's configured provider to DRIVE
         the live exploration (real app → verified trace → deterministic Playwright).
 
-        Reuses the SAME provider/credential/model the rest of the pipeline resolves,
-        so every provider option works. Returns ``None`` when no usable credential
-        is available (Claude/Claude-SSO need a real Anthropic key) — generation then
-        falls back to vision / LLM-only.
+        Reuses the SAME provider/credential the rest of the pipeline resolves, but drives
+        the explore with the project's VISION model (Bob's pick) instead of Sarah's coding
+        model so browser-use can actually SEE the page and capture real selectors. Sets
+        ``self._explore_use_vision`` from that model's capability. Returns ``None`` when no
+        usable credential is available — generation then falls back to vision / LLM-only.
         """
         try:
             cfg = self.get_llm_config()
@@ -385,19 +391,88 @@ class SarahAgent(BaseAgent):
             return None
         if not getattr(cfg, "api_key", ""):
             return None
+        explore_model, use_vision = self._resolve_explore_model(cfg.model_name)
+        self._explore_use_vision = use_vision
         try:
             from ai_qa.browser.llm_factory import build_browser_use_llm
 
-            return build_browser_use_llm(
+            llm = build_browser_use_llm(
                 cfg.provider,
                 api_key=cfg.api_key,
-                model=cfg.model_name,
+                model=explore_model,
                 base_url=getattr(cfg, "base_url", "") or "",
                 temperature=getattr(cfg, "temperature", 0.0) or 0.0,
             )
+            logger.info(
+                "Sarah explore: driving browser-use with model %s (use_vision=%s); "
+                "code generation uses %s",
+                explore_model,
+                use_vision,
+                cfg.model_name,
+            )
+            return llm
         except Exception as exc:  # noqa: BLE001 — unknown provider / build error
             logger.warning("Could not build browser-use LLM for exploration: %s", exc)
             return None
+
+    async def _resolve_role_sessions(self) -> dict[str, dict[str, Any]]:
+        """Resolve the user's test accounts for the roles in this run (Tier-1 explore).
+
+        Builds a ``{role: storageState}`` map so the SERVER-SIDE browser-use explore can
+        authenticate with the user's test accounts — no local Chrome required. Keyed by
+        ``(user_id, project_id, environment, role)``; the environment is the NAME the user
+        picked in the inputs form (``self._environment``), submitted alongside the target URL
+        from the SAME env object — so it is the authoritative key (no URL→name guesswork).
+        Roles with no test account are skipped. Returns ``{}`` (explore falls back to
+        vision / LLM-only) when the context is incomplete, no environment was submitted, or
+        nothing is configured. The decrypted ``storageState`` blob is a live credential — it is
+        never logged.
+        """
+        ctx = self.project_context
+        environment = self._environment
+        if (
+            ctx is None
+            or ctx.artifact_service is None
+            or ctx.project_id is None
+            or ctx.user_id is None
+            or not self._target_url
+            or not environment
+        ):
+            return {}
+
+        # Distinct roles across the test cases being generated (None role = no session).
+        roles = {tc.role for tc in self._test_cases if getattr(tc, "role", None)}
+        if not roles:
+            return {}
+
+        from ai_qa.sessions import auto_login
+
+        db = ctx.artifact_service.db
+        role_sessions: dict[str, dict[str, Any]] = {}
+        for role in roles:
+            assert role is not None  # narrowed by the comprehension filter above
+            try:
+                blob = await auto_login.resolve_or_generate_storage_state(
+                    db,
+                    user_id=ctx.user_id,
+                    project_id=ctx.project_id,
+                    environment=environment,
+                    role=role,
+                    chrome_path=self._chrome_path or "",
+                    # Pass the explore LLM to browser-use for login form navigation
+                    llm=self._build_explore_llm(),
+                    timeout=60,
+                )
+            except Exception as exc:  # noqa: BLE001 — never let session lookup break generation
+                logger.warning(
+                    "Could not resolve captured session for role '%s' (%s)",
+                    role,
+                    type(exc).__name__,
+                )
+                continue
+            if blob is not None:
+                role_sessions[role] = blob
+        return role_sessions
 
     async def _generate_scripts(self) -> StageResult:
         """Generate Playwright scripts for all test cases.
@@ -410,17 +485,25 @@ class SarahAgent(BaseAgent):
         warnings: list[str] = []
 
         # Initialize script generator with vision locator if available, and — when a
-        # Chrome path + driving LLM are available — the browser-use exploration path
-        # (real app → verified trace → deterministic Playwright). Exploration is
-        # gated inside ScriptGenerator and falls back to vision/LLM-only on failure.
+        # driving LLM + a browser source are available — the browser-use exploration path
+        # (real app → verified trace → deterministic Playwright). The browser source is a
+        # local Chrome (chrome_path/cdp_url) OR, on the server (UAT container), the user's
+        # captured sessions per role (role_sessions) injected into a managed Chromium.
+        # Exploration is gated inside ScriptGenerator and falls back to vision/LLM-only
+        # on any failure.
+        # Build the explore LLM first — it resolves the vision model + sets
+        # self._explore_use_vision, which the generator passes to the explore call.
+        explore_llm = self._build_explore_llm()
         script_generator = ScriptGenerator(
             output_base_dir=Path("/dev/null"),  # output_base_dir no longer used for writing
             llm_config=self.config,
             config=self.app_settings,
             vision_locator=self._vision_locator,
-            explore_llm=self._build_explore_llm(),
+            explore_llm=explore_llm,
+            explore_use_vision=self._explore_use_vision,
             chrome_path=self._chrome_path or "",
             cdp_url=self._cdp_url or "",
+            role_sessions=await self._resolve_role_sessions(),
         )
 
         total = len(self._test_cases)
@@ -535,8 +618,8 @@ class SarahAgent(BaseAgent):
         return StageResult(
             success=success,
             data=self._generated_scripts,
-            errors=errors,
-            warnings=warnings,
+            errors=bound_stage_messages(errors, kind="errors"),
+            warnings=bound_stage_messages(warnings),
             confidence=confidence,
         )
 
@@ -803,53 +886,54 @@ class SarahAgent(BaseAgent):
         if not isinstance(raw, list):
             return []
         return [
-            {"name": str(entry["name"]), "url": str(entry["url"])}
+            {
+                "name": str(entry["name"]),
+                "url": str(entry["url"]),
+                "login_type": str(entry.get("login_type", "standard")),
+            }
             for entry in raw
             if isinstance(entry, dict) and entry.get("name") and entry.get("url")
         ]
 
     async def _begin_generation(self) -> None:
-        """Inputs check (target URL + Chrome path) → PROCESSING → generate → REVIEW (or error).
+        """Inputs check (target URL via the chosen environment) → PROCESSING → generate → REVIEW.
 
-        Both inputs are needed to drive the real app with browser-use. The target
-        URL is asked every run (it is the app under test); the Chrome path is asked
-        only when not already on file. When either is missing, emit a single
-        ``sarah_inputs_request`` and await a re-start carrying them.
+        Sarah drives the real app with browser-use SERVER-SIDE, authenticated by the user's
+        captured session (resolved per role for the chosen environment) — no local Chrome/CDP
+        is required. Only the target application URL (from the selected environment) is needed;
+        when it is missing, emit a single ``sarah_inputs_request`` and await a re-start. The
+        browser source is then resolved server-side; exploration falls back to vision/LLM-only
+        when no captured session (or browser) is available.
         """
         needs_url = not self._target_url
-        # A "browser source" is either a Chrome executable to launch OR a CDP URL of
-        # a running Chrome to connect to (reusing its live SSO session).
-        has_browser = bool(self._chrome_path) or bool(self._cdp_url)
-        if needs_url or not has_browser:
+        if needs_url:
             # Await the inputs so the next handle_start re-entry skips the selection
             # gate (keying off this flag, not confirmed_test_cases).
             self._awaiting_inputs = True
             await self.send_message(
                 "Hi! I'm Sarah. I'll generate Playwright test scripts from your approved "
-                "test cases. First, tell me which application to test and which browser to use.",
+                "test cases. First, tell me which application environment to test.",
                 message_type="text",
             )
             await self.send_message(
-                "Please provide the application URL (and how to reach your browser):",
+                "Please choose the target environment (or enter the application URL):",
                 message_type="info",
                 metadata={
                     "type": "sarah_inputs_request",
                     "needs_url": needs_url,
-                    # A Chrome executable is required only when there is no browser
-                    # source yet; the CDP option is always offered (for SSO reuse).
-                    "needs_chrome": not has_browser,
-                    "chrome_on_file": bool(self._chrome_path),
-                    "chrome_example": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-                    "cdp_example": "http://localhost:9222",
-                    # Project-wide target environments: when present the user PICKS one
-                    # (its URL becomes the target) instead of typing an application URL.
+                    # Project-wide target environments: the user PICKS one (its URL becomes
+                    # the target; its name is the captured-session key). Sarah authenticates
+                    # server-side with the captured session — no local browser needed.
                     "environments": self._project_environments(),
+                    "roles": sorted(
+                        list({tc.role for tc in self._test_cases if getattr(tc, "role", None)})
+                    ),
                 },
             )
             await self.transition_to(AgentState.START)
             return
 
-        # Both inputs available — clear the re-entry flag.
+        # Target available — clear the re-entry flag.
         self._awaiting_inputs = False
 
         # Re-resolve the LLM config against the attached context before generation
@@ -906,31 +990,30 @@ class SarahAgent(BaseAgent):
         (``_awaiting_inputs``), skip the selection gate and go straight to
         _begin_generation, preserving the already-confirmed selection.
         """
-        # Load chrome path now that project_context is available
-        self._load_chrome_path()
+        await self.send_message(
+            "I'll generate Playwright test scripts for your approved test cases."
+        )
 
         # Store input_data for context preservation in reject/regeneration
         self._start_input_data = input_data
 
         # Re-entry after inputs were missing: capture the submitted target URL +
-        # Chrome path, then skip the selection gate and go straight to generation
-        # with the already-confirmed test cases.
+        # Chrome path (transient, per-run), then skip the selection gate and go straight
+        # to generation with the already-confirmed test cases.
         if self._awaiting_inputs:
             submitted_chrome = (input_data.get("chrome_path") or "").strip()
-            if submitted_chrome and submitted_chrome != self._chrome_path:
-                try:
-                    await self._store_chrome_path(submitted_chrome)
-                except ValueError as exc:
-                    await self.send_message(
-                        f"That Chrome path looks invalid: {exc}. Please try again.",
-                        message_type="warning",
-                    )
+            if submitted_chrome:
+                self._chrome_path = submitted_chrome
             submitted_url = (input_data.get("target_url") or "").strip()
             if submitted_url:
                 self._target_url = submitted_url
             submitted_cdp = (input_data.get("cdp_url") or "").strip()
             if submitted_cdp:
                 self._cdp_url = submitted_cdp
+            # The environment NAME (authoritative session-resolve key) rides the re-start.
+            submitted_env = (input_data.get("environment") or "").strip()
+            if submitted_env:
+                self._environment = submitted_env
             await self._begin_generation()
             return
 
@@ -944,9 +1027,11 @@ class SarahAgent(BaseAgent):
         self._test_case_source_ids = []
         self._current_review_index = 0
         # Re-ask the application URL + CDP URL each fresh run (run-specific, not
-        # saved settings). The Chrome path stays on file and is reused.
+        # saved settings). The Chrome path is also run-specific (no longer persisted),
+        # but kept across re-starts of THIS agent instance as a convenience hint.
         self._target_url = None
         self._cdp_url = None
+        self._environment = None
 
         # --- Precondition gate ---
         blockers = self._check_preconditions()
@@ -1009,23 +1094,16 @@ class SarahAgent(BaseAgent):
         return Path(script.file_path).name or f"{script.test_case.filename}.py"
 
     def _unique_script_name(self, script: GeneratedScript, index: int) -> str:
-        """Return a unique, role-foldered ``.py`` artifact name for the approved script.
+        """Return a unique, flat ``.py`` artifact name for the approved script.
 
-        A role-bearing test case is saved under a ``<role>/`` sub-folder mirroring Mary's
-        per-role test-case layout (Slice 5), so a future role-aware Jack can group scripts by
-        the account they must run as (different roles use different accounts and cannot
-        co-run). Collisions are resolved PER (role, base name) — two test cases that
-        normalise to the same base name within the same role folder get a source-test-case
-        (or per-index) suffix so each maps to a distinct artifact (C17); identical base names
-        in DIFFERENT role folders never collide.
+        Scripts are saved flat at the folder root. Collisions are resolved PER base name
+        across ALL scripts regardless of role. Two test cases that normalise to the same
+        base name get a source-test-case (or per-index) suffix so each maps to a distinct artifact.
         """
         base = self._script_base_name(script)
-        role_folder = role_to_folder(script.test_case.role)
 
         collides = any(
-            i != index
-            and self._script_base_name(other) == base
-            and role_to_folder(other.test_case.role) == role_folder
+            i != index and self._script_base_name(other) == base
             for i, other in enumerate(self._generated_scripts)
         )
         if collides:
@@ -1033,7 +1111,7 @@ class SarahAgent(BaseAgent):
             suffix = script.source_test_case_id or str(index)
             base = f"{stem}__{suffix}.py"
 
-        return f"{role_folder}/{base}" if role_folder else base
+        return base
 
     async def handle_approve(self, data: dict[str, Any] | None = None) -> None:
         """Handle approve — phase-dispatched.
@@ -1407,9 +1485,8 @@ class SarahAgent(BaseAgent):
         for script in self._generated_scripts:
             if not script.approved:
                 continue
-            # C18: derive the sidecar name from the SAME (role-foldered) name as the saved
-            # .py so the script and its sidecar stay 1:1 — including any "<role>/" prefix,
-            # otherwise same-named scripts under different roles would share one sidecar.
+            # C18: derive the sidecar name from the SAME (flat) name as the saved
+            # .py so the script and its sidecar stay 1:1.
             saved_name = script.saved_file_name or self._script_base_name(script)
             sidecar_name = (
                 f"{saved_name.removesuffix('.py')}.metadata.json"

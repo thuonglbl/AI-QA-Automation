@@ -55,6 +55,10 @@ export interface ProviderBenchmark {
 
 /** Model assignment for review */
 export interface ModelAssignment {
+  /** Stable override key (agent config key, e.g. "sarah_explore"). Falls back to
+   *  `agent.toLowerCase()` when absent (older payloads). Lets two rows for the same agent
+   *  (e.g. Sarah script-gen + Sarah browser-explore) be overridden independently. */
+  key?: string;
   agent: string;
   model: string;
   purpose: string;

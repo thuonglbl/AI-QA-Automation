@@ -75,7 +75,7 @@ NEW order in _extract_descendants tail:
 
 ### Point 4 — Remove the input placeholder (FE)
 
-`frontend/src/App.tsx:1994` — drop `placeholder="e.g. TOOL-1635"` (empty placeholder).
+`frontend/src/App.tsx:1994` — drop `placeholder="e.g. 1238866187 or CORP_PT_TOOL-1635"` (empty placeholder).
 
 ### Point 5 — Interactive clarification loop (BE + FE) — the core change
 

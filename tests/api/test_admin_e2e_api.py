@@ -20,7 +20,6 @@ from ai_qa.api import admin as admin_mod
 from ai_qa.api.app import create_app
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.session import SessionManager
-from ai_qa.auth.password import hash_password
 from ai_qa.auth.service import ADMIN_ROLE, STANDARD_ROLE
 from ai_qa.db.base import Base
 from ai_qa.db.models import Project, ProjectMembership, User
@@ -67,7 +66,6 @@ def _create_user(client: TestClient, email: str, role: str, *, active: bool = Tr
         user = User(
             email=email,
             display_name=email.split("@")[0],
-            password_hash=hash_password("super-secret"),
             role=role,
             is_active=active,
         )
@@ -290,11 +288,11 @@ class TestRunE2ETestsEndpoint:
 
     def test_build_command_forwards_base_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A BASE_URL in the backend env reaches the Playwright subprocess env."""
-        monkeypatch.setenv("BASE_URL", "https://ai-qa.dev")
+        monkeypatch.setenv("BASE_URL", "https://ai-qa.ai-uat.corpdev.local")
 
         _, env = admin_mod._build_e2e_command_and_env("npx")
 
-        assert env["BASE_URL"] == "https://ai-qa.dev"
+        assert env["BASE_URL"] == "https://ai-qa.ai-uat.corpdev.local"
 
     def test_background_run_records_pass(self, tmp_path: Path) -> None:
         """A zero exit code records passed=True and detects the HTML report."""

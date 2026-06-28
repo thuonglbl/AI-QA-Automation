@@ -13,7 +13,10 @@ import {
   XCircle,
   Gauge,
   RefreshCw,
+  ArrowLeft,
 } from "lucide-react";
+import { UserBadge } from "@/components/auth/UserBadge";
+import { AppVersion } from "@/components/AppVersion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -34,6 +37,7 @@ import {
 } from "@/lib/projects";
 import { getSafeApiErrorMessage, API_BASE_PATH } from "@/lib/api";
 import { BROWSER_TIMEZONE, TIMEZONE_OPTIONS } from "@/lib/timezone";
+import { LANGUAGE_OPTIONS } from "@/lib/language";
 import { useProject } from "@/hooks/useProject";
 import { useAuth } from "@/hooks/useAuth";
 import type {
@@ -51,9 +55,14 @@ import type {
  * to run against. All optional — add/remove/edit rows freely; blanks are dropped on save.
  */
 /** Trim rows and drop any with a blank name or URL before sending to the API. */
-export function cleanEnvironments(environments: ProjectEnvironment[]): ProjectEnvironment[] {
-  return environments
-    .map((e) => ({ name: e.name.trim(), url: e.url.trim() }))
+export function cleanEnvironments(envs: ProjectEnvironment[]): ProjectEnvironment[] {
+  return envs
+    .map((e) => ({
+      name: e.name.trim(),
+      url: e.url.trim(),
+      login_type: e.login_type || "standard",
+      login_hint: (e.login_hint || "").trim(),
+    }))
     .filter((e) => e.name && e.url);
 }
 
@@ -74,26 +83,53 @@ export function EnvironmentsEditor({
       <Label className="text-slate-700 block mb-1.5">Environments</Label>
       <div className="space-y-2">
         {environments.map((env, i) => (
-          <div key={i} className="flex gap-2 items-center">
-            <Input
-              aria-label={`Environment name ${i + 1}`}
-              placeholder="Name (e.g. Test 1)"
-              value={env.name}
-              onChange={(e) => update(i, { name: e.target.value })}
-              className="w-32"
-            />
-            <Input
-              aria-label={`Environment URL ${i + 1}`}
-              placeholder="https://test1.example.com"
-              value={env.url}
-              onChange={(e) => update(i, { url: e.target.value })}
-              className="flex-1"
-            />
+          <div key={i} className="flex gap-2 items-start bg-slate-50 p-2 rounded border border-slate-100">
+            <div className="flex-1 space-y-2">
+              <div className="flex gap-2">
+                <Input
+                  aria-label={`Environment name ${i + 1}`}
+                  placeholder="Name (e.g. Test 1)"
+                  value={env.name}
+                  onChange={(e) => update(i, { name: e.target.value })}
+                  className="w-32"
+                />
+                <Input
+                  aria-label={`Environment URL ${i + 1}`}
+                  placeholder="https://test1.example.com"
+                  value={env.url}
+                  onChange={(e) => update(i, { url: e.target.value })}
+                  className="flex-1"
+                />
+              </div>
+              <div className="flex gap-2 items-center">
+                <Label className="text-xs text-slate-500 whitespace-nowrap w-20">Login Type:</Label>
+                <select
+                  value={env.login_type || "standard"}
+                  onChange={(e) => update(i, { login_type: e.target.value })}
+                  className="h-8 w-40 rounded-md border border-input bg-background px-3 py-1 text-xs shadow-sm"
+                >
+                  <option value="standard">Standard Form</option>
+                  <option value="sso_microsoft">SSO (Internal)</option>
+                  <option value="sso_google">SSO (Google)</option>
+                  <option value="sso_apple">SSO (Apple)</option>
+                  <option value="sso_generic">SSO (Generic)</option>
+                  <option value="custom">Custom Auth</option>
+                </select>
+                {(env.login_type && env.login_type !== "standard") && (
+                  <Input
+                    placeholder="Login Hint (e.g. Button Text)"
+                    value={env.login_hint || ""}
+                    onChange={(e) => update(i, { login_hint: e.target.value })}
+                    className="h-8 flex-1 text-xs"
+                  />
+                )}
+              </div>
+            </div>
             <button
               type="button"
               onClick={() => remove(i)}
               aria-label={`Remove environment ${i + 1}`}
-              className="text-red-500 hover:text-red-700 p-1 flex-shrink-0"
+              className="text-red-500 hover:text-red-700 p-1 flex-shrink-0 mt-1"
             >
               <X className="h-4 w-4" />
             </button>
@@ -221,9 +257,16 @@ const E2E_MAX_POLL_MS = 20 * 60 * 1000;
 /** Tolerate this many consecutive poll failures (transient network blips) before giving up. */
 const E2E_MAX_POLL_ERRORS = 5;
 
-export function AdminDashboard() {
+export function AdminDashboard({
+  onBackToWorkspace,
+  onNavigateToProjectAdmin,
+}: {
+  onBackToWorkspace?: () => void;
+  onNavigateToProjectAdmin?: () => void;
+} = {}) {
   const { projects, reloadProjects } = useProject();
   const { user, logout } = useAuth();
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState(true);
   const [name, setName] = useState("");
@@ -236,9 +279,9 @@ export function AdminDashboard() {
   const [createUserRole, setCreateUserRole] = useState<"standard" | "project_admin">(
     "standard",
   );
-  const [createUserPassword, setCreateUserPassword] = useState("");
   const [createUserTimezone, setCreateUserTimezone] =
     useState<string>(BROWSER_TIMEZONE);
+  const [createUserConversationLanguage, setCreateUserConversationLanguage] = useState("en");
   // Selected project for a new project_admin (required when role is project_admin).
   const [createUserProjectId, setCreateUserProjectId] = useState<string>("");
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
@@ -252,9 +295,11 @@ export function AdminDashboard() {
   );
   const [editUserTimezone, setEditUserTimezone] =
     useState<string>(BROWSER_TIMEZONE);
+  const [editUserConversationLanguage, setEditUserConversationLanguage] = useState("en");
   const [editUserIsActive, setEditUserIsActive] = useState(true);
-  const [editUserPassword, setEditUserPassword] = useState("");
-  const [editUserProjectId, setEditUserProjectId] = useState<string>("");
+  // Epic 23 (23.5): the full administered-project set for a project_admin (multi-select).
+  // Pre-filled from the user's current project_admin memberships when editing begins.
+  const [editUserProjectIds, setEditUserProjectIds] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [errors, setErrors] = useState<{ id: number; msg: string }[]>([]);
   const [isBusy, setIsBusy] = useState(false);
@@ -403,10 +448,10 @@ export function AdminDashboard() {
     try {
       await createAdminUser({
         email: createUserEmail.trim(),
-        display_name: createUserDisplayName.trim(),
+        display_name: createUserDisplayName.trim() || undefined,
         role: createUserRole,
-        initial_password: createUserPassword,
         timezone: createUserTimezone,
+        conversation_language: createUserConversationLanguage,
         ...(createUserRole === "project_admin"
           ? { project_id: createUserProjectId }
           : {}),
@@ -414,10 +459,10 @@ export function AdminDashboard() {
       setCreateUserEmail("");
       setCreateUserDisplayName("");
       setCreateUserRole("standard");
-      setCreateUserPassword("");
       setCreateUserTimezone(BROWSER_TIMEZONE);
+      setCreateUserConversationLanguage("en");
       setCreateUserProjectId("");
-      setStatus("User created successfully.");
+      setStatus("User synced successfully.");
       await loadUsers();
     } catch (err) {
       addError(getSafeApiErrorMessage(err));
@@ -488,16 +533,20 @@ export function AdminDashboard() {
     setEditUserDisplayName(u.display_name);
     setEditUserRole(u.role === "project_admin" ? "project_admin" : "standard");
     setEditUserTimezone(u.timezone || BROWSER_TIMEZONE);
+    setEditUserConversationLanguage(u.conversation_language || "en");
     setEditUserIsActive(u.is_active);
-    setEditUserPassword("");
-    setEditUserProjectId("");
+    // Pre-check the projects this user already administers (project_admin memberships).
+    setEditUserProjectIds(
+      u.project_memberships
+        .filter((m) => m.role === "project_admin")
+        .map((m) => m.project_id),
+    );
   }
 
   function cancelEditingUser() {
     setEditingUserId(null);
     setEditUserDisplayName("");
-    setEditUserPassword("");
-    setEditUserProjectId("");
+    setEditUserProjectIds([]);
   }
 
   async function handleEditUser(
@@ -514,15 +563,16 @@ export function AdminDashboard() {
     setErrors([]);
     setStatus(null);
     try {
-      const promoting =
-        u.role === "standard" && editUserRole === "project_admin";
+      const isProjectAdmin = editUserRole === "project_admin";
       const body: UpdateAdminUserRequest = {
         display_name: trimmedName,
         role: editUserRole,
         timezone: editUserTimezone,
+        conversation_language: editUserConversationLanguage,
         is_active: editUserIsActive,
-        ...(editUserPassword ? { new_password: editUserPassword } : {}),
-        ...(promoting ? { project_id: editUserProjectId } : {}),
+        // Send the full administered-project set whenever the user is a project_admin
+        // (covers both promotion and editing an existing project_admin — fixes 16-13).
+        ...(isProjectAdmin ? { project_ids: editUserProjectIds } : {}),
       };
       await updateAdminUser(u.id, body);
       cancelEditingUser();
@@ -635,27 +685,64 @@ export function AdminDashboard() {
         </div>
 
         <div className="flex items-center gap-4">
-          <div className="hidden md:block text-right">
-            <div className="text-sm font-semibold text-slate-900">
-              {(user as any)?.display_name || user?.name}
-            </div>
-            <div className="text-xs text-slate-500">
-              {user?.email} ·{" "}
-              <span className="text-blue-600 font-medium">{user?.role}</span>
-            </div>
+          <div className="relative">
+            <button
+              onClick={() => setUserMenuOpen(!userMenuOpen)}
+              className="flex items-center hover:opacity-80 transition-opacity focus:outline-none"
+              title="User menu"
+            >
+              <UserBadge user={user} roleClassName="text-blue-600" displayRole="Admin" />
+            </button>
+
+            {userMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setUserMenuOpen(false)}
+                />
+                <div className="absolute right-0 mt-2 w-56 bg-white rounded-md shadow-lg py-1 border border-slate-200 z-50">
+                  {onNavigateToProjectAdmin && (
+                    <button
+                      onClick={() => {
+                        onNavigateToProjectAdmin();
+                        setUserMenuOpen(false);
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
+                    >
+                      <Settings className="w-4 h-4" />
+                      Project Admin Dashboard
+                    </button>
+                  )}
+                  {onBackToWorkspace && (
+                    <button
+                      onClick={() => {
+                        onBackToWorkspace();
+                        setUserMenuOpen(false);
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                      User UI
+                    </button>
+                  )}
+                  <div className="h-px bg-slate-200 my-1" />
+                  <div className="px-4 py-2 text-xs text-slate-500">
+                    Version: <AppVersion className="inline" />
+                  </div>
+                  <button
+                    onClick={() => {
+                      Promise.resolve(logout()).catch(console.error);
+                      setUserMenuOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Logout
+                  </button>
+                </div>
+              </>
+            )}
           </div>
-          <div className="w-px h-8 bg-slate-200 hidden md:block" />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              Promise.resolve(logout()).catch(console.error);
-            }}
-            className="flex items-center gap-2 text-slate-600 border-slate-300"
-          >
-            <LogOut className="w-4 h-4" />
-            Logout
-          </Button>
         </div>
       </nav>
 
@@ -930,13 +1017,9 @@ export function AdminDashboard() {
                                       | "standard"
                                       | "project_admin";
                                     setEditUserRole(nextRole);
-                                    if (
-                                      !(
-                                        u.role === "standard" &&
-                                        nextRole === "project_admin"
-                                      )
-                                    )
-                                      setEditUserProjectId("");
+                                    // Demoting to standard clears the administered set.
+                                    if (nextRole === "standard")
+                                      setEditUserProjectIds([]);
                                   }}
                                   className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                                 >
@@ -946,40 +1029,59 @@ export function AdminDashboard() {
                                   </option>
                                 </select>
                               </div>
-                              {u.role === "standard" &&
-                                editUserRole === "project_admin" && (
-                                  <div>
-                                    <Label
-                                      htmlFor={`edit-user-project-${u.id}`}
-                                      className="text-slate-700 block"
-                                    >
-                                      Project
-                                    </Label>
-                                    <select
-                                      id={`edit-user-project-${u.id}`}
-                                      aria-label={`Project for ${u.display_name}`}
-                                      value={editUserProjectId}
-                                      onChange={(e) =>
-                                        setEditUserProjectId(e.target.value)
-                                      }
-                                      disabled={projects.length === 0}
-                                      className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:bg-slate-100"
-                                    >
-                                      <option value="">Select a project…</option>
-                                      {projects.map((proj) => (
-                                        <option key={proj.id} value={proj.id}>
+                              {editUserRole === "project_admin" && (
+                                <div>
+                                  <Label className="text-slate-700 block">
+                                    Administered projects
+                                  </Label>
+                                  <div
+                                    role="group"
+                                    aria-label={`Administered projects for ${u.display_name}`}
+                                    className="mt-1.5 space-y-1.5 rounded-md border border-slate-300 bg-white p-2 max-h-44 overflow-y-auto"
+                                  >
+                                    {projects.map((proj) => {
+                                      const checked = editUserProjectIds.includes(
+                                        proj.id,
+                                      );
+                                      return (
+                                        <label
+                                          key={proj.id}
+                                          className="flex items-center gap-2 text-sm text-slate-700"
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            aria-label={proj.name}
+                                            onChange={(e) =>
+                                              setEditUserProjectIds((prev) =>
+                                                e.target.checked
+                                                  ? [...prev, proj.id]
+                                                  : prev.filter(
+                                                      (id) => id !== proj.id,
+                                                    ),
+                                              )
+                                            }
+                                          />
                                           {proj.name}
-                                        </option>
-                                      ))}
-                                    </select>
-                                    {projects.length === 0 && (
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                  {projects.length === 0 && (
+                                    <p className="text-xs text-amber-600 mt-1">
+                                      Create a project first before assigning a
+                                      project admin.
+                                    </p>
+                                  )}
+                                  {projects.length > 0 &&
+                                    editUserProjectIds.length === 0 && (
                                       <p className="text-xs text-amber-600 mt-1">
-                                        Create a project first before assigning a
-                                        project admin.
+                                        Select at least one project, or set the role
+                                        to Standard.
                                       </p>
                                     )}
-                                  </div>
-                                )}
+                                </div>
+                              )}
                               <div>
                                 <Label
                                   htmlFor={`edit-user-timezone-${u.id}`}
@@ -1003,6 +1105,29 @@ export function AdminDashboard() {
                                   ))}
                                 </select>
                               </div>
+                              <div>
+                                <Label
+                                  htmlFor={`edit-user-language-${u.id}`}
+                                  className="text-slate-700 block"
+                                >
+                                  Language
+                                </Label>
+                                <select
+                                  id={`edit-user-language-${u.id}`}
+                                  aria-label={`Language for ${u.display_name}`}
+                                  value={editUserConversationLanguage}
+                                  onChange={(e) =>
+                                    setEditUserConversationLanguage(e.target.value)
+                                  }
+                                  className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                                >
+                                  {LANGUAGE_OPTIONS.map((lang) => (
+                                    <option key={lang.value} value={lang.value}>
+                                      {lang.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
                               <label className="flex items-center gap-2 text-sm text-slate-700">
                                 <input
                                   type="checkbox"
@@ -1014,35 +1139,15 @@ export function AdminDashboard() {
                                 />
                                 Active
                               </label>
-                              <div>
-                                <Label
-                                  htmlFor={`edit-user-password-${u.id}`}
-                                  className="text-slate-700 block"
-                                >
-                                  New password (optional)
-                                </Label>
-                                <Input
-                                  id={`edit-user-password-${u.id}`}
-                                  type="password"
-                                  value={editUserPassword}
-                                  onChange={(e) =>
-                                    setEditUserPassword(e.target.value)
-                                  }
-                                  minLength={8}
-                                  placeholder="Leave blank to keep current"
-                                  className="mt-1.5"
-                                />
-                              </div>
                               <div className="flex gap-2">
                                 <Button
                                   type="submit"
                                   size="sm"
                                   disabled={
                                     isBusy ||
-                                    (u.role === "standard" &&
-                                      editUserRole === "project_admin" &&
+                                    (editUserRole === "project_admin" &&
                                       (projects.length === 0 ||
-                                        editUserProjectId === ""))
+                                        editUserProjectIds.length === 0))
                                   }
                                   className="h-7 text-xs"
                                 >
@@ -1118,6 +1223,14 @@ export function AdminDashboard() {
                                     {u.timezone}
                                   </span>
                                 )}
+                                {u.conversation_language && (
+                                  <span
+                                    className="inline-flex px-2 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700"
+                                    title="User's preferred conversation language"
+                                  >
+                                    {LANGUAGE_OPTIONS.find(l => l.value === u.conversation_language)?.label || u.conversation_language}
+                                  </span>
+                                )}
                                 {adminProjects.length > 0 && (
                                   <span className="text-[11px] text-slate-500">
                                     Admin of: {adminProjects.join(", ")}
@@ -1139,14 +1252,29 @@ export function AdminDashboard() {
               </div>
             </div>
 
-            {/* Create User replaces the old Manage Membership form */}
+            {/* Sync User form */}
             <div className="rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col flex-shrink-0">
               <div className="p-5 border-b border-slate-100 flex items-center gap-2 text-slate-800 font-semibold">
                 <UserPlus className="h-5 w-5 text-blue-500" />
-                Create User
+                Sync User
               </div>
               <div className="p-5">
                 <form onSubmit={handleCreateUser} className="space-y-4">
+                  <div>
+                    <Label
+                      htmlFor="create-user-display-name"
+                      className="text-slate-700"
+                    >
+                      Name (Optional)
+                    </Label>
+                    <Input
+                      id="create-user-display-name"
+                      type="text"
+                      value={createUserDisplayName}
+                      onChange={(e) => setCreateUserDisplayName(e.target.value)}
+                      className="mt-1.5 focus-visible:ring-blue-500"
+                    />
+                  </div>
                   <div>
                     <Label
                       htmlFor="create-user-email"
@@ -1159,21 +1287,6 @@ export function AdminDashboard() {
                       type="email"
                       value={createUserEmail}
                       onChange={(e) => setCreateUserEmail(e.target.value)}
-                      required
-                      className="mt-1.5 focus-visible:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <Label
-                      htmlFor="create-user-display-name"
-                      className="text-slate-700 block"
-                    >
-                      Display Name
-                    </Label>
-                    <Input
-                      id="create-user-display-name"
-                      value={createUserDisplayName}
-                      onChange={(e) => setCreateUserDisplayName(e.target.value)}
                       required
                       className="mt-1.5 focus-visible:ring-blue-500"
                     />
@@ -1235,23 +1348,6 @@ export function AdminDashboard() {
                   )}
                   <div>
                     <Label
-                      htmlFor="create-user-password"
-                      className="text-slate-700 block"
-                    >
-                      Initial Password
-                    </Label>
-                    <Input
-                      id="create-user-password"
-                      type="password"
-                      value={createUserPassword}
-                      onChange={(e) => setCreateUserPassword(e.target.value)}
-                      required
-                      minLength={8}
-                      className="mt-1.5 focus-visible:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <Label
                       htmlFor="create-user-timezone"
                       className="text-slate-700 block"
                     >
@@ -1274,6 +1370,27 @@ export function AdminDashboard() {
                       Message times are shown to this user in this timezone.
                     </p>
                   </div>
+                  <div>
+                    <Label
+                      htmlFor="create-user-language"
+                      className="text-slate-700 block"
+                    >
+                      Language
+                    </Label>
+                    <select
+                      id="create-user-language"
+                      aria-label="Language"
+                      value={createUserConversationLanguage}
+                      onChange={(e) => setCreateUserConversationLanguage(e.target.value)}
+                      className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    >
+                      {LANGUAGE_OPTIONS.map((lang) => (
+                        <option key={lang.value} value={lang.value}>
+                          {lang.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <Button
                     id="create-user-button"
                     type="submit"
@@ -1282,25 +1399,9 @@ export function AdminDashboard() {
                       (createUserRole === "project_admin" &&
                         (projects.length === 0 || createUserProjectId === ""))
                     }
-                    className="w-full bg-slate-800 hover:bg-slate-900 text-white mt-2"
                   >
-                    Create user
+                    Sync user
                   </Button>
-                  <div className="space-y-1">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled
-                      aria-describedby="sync-users-help"
-                      className="w-full"
-                    >
-                      Sync existing company's users
-                    </Button>
-                    <p id="sync-users-help" className="text-xs text-slate-500">
-                      This feature is not available at the moment, please add
-                      manually.
-                    </p>
-                  </div>
                 </form>
               </div>
             </div>
@@ -1532,7 +1633,7 @@ export function AdminDashboard() {
                           <div className="font-mono text-xs text-slate-800">
                             {m.model_id}
                           </div>
-                          {m.supports_vision && (
+                          {m.scores.some((s) => s.capability === "vision") && (
                             <span className="text-[10px] text-emerald-600">
                               vision
                             </span>

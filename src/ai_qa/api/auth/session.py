@@ -26,6 +26,10 @@ class UserSession:
     given_name: str | None = None
     family_name: str | None = None
     groups: list[str] = field(default_factory=list)
+    # Full platform role set derived from Azure App Roles (+ membership) each login
+    # (Epic 23, story 23.3). ``role`` above stays the single derived primary for the
+    # existing single-role surface; ``roles`` carries every entitled role for the FE.
+    roles: list[str] = field(default_factory=list)
     timezone: str = "UTC"
     access_token: str | None = None
     expires_at: datetime | None = None
@@ -49,6 +53,7 @@ class UserSession:
             "given_name": self.given_name,
             "family_name": self.family_name,
             "groups": self.groups,
+            "roles": self.roles,
             "timezone": self.timezone,
             "exp": int(self.expires_at.timestamp()) if self.expires_at else None,
         }
@@ -70,6 +75,7 @@ class UserSession:
             given_name=data.get("given_name"),
             family_name=data.get("family_name"),
             groups=data.get("groups", []),
+            roles=data.get("roles") or [],
             timezone=data.get("timezone") or "UTC",
             expires_at=expires_at,
         )
@@ -104,6 +110,7 @@ class SessionManager:
             given_name=user_data.get("given_name"),
             family_name=user_data.get("family_name"),
             groups=user_data.get("groups", []),
+            roles=user_data.get("roles") or [],
             timezone=user_data.get("timezone") or "UTC",
             expires_at=expires_at,
         )

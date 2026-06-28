@@ -70,7 +70,6 @@ def test_cross_project_read_isolation_canary(tmp_path) -> None:
         user = User(
             email="tester@example.com",
             display_name="tester",
-            password_hash="hash",
             role="standard",
             is_active=True,
         )
@@ -146,7 +145,6 @@ def test_thread_id_stamped_on_all_adapter_save_methods(tmp_path) -> None:
         user = User(
             email="tester@example.com",
             display_name="tester",
-            password_hash="hash",
             role="standard",
             is_active=True,
         )

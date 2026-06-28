@@ -128,6 +128,9 @@ function mockFetchForUser(projects: Array<Record<string, unknown>>) {
       if (url.startsWith("/api/projects/") && url.endsWith("/artifacts")) {
         return jsonResponse([]);
       }
+      if (url.startsWith("/api/projects/") && url.endsWith("/artifacts/tree")) {
+        return jsonResponse({ folders: [], files: [] });
+      }
       if (url === "/api/threads") {
         if (method === "POST") {
           const body = init?.body ? JSON.parse(String(init.body)) : {};

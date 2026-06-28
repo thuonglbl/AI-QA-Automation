@@ -14,7 +14,6 @@ from ai_qa.api.app import create_app
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.session import SessionManager
 from ai_qa.api.projects import require_project_member_or_admin
-from ai_qa.auth.password import hash_password
 from ai_qa.auth.service import ADMIN_ROLE, STANDARD_ROLE
 from ai_qa.db.base import Base
 from ai_qa.db.models import Project, ProjectMembership, User
@@ -61,7 +60,6 @@ def _create_user(client: TestClient, email: str, role: str, *, active: bool = Tr
         user = User(
             email=email,
             display_name=email.split("@")[0],
-            password_hash=hash_password("super-secret"),
             role=role,
             is_active=active,
         )
@@ -140,7 +138,6 @@ def test_admin_lists_all_projects_with_membership_summary(project_client: TestCl
     assert projects[0]["created_at"] is not None
     assert projects[0]["updated_at"] is not None
     assert all("created_at" in project and "updated_at" in project for project in projects)
-    assert all("password_hash" not in str(project) for project in projects)
 
 
 def test_standard_user_lists_only_assigned_projects(project_client: TestClient) -> None:

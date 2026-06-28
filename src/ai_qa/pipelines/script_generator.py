@@ -4,6 +4,7 @@
 Converts structured test cases into executable Playwright Python scripts via LLM.
 """
 
+import asyncio
 import logging
 import re
 import unicodedata
@@ -17,7 +18,7 @@ from ai_qa.ai_connection.client import LLMClient
 from ai_qa.ai_connection.config import LLMConfig
 from ai_qa.config import AppSettings
 from ai_qa.exceptions import ScriptGenerationError, VisionError
-from ai_qa.models import StageResult, TestCase
+from ai_qa.models import StageResult, TestCase, bound_stage_messages
 from ai_qa.pipelines.vision_locator import LocatorResult, VisionLocator
 from ai_qa.prompts.script_generation import (
     SCRIPT_GENERATION_PROMPT,
@@ -98,8 +99,10 @@ class ScriptGenerator:
         config: AppSettings | None = None,
         vision_locator: VisionLocator | None = None,
         explore_llm: Any = None,
+        explore_use_vision: bool = True,
         chrome_path: str = "",
         cdp_url: str = "",
+        role_sessions: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Initialize the script generator.
 
@@ -113,6 +116,13 @@ class ScriptGenerator:
                 verified trace. When set together with ``chrome_path``, generation
                 prefers the trace path (real selectors) over LLM-invention.
             chrome_path: Path to the user's Chrome executable for live exploration.
+            cdp_url: CDP URL of a running Chrome to connect to (reuses its live session).
+            role_sessions: Optional map of app-role -> decrypted Playwright
+                ``storageState`` dict. Enables the Tier-1 SERVER-SIDE explore path:
+                when neither ``cdp_url`` nor ``chrome_path`` is given, the run launches
+                a browser-use Chromium with the captured session for the test case's
+                role injected, so it is authenticated without any local Chrome. Blobs
+                are live credentials — never logged.
         """
         self.output_base_dir = output_base_dir
         self._llm_config = llm_config
@@ -124,11 +134,20 @@ class ScriptGenerator:
             else vision_locator is not None
         )
         self._explore_llm = explore_llm
+        # Whether the browser-use explore may use screenshots. Driven by the EXPLORE
+        # model's vision capability (set by Sarah), NOT the vision_locator path above —
+        # a text-only model must run DOM-only or the explore fails on unreadable images.
+        self._explore_use_vision = explore_use_vision
         self._chrome_path = chrome_path
         self._cdp_url = cdp_url
-        # browser-use-driven generation requires a driving LLM + a browser source
-        # (a Chrome executable to launch, or a CDP URL to connect to a running one).
-        self._explore_enabled = explore_llm is not None and (bool(chrome_path) or bool(cdp_url))
+        self._role_sessions = role_sessions or {}
+        # browser-use-driven generation requires a driving LLM + a browser source: a
+        # CDP URL (connect to a running Chrome), a Chrome executable (launch), OR at
+        # least one captured session (Tier-1 server-side launch with the session
+        # injected).
+        self._explore_enabled = explore_llm is not None and (
+            bool(chrome_path) or bool(cdp_url) or bool(self._role_sessions)
+        )
 
     async def generate(
         self,
@@ -199,8 +218,8 @@ class ScriptGenerator:
         return StageResult(
             success=success,
             data=generated_scripts if generated_scripts else None,
-            errors=errors,
-            warnings=warnings,
+            errors=bound_stage_messages(errors, kind="errors"),
+            warnings=bound_stage_messages(warnings),
             confidence=avg_confidence if generated_scripts else 0.0,
         )
 
@@ -230,13 +249,27 @@ class ScriptGenerator:
                 from ai_qa.browser.explorer import explore_test_case
                 from ai_qa.browser.trace import extract_trace
 
+                # Resolve the captured session for THIS test case's role (Tier-1
+                # server-side path). When a CDP URL or Chrome path is present those win
+                # (explorer precedence), so only resolve a session otherwise. A test
+                # case with no role falls back to the sole captured session when exactly
+                # one exists.
+                storage_state: dict[str, Any] | None = None
+                if not self._cdp_url and not self._chrome_path and self._role_sessions:
+                    role = getattr(test_case, "role", None)
+                    if role and role in self._role_sessions:
+                        storage_state = self._role_sessions[role]
+                    elif not role and len(self._role_sessions) == 1:
+                        storage_state = next(iter(self._role_sessions.values()))
+
                 history = await explore_test_case(
                     test_case,
                     target_url,
                     llm=self._explore_llm,
                     chrome_path=self._chrome_path,
                     cdp_url=self._cdp_url,
-                    use_vision=self._vision_enabled,
+                    storage_state=storage_state,
+                    use_vision=self._explore_use_vision,
                 )
                 if history is not None:
                     trace = extract_trace(history)
@@ -258,10 +291,13 @@ class ScriptGenerator:
                     e,
                 )
             except Exception as e:  # noqa: BLE001 — degrade to fallback on any error
+                # Log only the exception TYPE on the credential-bearing explore path —
+                # never the message, which could surface session-derived data (matches
+                # explorer.py's convention).
                 logger.warning(
                     "browser-use exploration error for '%s': %s — falling back",
                     test_case.title,
-                    e,
+                    type(e).__name__,
                 )
 
         locator_results: list[LocatorResult] = []
@@ -325,6 +361,20 @@ class ScriptGenerator:
                 "test_case_title": test_case.title,
             }
 
+    @staticmethod
+    def _strip_code_fences(content: str) -> str:
+        """Remove Markdown code-fence lines (``` or ```python) an LLM may wrap a script in.
+
+        A line that is *only* a fence (optionally with a language tag) is never valid Python,
+        so dropping such lines makes the output importable. Handles both a whole-file wrap and
+        a fence that lands mid-file after a header is prepended. Non-fence lines (including a
+        legitimate ``` inside a string) are untouched because they don't match the anchor.
+        """
+        if "```" not in content:
+            return content
+        kept = [ln for ln in content.splitlines() if not re.match(r"^\s*```[\w-]*\s*$", ln)]
+        return "\n".join(kept)
+
     def _postprocess_script(
         self,
         script_content: str,
@@ -334,6 +384,11 @@ class ScriptGenerator:
         """Validate, score, and warning-scan a generated script (shared by the
         trace, vision, and LLM-only paths so all get identical downstream handling).
         """
+        # LLMs often wrap the script in a Markdown code fence (```python … ```). Left in,
+        # the fence becomes a SyntaxError → pytest "collection failure" and the whole run
+        # errors before any browser starts. Strip fence lines here, the single chokepoint
+        # all three generation paths funnel through.
+        script_content = self._strip_code_fences(script_content)
         if not script_content or not script_content.strip():
             return {
                 "success": False,
@@ -410,7 +465,12 @@ class ScriptGenerator:
 
             # Call LLM
             timeout = getattr(self._config, "script_generation_timeout", 120)
-            response = llm_client.invoke(messages, timeout=timeout)
+            # Offload the synchronous invoke to a worker thread so it never blocks the
+            # single event loop. A sync invoke on the loop freezes the WebSocket + every
+            # HTTP route for the whole call (minutes on a slow on-premises model). The
+            # blocking call — including its tenacity retry and typed-error mapping — runs
+            # in the thread while the loop stays responsive.
+            response = await asyncio.to_thread(llm_client.invoke, messages, timeout=timeout)
 
             # Extract script content from response
             script_content = response.content
@@ -491,7 +551,12 @@ class ScriptGenerator:
                 HumanMessage(content=prompt),
             ]
             timeout = getattr(self._config, "script_generation_timeout", 120)
-            response = llm_client.invoke(messages, timeout=timeout)
+            # Offload the synchronous invoke to a worker thread so it never blocks the
+            # single event loop. A sync invoke on the loop freezes the WebSocket + every
+            # HTTP route for the whole call (minutes on a slow on-premises model). The
+            # blocking call — including its tenacity retry and typed-error mapping — runs
+            # in the thread while the loop stays responsive.
+            response = await asyncio.to_thread(llm_client.invoke, messages, timeout=timeout)
 
             script_content = response.content
             if isinstance(script_content, list):
@@ -572,7 +637,12 @@ class ScriptGenerator:
 
             # Call LLM
             timeout = getattr(self._config, "script_generation_timeout", 120)
-            response = llm_client.invoke(messages, timeout=timeout)
+            # Offload the synchronous invoke to a worker thread so it never blocks the
+            # single event loop. A sync invoke on the loop freezes the WebSocket + every
+            # HTTP route for the whole call (minutes on a slow on-premises model). The
+            # blocking call — including its tenacity retry and typed-error mapping — runs
+            # in the thread while the loop stays responsive.
+            response = await asyncio.to_thread(llm_client.invoke, messages, timeout=timeout)
 
             # Extract script content from response
             script_content = response.content

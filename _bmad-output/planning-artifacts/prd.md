@@ -238,7 +238,7 @@ This is a strategic response to competitive pressure: competitors are already ap
 
 - All data processing remains on-premises — no test case content or generated scripts leave company infrastructure
 - Claude Enterprise license covers PoC; on-premises LLMs must provide equivalent data isolation from Milestone 1
-- Browser sessions reuse existing SSO authentication — no additional credential storage
+- Browser sessions are authenticated via dedicated test accounts using an automated AI login routine. Users must provide their own test account credentials (stored securely as user secrets), preventing central storage of passwords by Project Admins.
 - Audit trail required from Milestone 1: log Confluence pages read, scripts generated, and by whom
 
 ### Browser Sandboxing
@@ -351,7 +351,8 @@ This is a strategic response to competitive pressure: competitors are already ap
 
 - FR10: Engineer can trigger the pipeline by providing a Confluence page URL
 - FR11: Pipeline can execute end-to-end (MCP → LLM → browser-use → Playwright output) without manual intervention
-- FR12: Pipeline can control a local Chrome instance via browser-use framework using active SSO login session
+- FR12: Pipeline can control a local Chrome instance via browser-use framework, automatically authenticating with dedicated test account credentials.
+- FR12a: Test account credentials are treated as user-scoped secrets. Project Administrators only configure the authentication strategy (`login_type` enum: `standard`, `sso_microsoft`, `sso_google`, etc.) and an optional `login_hint` for the project environment, but never manage or view test account passwords.
 - FR13: Pipeline can output generated test files to a configurable output directory
 
 ### Configuration
@@ -468,7 +469,7 @@ This is a strategic response to competitive pressure: competitors are already ap
 - User-provided MCP keys and AI provider API keys must be stored only in encrypted PostgreSQL fields and must never appear in `.env`, plaintext JSON columns, logs, WebSocket payload history, conversation history, artifacts, or generated files
 - Secret encryption uses `USER_SECRETS_ENCRYPTION_KEY`, mapped to `AppSettings.user_secrets_encryption_key`; the encryption key must not be stored in PostgreSQL
 - Passwords are stored as one-way password hashes, not reversible encryption or plaintext
-- Browser sessions reuse existing SSO — pipeline must not store, cache, or log credentials
+- Browser sessions use dedicated test accounts — pipeline securely stores these credentials as individual user secrets and automates login. This ensures users own their test credentials and avoids insecure project-level password storage.
 - AI browser agent restricted to read-only navigation — no form submissions, data modifications, or write operations during generation
 - Milestone 1: audit logging of all pipeline executions (who, when, which page, which scripts)
 - Milestone 1: on-premises LLMs eliminate external API data transfer entirely

@@ -24,7 +24,6 @@ from ai_qa.api.app import create_app
 from ai_qa.api.artifacts import get_artifact_storage
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.session import SessionManager
-from ai_qa.auth.password import hash_password
 from ai_qa.auth.service import STANDARD_ROLE
 from ai_qa.db.base import Base
 from ai_qa.db.models import Artifact, ArtifactVersion, Project, ProjectMembership, User
@@ -128,7 +127,6 @@ def _create_user(client: TestClient, email: str, role: str, *, active: bool = Tr
         user = User(
             email=email,
             display_name=email.split("@")[0],
-            password_hash=hash_password("super-secret"),
             role=role,
             is_active=active,
         )

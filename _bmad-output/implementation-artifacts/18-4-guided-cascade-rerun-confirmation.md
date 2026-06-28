@@ -9,12 +9,12 @@ Status: ready-for-dev
 
 > Full-stack. The largest story in the epic. Given a detected change (18.2) and its staleness impact (18.3), present the user a confirmation prompt — "Source X changed; N requirements, M test cases, K scripts may be stale. Re-run the downstream chain?" — with a chosen SCOPE, and on confirm, drive the affected agents to regenerate. **Critical architectural constraint: there is NO cross-agent auto-handoff today** — agents chain only via the user clicking through each step, and each agent (Mary/Sarah) has a mandatory human review gate ([base.py:341-347](src/ai_qa/agents/base.py:341) approve→DONE; [base.py:349-387](src/ai_qa/agents/base.py:349) reject→re-run). So "cascade" here means **GUIDED re-run**: pre-load each affected stage's inputs (the changed source / the stale test cases) and walk the user through the existing per-stage review — it does NOT bypass review or silently overwrite approved artifacts.
 
-## ⚠ DECISION GATE — cascade execution model + granularity (resolve at dev start)
+## ✅ DECISION (CONFIRMED — Thuong, 2026-06-22): Guided + per-source
 
-1. **Execution model: GUIDED (recommended) vs AUTO.** The agents are built around mandatory human review (Mary's `test_case_review`, Sarah's `script_review`). **Guided** = the cascade pre-fills the next stage's inputs and prompts the user to proceed into the normal review UX; it never bypasses approval. **Auto** = regenerate + auto-approve downstream without review — this contradicts the whole "review-gated" design and risks silently replacing human-approved artifacts. **Recommended: GUIDED.** ACs below assume guided.
-2. **Granularity: PER-SOURCE (recommended) vs whole-project vs single-test-case.** A changed page maps (via 18.3) to its requirement → its test cases → its scripts. **Recommended: per-source lineage** — the cascade scope is exactly the staleness set for the changed source(s), not the entire project, not a hand-picked single case. The user then chooses HOW FAR DOWN to cascade (requirements only → through test cases → through scripts → through execution).
+Both calls are settled — implement the ACs/tasks as written; do not re-open at dev time:
 
-If Thuong overrides either, adjust Task 3/Task 4 accordingly; the rest stands.
+1. **Execution model = GUIDED.** The agents are built around mandatory human review (Mary's `test_case_review`, Sarah's `script_review`). The cascade pre-fills the next stage's inputs and prompts the user to proceed into the normal review UX; it **never bypasses approval**. AUTO (regenerate + auto-approve without review) is explicitly REJECTED — it contradicts the review-gated design and risks silently replacing human-approved artifacts.
+2. **Granularity = PER-SOURCE lineage.** A changed page maps (via 18.3) to its requirement → its test cases → its scripts. The cascade scope is exactly the staleness set for the changed source(s) — NOT the entire project, NOT a hand-picked single case. The user then chooses HOW FAR DOWN to cascade (requirements only → through test cases → through scripts → through execution).
 
 ## Story
 
@@ -32,7 +32,7 @@ so that downstream regeneration only happens with my explicit approval and at th
 
 4. **Guided re-run respects existing review gates.** Given a confirmed cascade at depth ≥ `test_cases`, when regeneration runs, then each agent runs through its NORMAL review flow — Bob re-extracts the changed source → user reviews/approves the requirement (existing Bob review) → Mary regenerates ONLY the test cases whose `derived_from_artifact_id` is the affected requirement → user reviews via `test_case_review` → Sarah regenerates the affected scripts → user reviews via `script_review` → (if depth=`execution`) Jack re-runs. The cascade ORCHESTRATES (pre-loads inputs, advances the step) but the human approval at each gate is preserved — no auto-approve, no bypass.
 
-5. **Pre-load the right inputs at each stage.** Given the cascade advances to a stage, when that agent starts, then its input is pre-populated from the impact map: Bob ← the changed source id/url; Mary ← the affected requirement artifact id(s) (so Mary regenerates the right group, reusing the `_replace_source_group` path at [mary.py:1059-1087](src/ai_qa/agents/mary.py:1059)); Sarah ← the affected approved test-case id(s). The user is not asked to re-enter the page id or re-select test cases that the cascade already knows from lineage.
+5. **Pre-load the right inputs at each stage.** Given the cascade advances to a stage, when that agent starts, then its input is pre-populated from the impact map: Bob ← the changed source id/url; Mary ← the affected requirement artifact id(s) (so Mary regenerates the right group, reusing the `_replace_source_group` path at [mary.py:1073-1104](src/ai_qa/agents/mary.py:1073)); Sarah ← the affected approved test-case id(s). The user is not asked to re-enter the page id or re-select test cases that the cascade already knows from lineage.
 
 6. **Cascade is resumable / interrupt-safe.** Given the cascade is multi-step and a step can run minutes (slow on-prem LLM), when the worker restarts or the user navigates away mid-cascade, then the existing interruption-recovery (`reconcile_interrupted_work`, [threads/service.py:264-318](src/ai_qa/threads/service.py:264)) leaves the thread in a recoverable state and the cascade can be resumed or restarted without corrupting approved artifacts. The cascade does not hold a long-lived in-memory-only state that is lost on restart — its scope/progress is derivable from the thread + impact map.
 
@@ -48,13 +48,13 @@ so that downstream regeneration only happens with my explicit approval and at th
 
 - [ ] **Task 2 — Confirmation panel (AC: 1, 2, 3, 7)**
   - [ ] FE: render `metadata.type === "cascade_confirm"` in [App.tsx](frontend/src/App.tsx) following the existing form-routing switch. Show per-tier counts (N requirements, M test cases, K scripts, J execution runs) + the asset names, a scope selector (radio/stepper: requirements → test_cases → scripts → execution), and explicit Confirm / Decline buttons. Surface `unmapped` legacy assets as "not auto-traceable" (AC7). English only.
-  - [ ] On submit, send a WS action `{action: "cascade_confirm", confirm: bool, scope: <depth>, source_id, ...}` through the existing action channel.
+  - [ ] On submit, carry the decision over the EXISTING `approve` channel (no new WS message type): `{type:"approve", step:1, data:{action:"cascade_confirm", confirm: bool, scope:<depth>, source_id, ...}}`. The WS receive loop only routes `start`/`approve`/`reject`/`navigate` ([api/websocket.py:186](src/ai_qa/api/websocket.py:186); `_dispatch_action` calls only `handle_start`/`handle_approve`/`handle_reject`, [api/websocket.py:368-377](src/ai_qa/api/websocket.py:368)) — do NOT add a `cascade_confirm` message type to the router.
 
 - [ ] **Task 3 — Cascade orchestration (AC: 3, 4, 5, 7, 8) [GUIDED]**
-  - [ ] Add a `_handle_cascade_confirm` action handler (dispatched like `clarify_answer`, [bob.py:1698-1727](src/ai_qa/agents/bob.py:1698) / [api/websocket.py:315-388](src/ai_qa/api/websocket.py:315)). On `confirm=false` → record `declined` (18.5) and stop (AC2).
+  - [ ] Add a `_handle_cascade_confirm` handler, routed INSIDE Bob's `handle_approve` ([bob.py:1879](src/ai_qa/agents/bob.py:1879)) by inspecting `data["action"] == "cascade_confirm"` — exactly the pattern `handle_approve` uses to dispatch `clarify` by phase ([bob.py:1985](src/ai_qa/agents/bob.py:1985)) and `_handle_clarify_answer` uses to sub-route on `data["action"]` ([bob.py:1698-1711](src/ai_qa/agents/bob.py:1698)). On `confirm=false` → record `declined` (18.5) and stop (AC2).
   - [ ] On `confirm=true`: compute the in-scope stages from the chosen depth. Drive the guided re-run:
     - **requirements**: re-run Bob extraction for the changed source id only (reuse the existing extraction entry, pre-load the source id per AC5) → existing Bob review gate.
-    - **test_cases**: after the requirement is re-approved, start Mary scoped to the affected requirement id(s); reuse the per-requirement regeneration group path (`_replace_source_group`, [mary.py:1059-1087](src/ai_qa/agents/mary.py:1059)) so only the affected group is regenerated, not all test cases → `test_case_review` gate.
+    - **test_cases**: after the requirement is re-approved, start Mary scoped to the affected requirement id(s); reuse the per-requirement regeneration group path (`_replace_source_group`, [mary.py:1073-1104](src/ai_qa/agents/mary.py:1073)) so only the affected group is regenerated, not all test cases → `test_case_review` gate.
     - **scripts**: start Sarah scoped to the affected approved test-case id(s) → `script_review` gate.
     - **execution**: start Jack for the regenerated scripts (AC8); degrade with a message if prerequisites missing.
   - [ ] Advance step-by-step honoring each review gate (do NOT auto-approve). Use the per-agent action lock so cascade steps serialize with other actions ([api/websocket.py:360](src/ai_qa/api/websocket.py:360)). Respect the LLM-call timeout/async rules ([[ws-nonblocking-clarify-timeout-fix]], [[project-context]] await ainvoke).
@@ -80,7 +80,7 @@ Every agent transition is human-gated by design: approve → DONE ([base.py:341-
 
 ### Reuse Mary's per-group regeneration — don't regenerate everything
 
-Mary already has `_replace_source_group(source_requirement_id, replacements)` ([mary.py:1074-1087](src/ai_qa/agents/mary.py:1074)) and rejection-driven regeneration scoped to one `source_requirement_id` ([mary.py:979-1059](src/ai_qa/agents/mary.py:979)). The cascade should target the affected requirement id(s) from 18.3 and reuse this group-replacement path so only the stale group regenerates. Re-running Mary over ALL requirements would be wasteful and would touch unaffected, human-approved test cases (violates AC7).
+Mary already has `_replace_source_group(source_requirement_id, replacements)` ([mary.py:1073-1104](src/ai_qa/agents/mary.py:1073)) and rejection-driven regeneration scoped to one `source_requirement_id` ([mary.py:979-1059](src/ai_qa/agents/mary.py:979)). The cascade should target the affected requirement id(s) from 18.3 and reuse this group-replacement path so only the stale group regenerates. Re-running Mary over ALL requirements would be wasteful and would touch unaffected, human-approved test cases (violates AC7).
 
 ### Current behavior to PRESERVE (regression guardrails)
 
@@ -101,9 +101,9 @@ Mary already has `_replace_source_group(source_requirement_id, replacements)` ([
 - `frontend/src/App.tsx` + `frontend/src/types/` — **UPDATE** (confirmation panel + TS type).
 - Tests — **ADD** backend orchestration + FE panel.
 
-### Decided scope (defaults — Thuong, correct via the DECISION GATE)
+### Decided scope (CONFIRMED — Thuong, 2026-06-22)
 
-- **Guided** cascade (respect review gates), **per-source** granularity, user-chosen **depth** (requirements → test_cases → scripts → execution).
+- **Guided** cascade (respect review gates), **per-source** granularity, user-chosen **depth** (requirements → test_cases → scripts → execution) — CONFIRMED; see the decision section above.
 - **No auto-approve**; declined/interrupted ⇒ zero changes to approved artifacts.
 - Execution leg uses Jack (Epic 14 DONE); degrades cleanly if prerequisites absent.
 
@@ -123,7 +123,7 @@ Mary already has `_replace_source_group(source_requirement_id, replacements)` ([
 - Epic + story: [epics.md#Epic-18](_bmad-output/planning-artifacts/epics.md:2054), [Story 18.4](_bmad-output/planning-artifacts/epics.md:2080)
 - Depends on: [18-2 detection](_bmad-output/implementation-artifacts/18-2-source-change-detection-on-rerun.md), [18-3 impact map](_bmad-output/implementation-artifacts/18-3-downstream-staleness-mapping.md)
 - Agent review gates: [base.py:341-347](src/ai_qa/agents/base.py:341) (approve→DONE), [base.py:349-387](src/ai_qa/agents/base.py:349) (reject→re-run)
-- Mary group regeneration: [mary.py:979-1059](src/ai_qa/agents/mary.py:979), [mary.py:1074-1087](src/ai_qa/agents/mary.py:1074) (`_replace_source_group`)
+- Mary group regeneration: [mary.py:979-1059](src/ai_qa/agents/mary.py:979), [mary.py:1073-1104](src/ai_qa/agents/mary.py:1073) (`_replace_source_group`)
 - Action dispatch + lock: [bob.py:1698-1727](src/ai_qa/agents/bob.py:1698) (`clarify_answer` precedent), [api/websocket.py:315-388](src/ai_qa/api/websocket.py:315), [api/websocket.py:360](src/ai_qa/api/websocket.py:360)
 - FE form routing: [App.tsx:826-1080](frontend/src/App.tsx:826)
 - Interrupt recovery: [threads/service.py:264-318](src/ai_qa/threads/service.py:264)

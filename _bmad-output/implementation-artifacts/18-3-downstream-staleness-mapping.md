@@ -9,14 +9,16 @@ Status: ready-for-dev
 
 > Backend-led. Given a CHANGED source (from 18.2), walk the artifact lineage to enumerate every generated asset now potentially stale: the requirement artifact(s) from that page/issue → their test cases → their scripts → their execution runs. **The crux of this epic is that artifact→artifact lineage is NOT reliably persisted today** — `Mary`'s test-case → requirement link lives only in-memory + as markdown TEXT (the requirement NAME, not id); `Sarah`'s script → test-case link lives only in a `.metadata.json` sidecar; only `Jack`'s execution → script/test-case link is a real DB FK ([db/models.py:377-382](src/ai_qa/db/models.py:377)). This story makes lineage **explicit and queryable** by adding one self-referential column and populating it at save time, then builds the staleness mapper on top.
 
-## ⚠ DECISION GATE — lineage capture approach (resolve before/at dev start)
+## ✅ DECISION (CONFIRMED — Thuong, 2026-06-22): Approach A
+
+**Lineage capture = Approach A — add the persisted self-referential `derived_from_artifact_id` FK.** The ACs/tasks below are the authoritative spec; implement them as written. Approach B is retained only as historical rationale (do NOT implement it). This is settled — do not re-open at dev time.
 
 The forensic sweep confirmed there is **no artifact→artifact foreign key** in the schema today (verified [db/models.py:227-266](src/ai_qa/db/models.py:227); the only artifact-referencing FKs are `TestExecutionResult.source_script_artifact_id`/`source_test_case_artifact_id`). Two ways to map requirement→test-case→script:
 
 - **Approach A (RECOMMENDED) — add explicit lineage column.** Add ONE nullable self-referential FK `derived_from_artifact_id` (UUID → `artifacts.id`, `ondelete="SET NULL"`) to `Artifact`. Populate it FORWARD at save time: Mary sets it to the requirement artifact id (already in memory as `tc.source_requirement_id`, [test_case_extractor.py:292](src/ai_qa/pipelines/test_case_extractor.py:292) — it is currently DROPPED at save, [mary.py:1306](src/ai_qa/agents/mary.py:1306)); Sarah sets it to the test-case artifact id (already in memory as `GeneratedScript.source_test_case_id`, [sarah.py:50](src/ai_qa/agents/sarah.py:50)). Gives a clean one-column lineage walk, complementing Jack's existing FKs. Robust to the flat-storage change (16.10).
 - **Approach B — reconstruct, no schema change.** Walk lineage from existing data: Sarah→test-case via the sidecar `source_test_case_id`; Jack→script/test-case via FKs; BUT Mary→requirement only by **name-matching** the "Source Requirement" text in the test-case markdown against requirement titles. Brittle — breaks when titles collide or 16.10 flattens folders; no migration but unreliable.
 
-**Recommendation: A.** The data already exists in memory at save time and is merely discarded — persisting it is a one-column migration + threading two existing values through two save calls. The ACs/tasks below assume **A**; if Thuong picks B, drop Task 1's migration and replace Task 3's queries with name-match reconstruction (and accept the fragility).
+**CONFIRMED: A.** The data already exists in memory at save time and is merely discarded — persisting it is a one-column migration + threading two existing values through two save calls. Approach B (name-match reconstruction) is NOT chosen — it is brittle and breaks under 16.10's flat-storage rename. Build A.
 
 ## Story
 
@@ -30,7 +32,7 @@ so that I can see exactly which generated assets are now potentially stale.
 
 2. **Populate lineage forward — Mary.** Given Mary saves an approved test-case artifact, when she calls `save_test_case` ([mary.py:1306](src/ai_qa/agents/mary.py:1306) → [artifact_adapter.py:142](src/ai_qa/pipelines/artifact_adapter.py:142)), then `derived_from_artifact_id` is set to the originating requirement artifact id — the value already held in memory as `tc.source_requirement_id` ([test_case_extractor.py:292](src/ai_qa/pipelines/test_case_extractor.py:292)), which is presently discarded. Thread it through `save_test_case` → `service.save_artifact` ([service.py:79](src/ai_qa/artifacts/service.py:79)). When `source_requirement_id` is absent (draft/unknown), leave null — never fabricate.
 
-3. **Populate lineage forward — Sarah.** Given Sarah saves a script artifact, when she calls `save_script` ([sarah.py:1123](src/ai_qa/agents/sarah.py:1123) → [artifact_adapter.py:228](src/ai_qa/pipelines/artifact_adapter.py:228)), then `derived_from_artifact_id` is set to the source test-case artifact id (`GeneratedScript.source_test_case_id`, [sarah.py:50](src/ai_qa/agents/sarah.py:50)) — the same value already written to the `.metadata.json` sidecar ([sarah.py:198](src/ai_qa/agents/sarah.py:198)). The sidecar stays (Jack + back-compat read it); the column is the new queryable source of truth.
+3. **Populate lineage forward — Sarah.** Given Sarah saves a script artifact, when she calls `save_script` ([sarah.py:1123](src/ai_qa/agents/sarah.py:1123) → [artifact_adapter.py:228](src/ai_qa/pipelines/artifact_adapter.py:228)), then `derived_from_artifact_id` is set to the source test-case artifact id (`GeneratedScript.source_test_case_id`, [sarah.py:50](src/ai_qa/agents/sarah.py:50)) — the same value already written to the `.metadata.json` sidecar ([sarah.py:1420](src/ai_qa/agents/sarah.py:1420)). The sidecar stays (Jack + back-compat read it); the column is the new queryable source of truth.
 
 4. **Map a changed source → its requirement artifacts.** Given a changed Confluence page id / Jira issue key (from 18.2), when the mapper runs, then it finds the requirement artifact(s) derived from that source: `Artifact` rows with `kind="requirements"` AND (`parent_source_id == page_id` OR `name` startswith `{source_id}/` OR `source_url == source_url`) within the project. Confluence requirement artifacts are named `{page_id}/requirement.md` ([artifact_adapter.py:74](src/ai_qa/pipelines/artifact_adapter.py:74)) and carry `parent_source_id`/`source_url`/`source_type` — use those, do not parse markdown.
 
@@ -50,7 +52,7 @@ so that I can see exactly which generated assets are now potentially stale.
 - [ ] **Task 2 — Thread lineage through the save paths (AC: 2, 3)**
   - [ ] `save_artifact` ([service.py:79](src/ai_qa/artifacts/service.py:79)): add a `derived_from_artifact_id: UUID | None = None` kwarg, write it to the row. Add the same kwarg to `PipelineArtifactAdapter.save_test_case` ([artifact_adapter.py:142](src/ai_qa/pipelines/artifact_adapter.py:142)) and `save_script` ([artifact_adapter.py:228](src/ai_qa/pipelines/artifact_adapter.py:228)).
   - [ ] Mary: at the `save_test_case` call ([mary.py:1306](src/ai_qa/agents/mary.py:1306)), pass `derived_from_artifact_id = UUID(tc.source_requirement_id)` when present (it is a str holding an artifact UUID — guard the parse, leave null on failure). NB: `source_requirement_id` is set in [test_case_extractor.py:292](src/ai_qa/pipelines/test_case_extractor.py:292) and survives in memory through to save.
-  - [ ] Sarah: at the `save_script` call ([sarah.py:1123](src/ai_qa/agents/sarah.py:1123)), pass `derived_from_artifact_id = UUID(current_script.source_test_case_id)` when present (same guard). Keep writing the sidecar ([sarah.py:198](src/ai_qa/agents/sarah.py:198)) for Jack/back-compat.
+  - [ ] Sarah: at the `save_script` call ([sarah.py:1123](src/ai_qa/agents/sarah.py:1123)), pass `derived_from_artifact_id = UUID(current_script.source_test_case_id)` when present (same guard). Keep writing the sidecar ([sarah.py:1420](src/ai_qa/agents/sarah.py:1420)) for Jack/back-compat.
 
 - [ ] **Task 3 — `StalenessMapper` (AC: 4, 5, 6, 7)**
   - [ ] New `src/ai_qa/sources/staleness.py` (or beside the snapshot service): `map_impact(*, project_id, source_type, source_id, source_url) -> StalenessImpact`.
@@ -81,7 +83,7 @@ Requirement artifacts already carry first-class provenance: `kind="requirements"
 
 ### Current behavior to PRESERVE (regression guardrails)
 
-- **Sarah's sidecar stays.** Jack reads `source_test_case_id` from the `.metadata.json` ([sarah.py:198](src/ai_qa/agents/sarah.py:198)); the new column is ADDITIVE, not a replacement. Removing the sidecar would break Jack ([db/models.py:380](src/ai_qa/db/models.py:380) population path).
+- **Sarah's sidecar stays.** Jack reads `source_test_case_id` from the `.metadata.json` ([sarah.py:1420](src/ai_qa/agents/sarah.py:1420)) and uses it to populate `TestExecutionResult.source_test_case_artifact_id` ([jack.py:630-650](src/ai_qa/agents/jack.py:630), via `_resolve_test_case_id` reading the sidecar ~[jack.py:875-890](src/ai_qa/agents/jack.py:875)). The new column is ADDITIVE, not a replacement — removing the sidecar would break Jack's FK population.
 - **Mapper mutates nothing (AC7).** It is a pure read. Persisting a stale flag or regenerating belongs to 18.4/18.5.
 - **Async-DB rules.** Eager-load relationships, `.unique()` joined collections, never lazy-load in async ([[project-context]]). The artifact write path is sync `Session`; match the existing session style of whichever layer calls the mapper.
 - **Legacy honesty (AC6).** Null-lineage assets are `unmapped`, never falsely "stale" — a false stale flag erodes trust in the whole feature.
@@ -99,9 +101,9 @@ Requirement artifacts already carry first-class provenance: `kind="requirements"
 - `src/ai_qa/models.py` — **ADD** (`StalenessImpact` payload).
 - Tests — **ADD** for migration, save-paths, mapper.
 
-### Decided scope (defaults — Thuong, correct if needed)
+### Decided scope (CONFIRMED — Thuong, 2026-06-22)
 
-- **Approach A** (persist `derived_from_artifact_id`) — see the DECISION GATE above.
+- **Approach A** (persist `derived_from_artifact_id`) — CONFIRMED; see the decision section above.
 - **No persisted stale flag** in this story — the mapper returns the impact set on demand; persisting a stale marker is a deferred enhancement (18.4 can decide whether the cascade prompt needs it).
 - **Best-effort legacy reconstruction**, clearly flagged as lower-confidence; never auto-promote a reconstructed link to "stale".
 
@@ -118,7 +120,7 @@ Requirement artifacts already carry first-class provenance: `kind="requirements"
 ### References
 
 - Epic + story: [epics.md#Epic-18](_bmad-output/planning-artifacts/epics.md:2054), [Story 18.3](_bmad-output/planning-artifacts/epics.md:2074)
-- Lineage facts: [test_case_extractor.py:292](src/ai_qa/pipelines/test_case_extractor.py:292) (Mary link computed), [mary.py:1306](src/ai_qa/agents/mary.py:1306) (dropped at save), [sarah.py:50](src/ai_qa/agents/sarah.py:50) + [sarah.py:198](src/ai_qa/agents/sarah.py:198) (Sarah sidecar), [db/models.py:377-382](src/ai_qa/db/models.py:377) (Jack FKs)
+- Lineage facts: [test_case_extractor.py:292](src/ai_qa/pipelines/test_case_extractor.py:292) (Mary link computed), [mary.py:1306](src/ai_qa/agents/mary.py:1306) (dropped at save), [sarah.py:50](src/ai_qa/agents/sarah.py:50) + [sarah.py:1420](src/ai_qa/agents/sarah.py:1420) (Sarah sidecar), [db/models.py:377-382](src/ai_qa/db/models.py:377) (Jack FKs)
 - Artifact + provenance: [db/models.py:227-266](src/ai_qa/db/models.py:227), [artifact_adapter.py:55-111](src/ai_qa/pipelines/artifact_adapter.py:55) (`save_requirement`), [artifact_adapter.py:142](src/ai_qa/pipelines/artifact_adapter.py:142) (`save_test_case`), [artifact_adapter.py:228](src/ai_qa/pipelines/artifact_adapter.py:228) (`save_script`)
 - Save service: [service.py:79](src/ai_qa/artifacts/service.py:79)
 - Migration chain: 18.1 `source_snapshots` → THIS; head was `273b69541e94`

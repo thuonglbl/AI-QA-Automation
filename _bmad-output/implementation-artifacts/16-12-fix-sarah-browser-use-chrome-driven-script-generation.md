@@ -110,7 +110,7 @@ Sarah's twist: the collaborator (`ScriptGenerator`) is built fresh per generatio
 Per the design doc, **Claude and Claude-SSO both require a real `sk-ant-api…` key** — SSO login alone never yields one ([design-browseruse-driven-script-generation-2026-06-18.md:39-45](_bmad-output/planning-artifacts/design-browseruse-driven-script-generation-2026-06-18.md:39)). So:
 
 - `provider="claude"` / `"claude-sso"` with a stored Anthropic key → both models authenticate (AC1, AC2). `PROVIDER_SECRET_TYPE_MAP` maps `claude`, `claude-sso`, `claude_sso` to their secret types ([secrets/__init__.py:42-43](src/ai_qa/secrets/__init__.py:42)).
-- `provider="on-premises"` → free company gateway, OpenAI-compatible, self-signed SSL tolerated; this is the common path and should "just work" once `self.config` is fresh.
+- `provider="on-premises"` → free company gateway, OpenAI-compatible, self-signed SSL tolerated; this is the common CORP path and should "just work" once `self.config` is fresh.
 - `provider="claude-sso"` with **no** real key stored → exploration AND deterministic both genuinely cannot authenticate. AC3 governs this: degrade per-test-case (placeholder), never empty-folder ERROR, and surface a secret-safe UX-DR12 message telling the user to add a key.
 
 NOTE the env-var fallback in `get_llm_config` only handles `claude`/`anthropic`/`openai`/`gemini` — NOT `claude-sso`/`on-premises` ([base.py:177-182](src/ai_qa/agents/base.py:177)). That fallback is for local dev only; production resolves from the encrypted secret store, so do not rely on env for those providers.

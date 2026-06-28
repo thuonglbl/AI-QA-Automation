@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useId } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,12 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { ReviewContent } from "@/components/ReviewContent";
 import type { MaryReviewCase, ConfidenceLevel } from "@/types/testcase";
 
@@ -42,6 +48,7 @@ function ConfidenceBadge({
   warnings?: string[];
 }) {
   const [open, setOpen] = useState(false);
+  const panelId = useId();
 
   if (!level) return null;
 
@@ -65,8 +72,10 @@ function ConfidenceBadge({
         {causes.length > 0 && (
           <button
             onClick={() => setOpen((v) => !v)}
-            className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+            className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-[#3b82f6] rounded px-1"
             aria-label="Toggle confidence rationale"
+            aria-expanded={open}
+            aria-controls={panelId}
           >
             Why this score
             {open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
@@ -74,7 +83,7 @@ function ConfidenceBadge({
         )}
       </div>
       {open && causes.length > 0 && (
-        <ul className="mt-2 ml-2 space-y-1 text-xs text-slate-600">
+        <ul id={panelId} className="mt-2 ml-2 space-y-1 text-xs text-slate-600">
           {causes.map((c, i) => (
             <li key={i} className="flex gap-1">
               <span className="text-slate-400">•</span>
@@ -96,8 +105,8 @@ export function MaryReviewPanel({
 }: MaryReviewPanelProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [resolvedIndices, setResolvedIndices] = useState<Set<number>>(new Set());
-  const [showRejectInput, setShowRejectInput] = useState(false);
-  const [rejectFeedback, setRejectFeedback] = useState("");
+  const [showRejectInput, setShowRejectInput] = useState<Record<number, boolean>>({});
+  const [rejectFeedback, setRejectFeedback] = useState<Record<number, string>>({});
 
   const total = testCases.length;
   const tc = testCases[currentIndex]!;
@@ -109,11 +118,7 @@ export function MaryReviewPanel({
     }
   }, [testCases.length, currentIndex]);
 
-  // Reset feedback input when navigating
-  useEffect(() => {
-    setShowRejectInput(false);
-    setRejectFeedback("");
-  }, [currentIndex]);
+  // Feedback input state is preserved per-index; do not reset on navigation.
 
   // Sync resolved set from server-authoritative approval status. A reject
   // re-emits a fresh testCases array (remount), so rebuild resolved/nav state
@@ -141,19 +146,22 @@ export function MaryReviewPanel({
   }
 
   function handleRejectSubmit() {
-    if (!rejectFeedback.trim()) return;
-    onReject(currentIndex, rejectFeedback.trim());
+    const feedback = rejectFeedback[currentIndex] || "";
+    if (!feedback.trim()) return;
+    onReject(currentIndex, feedback.trim());
     // Clear the resolved status for this index (regeneration = new decision needed)
     const next = new Set(resolvedIndices);
     next.delete(currentIndex);
     setResolvedIndices(next);
-    setShowRejectInput(false);
-    setRejectFeedback("");
+    setShowRejectInput((prev) => ({ ...prev, [currentIndex]: false }));
+    setRejectFeedback((prev) => ({ ...prev, [currentIndex]: "" }));
   }
 
   if (!tc) {
     return (
-      <div className="p-4 text-center text-slate-500">No test case selected.</div>
+      <div className="p-4 text-center text-slate-500 text-sm bg-slate-50 border rounded-md">
+        No test cases to review. Please select a requirement from the sidebar to generate test cases, or ask Mary to try again.
+      </div>
     );
   }
 
@@ -232,7 +240,7 @@ export function MaryReviewPanel({
       </div>
 
       {/* Reject feedback input */}
-      {showRejectInput && (
+      {showRejectInput[currentIndex] && (
         <div className="px-4 py-3 border-t bg-slate-50">
           <div className="text-xs text-slate-600 mb-1 font-medium">
             Describe what needs to be changed:
@@ -242,25 +250,25 @@ export function MaryReviewPanel({
             rows={3}
             placeholder="Describe what needs to be changed…"
             maxLength={1000}
-            value={rejectFeedback}
-            onChange={(e) => setRejectFeedback(e.target.value)}
+            value={rejectFeedback[currentIndex] || ""}
+            onChange={(e) => setRejectFeedback((prev) => ({ ...prev, [currentIndex]: e.target.value }))}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (rejectFeedback.trim() && !disabled) handleRejectSubmit();
+                if ((rejectFeedback[currentIndex] || "").trim() && !disabled) handleRejectSubmit();
               }
             }}
             disabled={disabled}
           />
           <div className="flex items-center justify-between mt-1">
-            <span className="text-xs text-slate-400">{rejectFeedback.length}/1000</span>
+            <span className="text-xs text-slate-400">{(rejectFeedback[currentIndex] || "").length}/1000</span>
             <div className="flex gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  setShowRejectInput(false);
-                  setRejectFeedback("");
+                  setShowRejectInput((prev) => ({ ...prev, [currentIndex]: false }));
+                  setRejectFeedback((prev) => ({ ...prev, [currentIndex]: "" }));
                 }}
               >
                 Cancel
@@ -269,7 +277,7 @@ export function MaryReviewPanel({
                 size="sm"
                 className="bg-red-600 hover:bg-red-700 text-white"
                 onClick={handleRejectSubmit}
-                disabled={!rejectFeedback.trim() || disabled}
+                disabled={!(rejectFeedback[currentIndex] || "").trim() || disabled}
               >
                 Submit Feedback
               </Button>
@@ -280,24 +288,51 @@ export function MaryReviewPanel({
 
       {/* Footer Buttons */}
       <div className="flex items-center justify-between gap-3 px-4 py-3 bg-slate-50 border-t">
-        <Button
-          variant="outline"
-          onClick={() => setShowRejectInput((v) => !v)}
-          disabled={disabled}
-          className="text-red-600 border-red-300 hover:bg-red-50"
-        >
-          <MessageSquareX className="w-4 h-4 mr-2" />
-          Reject
-        </Button>
-        <Button
-          variant="default"
-          onClick={handleApprove}
-          disabled={disabled}
-          className="bg-blue-600 hover:bg-blue-700"
-        >
-          <Check className="w-4 h-4 mr-2" />
-          Approve
-        </Button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-block">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowRejectInput((prev) => ({ ...prev, [currentIndex]: !prev[currentIndex] }))}
+                  disabled={disabled}
+                  className="text-red-600 border-red-300 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <MessageSquareX className="w-4 h-4 mr-2" />
+                  Reject
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {disabled && (
+              <TooltipContent side="top">
+                <p>Review unavailable: please answer the active prompt first</p>
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
+
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-block">
+                <Button
+                  variant="default"
+                  onClick={handleApprove}
+                  disabled={disabled}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Check className="w-4 h-4 mr-2" />
+                  Approve
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {disabled && (
+              <TooltipContent side="top">
+                <p>Review unavailable: please answer the active prompt first</p>
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
       </div>
     </div>
   );

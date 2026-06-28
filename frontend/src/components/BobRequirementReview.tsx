@@ -1,6 +1,12 @@
 import { useState, useEffect } from "react";
 import { ExternalLink, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface BobRequirementReviewProps {
   data: {
@@ -65,14 +71,27 @@ export function BobRequirementReview({
         </div>
 
         <div className="px-5 py-3.5 bg-[#f8fafc] flex justify-center">
-          <Button
-            onClick={() => onApprove(markdown)}
-            disabled={disabled}
-            className="bg-[#3b82f6] hover:bg-[#2563eb] text-white flex items-center gap-2 min-w-[120px]"
-          >
-            <Check className="w-4 h-4" />
-            OK
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-block">
+                  <Button
+                    onClick={() => onApprove(markdown)}
+                    disabled={disabled}
+                    className="bg-[#3b82f6] hover:bg-[#2563eb] text-white flex items-center gap-2 min-w-[120px] disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Check className="w-4 h-4" />
+                    OK
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {disabled && (
+                <TooltipContent side="top">
+                  <p>Review unavailable: please answer the active prompt first</p>
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
     </div>

@@ -7,6 +7,9 @@ import type { TestCaseInput, ConfidenceLevel } from "@/types/testcase";
 interface SarahInputSelectionProps {
   testCases: TestCaseInput[];
   onConfirm: (selectedIds: string[]) => void;
+  /** Called when the user confirms with NOTHING selected — skip script generation and
+   *  hand off straight to Jack, which reuses existing approved scripts. */
+  onSkip?: () => void;
   disabled?: boolean;
 }
 
@@ -110,6 +113,7 @@ function TestCaseRow({
 export function SarahInputSelection({
   testCases,
   onConfirm,
+  onSkip,
   disabled = false,
 }: SarahInputSelectionProps) {
   const [selected, setSelected] = useState<Set<string>>(
@@ -175,7 +179,9 @@ export function SarahInputSelection({
       {/* Test case list */}
       <div className="flex flex-col gap-2 p-4 max-h-[60vh] overflow-y-auto">
         {testCases.length === 0 ? (
-          <p className="text-sm text-slate-500 text-center py-4">No test cases available.</p>
+          <p className="text-sm text-slate-500 text-center py-4 bg-slate-50 border rounded-md">
+            No test cases available. Please ask Mary to generate test cases first before running Sarah.
+          </p>
         ) : (
           testCases.map((entry) => (
             <TestCaseRow
@@ -195,11 +201,13 @@ export function SarahInputSelection({
         </span>
         <button
           type="button"
-          onClick={() => onConfirm(Array.from(selected))}
-          disabled={disabled || selectedCount === 0}
+          onClick={
+            selectedCount === 0 ? () => onSkip?.() : () => onConfirm(Array.from(selected))
+          }
+          disabled={disabled}
           className="bg-purple-600 text-white px-6 py-2 rounded-md text-sm font-medium hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          Confirm &amp; Generate →
+          {selectedCount === 0 ? "Skip →" : "Confirm & Generate →"}
         </button>
       </div>
     </div>

@@ -11,6 +11,7 @@ Models:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -22,6 +23,48 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+# Hard cap on the number of items a StageResult ``errors``/``warnings`` list may hold.
+# Wired into both Field(max_length=...) below AND bound_stage_messages() so the field
+# constraint and the helper that keeps callers under it can never drift.
+STAGE_RESULT_MESSAGE_LIMIT = 100
+
+
+def bound_stage_messages(
+    messages: Sequence[str],
+    *,
+    limit: int = STAGE_RESULT_MESSAGE_LIMIT,
+    kind: str = "warnings",
+) -> list[str]:
+    """Dedupe (order-preserving) and cap a StageResult ``warnings``/``errors`` list.
+
+    The aggregated lists Sarah builds across a script batch are dominated by identical
+    ``# REVIEW:`` markers (e.g. ``REVIEW: SSO/session setup required`` repeated once per
+    script). Collapsing duplicates and capping with a single rollup line keeps the list
+    at or below ``limit`` so ``StageResult`` construction never raises ``too_long``.
+    Per-item detail is preserved on each ``GeneratedScript.warnings``, so nothing is lost
+    by trimming the aggregate.
+
+    Args:
+        messages: Raw aggregated messages (may contain duplicates and exceed the cap).
+        limit: Maximum number of items to return (defaults to ``STAGE_RESULT_MESSAGE_LIMIT``).
+        kind: Noun used in the rollup line ("warnings" or "errors").
+
+    Returns:
+        A de-duplicated list of at most ``limit`` items; when items are dropped the final
+        entry is ``"... and N more {kind} suppressed"``.
+    """
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for message in messages:
+        if message not in seen:
+            seen.add(message)
+            deduped.append(message)
+    if len(deduped) <= limit:
+        return deduped
+    kept = deduped[: limit - 1]
+    kept.append(f"... and {len(deduped) - len(kept)} more {kind} suppressed")
+    return kept
 
 
 class StageResult(BaseModel):
@@ -46,12 +89,12 @@ class StageResult(BaseModel):
     )
     errors: list[str] = Field(
         default_factory=list,
-        max_length=100,
+        max_length=STAGE_RESULT_MESSAGE_LIMIT,
         description="Fatal errors that blocked processing (max 100 items)",
     )
     warnings: list[str] = Field(
         default_factory=list,
-        max_length=100,
+        max_length=STAGE_RESULT_MESSAGE_LIMIT,
         description="Non-fatal warnings (max 100 items)",
     )
     confidence: float | None = Field(

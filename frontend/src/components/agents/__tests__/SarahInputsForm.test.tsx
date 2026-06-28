@@ -1,117 +1,64 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+
 import { SarahInputsForm, type SarahInputsRequest } from "../SarahInputsForm";
 
-const bothNeeded: SarahInputsRequest = {
+const ENVS = [
+  { name: "Test 1", url: "https://test1.app" },
+  { name: "Production", url: "https://app.example.com" },
+];
+
+const withEnvs: SarahInputsRequest = {
   needsUrl: true,
-  needsChrome: true,
-  chromeOnFile: false,
-  chromeExample: "C:\\chrome.exe",
-  cdpExample: "http://localhost:9222",
+  environments: ENVS,
+};
+
+const freeText: SarahInputsRequest = {
+  needsUrl: true,
   environments: [],
 };
 
 describe("SarahInputsForm", () => {
-  it("submits the entered URL and Chrome path (launch mode)", () => {
+  it("submits a free-text URL when the project has no environments", () => {
     const onSubmit = vi.fn();
-    render(<SarahInputsForm request={bothNeeded} onSubmit={onSubmit} />);
+    render(
+      <SarahInputsForm
+        request={freeText}
+        appRoles={[]}
+        sessions={[]}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    // No CDP / chrome-path fields, no Admin-Dashboard helper line.
+    expect(screen.queryByTestId("sarah-cdp-url")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("sarah-chrome-path")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Environments are configured per project in the Admin Dashboard/i),
+    ).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByTestId("sarah-target-url"), {
       target: { value: "https://app.test/page" },
     });
-    fireEvent.change(screen.getByTestId("sarah-chrome-path"), {
-      target: { value: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" },
-    });
     fireEvent.click(screen.getByTestId("sarah-inputs-submit"));
-
-    expect(onSubmit).toHaveBeenCalledWith(
-      "https://app.test/page",
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-      "",
-    );
+    // Free-text path: no configured environment, so the name is empty.
+    expect(onSubmit).toHaveBeenCalledWith({
+      environment: "",
+      targetUrl: "https://app.test/page",
+    });
   });
 
-  it("accepts a CDP URL as the browser source for SSO reuse (no Chrome path)", () => {
-    const onSubmit = vi.fn();
-    render(<SarahInputsForm request={bothNeeded} onSubmit={onSubmit} />);
-
-    fireEvent.change(screen.getByTestId("sarah-target-url"), {
-      target: { value: "https://app.test/secure" },
-    });
-    fireEvent.change(screen.getByTestId("sarah-cdp-url"), {
-      target: { value: "http://localhost:9222" },
-    });
-    // Chrome path left empty — the CDP URL satisfies the browser-source requirement.
-    fireEvent.click(screen.getByTestId("sarah-inputs-submit"));
-
-    expect(onSubmit).toHaveBeenCalledWith("https://app.test/secure", "", "http://localhost:9222");
-  });
-
-  it("disables submit until a valid http URL and a browser source are present", () => {
-    const onSubmit = vi.fn();
-    render(<SarahInputsForm request={bothNeeded} onSubmit={onSubmit} />);
-
-    const submit = screen.getByTestId("sarah-inputs-submit");
-    fireEvent.click(submit);
-    expect(onSubmit).not.toHaveBeenCalled();
-
-    // Non-http URL is rejected even with a Chrome path.
-    fireEvent.change(screen.getByTestId("sarah-target-url"), {
-      target: { value: "app.test" },
-    });
-    fireEvent.change(screen.getByTestId("sarah-chrome-path"), {
-      target: { value: "C:\\chrome.exe" },
-    });
-    fireEvent.click(submit);
-    expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  it("hides the Chrome field and shows the on-file note when chrome is saved", () => {
+  it("offers an environment dropdown (not a URL field) and submits the chosen env's name + URL", () => {
     const onSubmit = vi.fn();
     render(
       <SarahInputsForm
-        request={{
-          needsUrl: true,
-          needsChrome: false,
-          chromeOnFile: true,
-          chromeExample: "",
-          cdpExample: "http://localhost:9222",
-          environments: [],
-        }}
+        request={withEnvs}
+        appRoles={[]}
+        sessions={[]}
         onSubmit={onSubmit}
       />,
     );
 
-    expect(screen.queryByTestId("sarah-chrome-path")).not.toBeInTheDocument();
-    expect(screen.getByTestId("sarah-chrome-on-file")).toBeInTheDocument();
-
-    fireEvent.change(screen.getByTestId("sarah-target-url"), {
-      target: { value: "https://app.test" },
-    });
-    fireEvent.click(screen.getByTestId("sarah-inputs-submit"));
-    expect(onSubmit).toHaveBeenCalledWith("https://app.test", "", "");
-  });
-
-  it("offers an environment dropdown (not a URL field) and submits the chosen env's URL", () => {
-    const onSubmit = vi.fn();
-    render(
-      <SarahInputsForm
-        request={{
-          needsUrl: true,
-          needsChrome: false,
-          chromeOnFile: true,
-          chromeExample: "",
-          cdpExample: "http://localhost:9222",
-          environments: [
-            { name: "Test 1", url: "https://test1.app" },
-            { name: "Production", url: "https://app.example.com" },
-          ],
-        }}
-        onSubmit={onSubmit}
-      />,
-    );
-
-    // The free-text URL field is replaced by the environment selector.
     expect(screen.queryByTestId("sarah-target-url")).not.toBeInTheDocument();
     const select = screen.getByTestId("sarah-environment");
 
@@ -119,8 +66,37 @@ describe("SarahInputsForm", () => {
     fireEvent.click(screen.getByTestId("sarah-inputs-submit"));
     expect(onSubmit).not.toHaveBeenCalled();
 
-    fireEvent.change(select, { target: { value: "https://app.example.com" } });
+    fireEvent.change(select, { target: { value: "Production" } });
     fireEvent.click(screen.getByTestId("sarah-inputs-submit"));
-    expect(onSubmit).toHaveBeenCalledWith("https://app.example.com", "", "");
+    // Both the env NAME and its URL come from the SAME selected env object.
+    expect(onSubmit).toHaveBeenCalledWith({
+      environment: "Production",
+      targetUrl: "https://app.example.com",
+    });
+  });
+
+  it("shows per-role capture status for the selected environment", () => {
+    render(
+      <SarahInputsForm
+        request={withEnvs}
+        appRoles={["Admin", "User"]}
+        sessions={[{ environment: "Production", role: "Admin" }]}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    // No status shown until an environment is selected.
+    expect(screen.queryByTestId("sarah-session-status")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId("sarah-environment"), {
+      target: { value: "Production" },
+    });
+
+    const status = screen.getByTestId("sarah-session-status");
+    // Admin has a captured session for Production → "✓ Captured".
+    expect(status).toHaveTextContent("Admin");
+    expect(status).toHaveTextContent("✓ Captured");
+    // User has none → "Not logged in".
+    expect(screen.getByText("Not logged in")).toBeInTheDocument();
   });
 });

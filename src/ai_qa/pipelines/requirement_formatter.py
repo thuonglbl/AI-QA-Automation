@@ -15,12 +15,6 @@ from ai_qa.pipelines.models import ConfluencePage
 
 logger = logging.getLogger(__name__)
 
-# Hard wall-clock ceiling for one requirement-conversion LLM call. The httpx read
-# timeout (LLMConfig.timeout) is per-chunk and can fail to fire if the provider
-# trickles bytes, so this asyncio.wait_for total bound guarantees a hung/stalled
-# call surfaces as a failed conversion (caught in Bob's convert loop) instead of
-# stalling the whole extraction step indefinitely.
-_CONVERT_LLM_TIMEOUT = 600.0
 
 # Resolves an image URL to (bytes, mime), or None if unavailable. Lets the caller
 # inject a fetch strategy (e.g. via the MCP attachment tools, which reach private
@@ -57,8 +51,15 @@ def _label_from_image_url(url: str) -> str:
 class RequirementFormatter:
     """Converts raw Confluence HTML into BMAD story-style requirement.md."""
 
-    def __init__(self, llm_client: LLMClient) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        timeout: float = 600.0,
+        text_llm_client: LLMClient | None = None,
+    ) -> None:
         self._llm = llm_client
+        self._text_llm = text_llm_client or llm_client
+        self._timeout = timeout
 
     async def convert_page(self, page: ConfluencePage, feedback: str | None = None) -> str:
         """Full conversion pipeline for one page."""
@@ -289,6 +290,7 @@ requirements that are not present in the Content. If the Content is empty or has
 substantive requirements, output ONLY the title, the Source/Extracted lines, and the single
 line "_No extractable requirements found on this page._" — do NOT emit Story, Acceptance
 Criteria, or Technical Requirements sections.
+IMPORTANT: The output MUST be entirely in English, regardless of the language of the source content.
 
 Format the output EXACTLY like this (do not output any markdown code blocks, just the text):
 
@@ -320,7 +322,7 @@ So that [benefit/outcome from content].
         # Bob's convert loop catches as a failed conversion and moves on to the next
         # page instead of freezing the whole extraction step.
         resp = await asyncio.wait_for(
-            self._llm._chat_model.ainvoke([HumanMessage(content=prompt)]),
-            timeout=_CONVERT_LLM_TIMEOUT,
+            self._text_llm._chat_model.ainvoke([HumanMessage(content=prompt)]),
+            timeout=self._timeout,
         )
         return str(resp.content)

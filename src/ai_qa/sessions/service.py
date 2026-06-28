@@ -153,6 +153,8 @@ def resolve_storage_state(
     ).scalar_one_or_none()
     if row is None:
         return None
+    if row.expires_at is not None and row.expires_at.replace(tzinfo=UTC) < datetime.now(UTC):
+        return None
     try:
         parsed = json.loads(row.encrypted_storage_state)
     except json.JSONDecodeError, ValueError:

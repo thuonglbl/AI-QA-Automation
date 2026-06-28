@@ -46,6 +46,10 @@ services:
       SEAWEEDFS_ACCESS_KEY: ${SEAWEEDFS_ACCESS_KEY}
       SEAWEEDFS_SECRET_KEY: ${SEAWEEDFS_SECRET_KEY}
       
+      # App metadata — surfaced as the OpenAPI version at /docs. Keep in sync with
+      # the deployed image tag so the API self-reports the version it is running.
+      DOCKER_IMAGE_VERSION: ${DOCKER_IMAGE_VERSION:-0.1.0}
+
       # Server & Session
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 8000
@@ -73,6 +77,21 @@ services:
       CLAUDE_SSO_ENTERPRISE_API_KEY: ${CLAUDE_SSO_ENTERPRISE_API_KEY}
       CLAUDE_SSO_ALLOWED_EMAIL_DOMAIN: ${CLAUDE_SSO_ALLOWED_EMAIL_DOMAIN}
 
+      # Azure Entra ID SSO (user login — Epic 23). Leave the tenant/client/secret
+      # triple EMPTY to use the built-in MOCK IdP; fill them for the real round-trip.
+      # On air-gapped UAT, set HTTP(S)_PROXY/NO_PROXY OR paste the tenant JWKS into
+      # AZURE_SSO_JWKS for zero-egress ID-token validation.
+      AZURE_SSO_ENABLED: ${AZURE_SSO_ENABLED}
+      AZURE_SSO_AUTO_PROVISION: ${AZURE_SSO_AUTO_PROVISION}
+      AZURE_SSO_TENANT_ID: ${AZURE_SSO_TENANT_ID}
+      AZURE_SSO_CLIENT_ID: ${AZURE_SSO_CLIENT_ID}
+      AZURE_SSO_CLIENT_SECRET: ${AZURE_SSO_CLIENT_SECRET}
+      AZURE_SSO_REDIRECT_URI: ${AZURE_SSO_REDIRECT_URI}
+      AZURE_SSO_SCOPES: ${AZURE_SSO_SCOPES}
+      AZURE_SSO_AUTHORITY: ${AZURE_SSO_AUTHORITY}
+      AZURE_SSO_ALLOWED_EMAIL_DOMAIN: ${AZURE_SSO_ALLOWED_EMAIL_DOMAIN}
+      AZURE_SSO_JWKS: ${AZURE_SSO_JWKS}
+
       # MCP & Browser
       MCP_SERVER_URL: ${MCP_SERVER_URL}
       MCP_TOOL_PREFIX: ${MCP_TOOL_PREFIX}
@@ -80,6 +99,11 @@ services:
       MCP_MAX_RETRIES: ${MCP_MAX_RETRIES}
       MCP_RETRY_BACKOFF: ${MCP_RETRY_BACKOFF}
       BROWSER_TIMEOUT: ${BROWSER_TIMEOUT}
+
+      # Execution capture (Jack run artifacts in the Reports panel). A Playwright
+      # trace.zip is always captured; set true to ALSO record a .webm per test
+      # (heavier on disk, playable inline — useful for headless UAT runs).
+      EXECUTION_CAPTURE_VIDEOS: ${EXECUTION_CAPTURE_VIDEOS}
 
       # E2E in-app runner (admin "Run E2E Tests"). On a server keep
       # E2E_SERVER_MODE=1 → headless + sandbox disabled + TLS errors ignored.
@@ -95,8 +119,7 @@ services:
 
       # For E2E and models sync
       TEST_BROWSER_USE_KEY: ${TEST_BROWSER_USE_KEY}
-      TEST_CLAUDE_SSO_EMAIL: ${TEST_CLAUDE_SSO_EMAIL}
-      TEST_CLAUDE_SSO_PASSWORD: ${TEST_CLAUDE_SSO_PASSWORD}
+      TEST_CLAUDE_SSO_KEY: ${TEST_CLAUDE_SSO_KEY}
       TEST_CLAUDE_KEY: ${TEST_CLAUDE_KEY}
       TEST_GEMINI_KEY: ${TEST_GEMINI_KEY}
       TEST_OPENAI_KEY: ${TEST_OPENAI_KEY}
@@ -109,7 +132,7 @@ services:
     # map it to the Docker host gateway (routes back through the reverse proxy /
     # the published frontend port). Uncomment and set your hostname:
     # extra_hosts:
-    #   - "[DOMAIN]:host-gateway"
+    #   - "ai-qa.ai-uat.corpdev.local:host-gateway"
     volumes:
       - workspace:/app/workspace
     depends_on:

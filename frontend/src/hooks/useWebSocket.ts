@@ -14,7 +14,7 @@ export interface WebSocketState {
 
 export interface WebSocketActions {
   /** Send a message to the server */
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   /** Manually reconnect */
   reconnect: () => void;
   /** Consume a specific number of messages from the queue */
@@ -241,7 +241,7 @@ export function useWebSocket(params: {
   }, [getWebSocketCtor, projectId, threadId]);
 
   const sendMessage = useCallback(
-    (message: unknown) => {
+    (message: unknown): boolean => {
       const ws = wsRef.current;
       const WebSocketCtor = getWebSocketCtor();
       if (
@@ -262,8 +262,10 @@ export function useWebSocket(params: {
           }
         }
         ws.send(JSON.stringify(payload));
+        return true;
       } else {
         console.warn("WebSocket not connected");
+        return false;
       }
     },
     [getWebSocketCtor, projectId, threadId],

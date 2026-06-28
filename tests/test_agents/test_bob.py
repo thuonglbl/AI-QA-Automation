@@ -198,11 +198,11 @@ async def test_bob_handle_select_id_jira_reads_and_saves(bob_agent: BobAgent) ->
         patch.object(bob_agent, "send_message"),
     ):
         mock_adapter = mock_adapter_class.return_value
-        await bob_agent.handle_approve({"action": "select_id", "id": "TOOL-1635"})
+        await bob_agent.handle_approve({"action": "select_id", "id": "CORP_PT_TOOL-1635"})
 
     mock_read.assert_awaited_once()
     _, payload = mock_adapter.save_metadata.call_args[0]
-    assert payload["selected_id"] == "TOOL-1635"
+    assert payload["selected_id"] == "CORP_PT_TOOL-1635"
     assert payload["source_type"] == "jira"
     mock_transition.assert_called_with(AgentState.DONE)
 
@@ -224,6 +224,32 @@ async def test_bob_handle_select_id_unknown_id_stays(bob_agent: BobAgent) -> Non
     mock_adapter.save_metadata.assert_not_called()
     assert all(AgentState.DONE not in c.args for c in mock_transition.call_args_list)
     assert any(c.kwargs.get("message_type") == "error" for c in mock_send.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_bob_handle_select_id_blank_skips_to_sarah(bob_agent: BobAgent) -> None:
+    """A blank id skips test-case generation: Bob goes DONE with skip_to_sarah and
+    persists no selection (Mary is bypassed; Sarah reuses existing test cases)."""
+    bob_agent.phase = "select_id"
+    bob_agent.pages = [{"page_id": "12345", "requirement_md": "# R", "quality_issues": []}]
+
+    with (
+        patch("ai_qa.agents.bob.PipelineArtifactAdapter") as mock_adapter_class,
+        patch.object(bob_agent, "transition_to") as mock_transition,
+        patch.object(bob_agent, "send_message") as mock_send,
+    ):
+        await bob_agent.handle_approve({"action": "select_id", "id": ""})
+
+    # No adapter work, no selection persisted — Mary never runs.
+    mock_adapter_class.assert_not_called()
+    # Bob completed and handed off.
+    mock_transition.assert_called_with(AgentState.DONE)
+    assert bob_agent.phase == "done"
+    # The handoff message carries skip_to_sarah so the frontend routes to Sarah.
+    assert any(
+        (c.kwargs.get("metadata") or {}).get("skip_to_sarah") for c in mock_send.call_args_list
+    )
+    assert all(c.kwargs.get("message_type") != "error" for c in mock_send.call_args_list)
 
 
 @pytest.mark.asyncio
@@ -820,10 +846,9 @@ async def test_bob_gate_blocks_when_mcp_not_configured(bob_agent: BobAgent) -> N
 # --- AC2: _validate_confluence_url unit tests ---
 
 
-def test_validate_confluence_url_empty_returns_required_message(bob_agent: BobAgent) -> None:
-    assert bob_agent._validate_confluence_url("", None) is not None
-    assert bob_agent._validate_confluence_url("   ", None) is not None
-    assert "required" in (bob_agent._validate_confluence_url("", None) or "")
+def test_validate_confluence_url_empty_returns_none(bob_agent: BobAgent) -> None:
+    assert bob_agent._validate_confluence_url("", None) is None
+    assert bob_agent._validate_confluence_url("   ", None) is None
 
 
 def test_validate_confluence_url_invalid_format_returns_hint(bob_agent: BobAgent) -> None:
@@ -863,8 +888,8 @@ async def test_bob_gate_invalid_url_blocks_before_mcp(bob_agent: BobAgent) -> No
     ):
         await bob_agent.handle_start({"confluence_url": "not-a-url"})
         assert mock_mcp.call_count == 0
-        mock_send.assert_called_once()
-        _, kwargs = mock_send.call_args
+        assert mock_send.call_count == 2
+        _, kwargs = mock_send.call_args_list[-1]
         assert kwargs.get("message_type") == "error"
 
 
@@ -1079,6 +1104,340 @@ async def test_bob_extract_descendants_wires_content_parser(bob_agent: BobAgent)
     mock_formatter.convert_markdown.assert_called_once()
     assert mock_formatter.convert_markdown.call_args.args == (mock_page, clean_md)
     mock_formatter.convert_page.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bob_extract_descendants_reuses_unchanged_pages(bob_agent: BobAgent) -> None:
+    """Change-detection reuse: saved pages whose Confluence version is unchanged are
+    reused — convert_markdown is NOT called and saved content is carried forward. The
+    child's version comes from the listing (no per-child fetch); only the parent is
+    fetched once to resolve its real title + version."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from ai_qa.pipelines.models import ConfluencePage, PageSummary
+
+    bob_agent._page_id = "parent-1"
+    bob_agent._space_key = "TEST"
+
+    assert bob_agent.project_context is not None
+    assert bob_agent.project_context.artifact_service is not None
+    bob_agent.project_context.artifact_service.db.get.side_effect = None
+    mock_project = MagicMock()
+    mock_project.confluence_base_url = "https://confluence.company.com"
+    bob_agent.project_context.artifact_service.db.get.return_value = mock_project
+
+    parent_page = ConfluencePage(
+        page_id="parent-1",
+        title="Parent Page",
+        content="<p>P</p>",
+        space_key="TEST",
+        url="https://confluence.company.com/parent-1",
+        retrieved_at=datetime.now(UTC),
+        labels=[],
+        version=3,
+    )
+
+    mock_formatter = AsyncMock()
+    mock_parser = AsyncMock()
+    mock_adapter = MagicMock()
+    # Parent (v3) and child (v7) are both already saved at their current versions.
+    mock_adapter.load_requirement_markdown.return_value = [
+        SimpleNamespace(name="parent-1.md", content="# Parent saved"),
+        SimpleNamespace(name="child-1.md", content="# Child saved"),
+    ]
+    mock_adapter.load_all_metadata.return_value = {
+        "parent-1/requirement.metadata.json": {"source_version": 3},
+        "child-1/requirement.metadata.json": {"source_version": 7},
+    }
+
+    with (
+        patch("ai_qa.agents.bob.MCPClient", return_value=AsyncMock()),
+        patch("ai_qa.agents.bob.AppSettings"),
+        patch("ai_qa.agents.bob.LLMClient"),
+        patch("ai_qa.agents.bob.RequirementFormatter", return_value=mock_formatter),
+        patch("ai_qa.agents.bob.ContentParser", return_value=mock_parser),
+        patch("ai_qa.agents.bob.PipelineArtifactAdapter", return_value=mock_adapter),
+        patch("ai_qa.agents.bob.ConfluenceReader") as mock_reader_class,
+        patch("ai_qa.agents.bob.JiraReader"),
+        patch("ai_qa.agents.bob.get_user_secret", return_value="test-mcp-pat"),
+        patch.object(bob_agent, "get_llm_config", return_value=MagicMock()),
+    ):
+        mock_reader = AsyncMock()
+        mock_reader.get_children_by_id.return_value = StageResult(
+            success=True,
+            data=[
+                PageSummary(
+                    page_id="child-1",
+                    title="Child",
+                    url="https://confluence.company.com/child-1",
+                    version=7,
+                )
+            ],
+            errors=[],
+            warnings=[],
+            confidence=1.0,
+        )
+        mock_reader.read_page_by_id.return_value = StageResult(
+            success=True, data=parent_page, errors=[], warnings=[], confidence=1.0
+        )
+        mock_reader_class.return_value = mock_reader
+
+        result = await bob_agent._extract_descendants("https://confluence.company.com/parent-1")
+
+    assert result.success
+    pages = {p["page_id"]: p for p in bob_agent.pages}
+    assert pages["parent-1"]["requirement_md"] == "# Parent saved"
+    assert pages["child-1"]["requirement_md"] == "# Child saved"
+    # No LLM conversion for either unchanged page.
+    mock_formatter.convert_markdown.assert_not_called()
+    # Child reused via the listing version (no fetch); parent fetched exactly once.
+    mock_reader.read_page_by_id.assert_called_once_with("parent-1")
+
+
+@pytest.mark.asyncio
+async def test_bob_extract_descendants_reuse_prefers_approved_over_draft(
+    bob_agent: BobAgent,
+) -> None:
+    """When both a draft ('{pid}.md') and an approved ('{pid}/requirement.md') copy
+    exist, the approved (post-clarify) content is reused — even if the draft is listed
+    first — never the stale draft."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from ai_qa.pipelines.models import ConfluencePage
+
+    bob_agent._page_id = "page-1"
+    bob_agent._space_key = "TEST"
+
+    assert bob_agent.project_context is not None
+    assert bob_agent.project_context.artifact_service is not None
+    bob_agent.project_context.artifact_service.db.get.side_effect = None
+    mock_project = MagicMock()
+    mock_project.confluence_base_url = "https://confluence.company.com"
+    bob_agent.project_context.artifact_service.db.get.return_value = mock_project
+
+    mock_page = ConfluencePage(
+        page_id="page-1",
+        title="My Page",
+        content="<p>Hello</p>",
+        space_key="TEST",
+        url="https://confluence.company.com/page-1",
+        retrieved_at=datetime.now(UTC),
+        labels=[],
+        version=7,
+    )
+
+    mock_formatter = AsyncMock()
+    mock_parser = AsyncMock()
+    mock_adapter = MagicMock()
+    # Draft listed FIRST (the worst case for precedence); approved must still win.
+    # Both copies are at the current version (7) → unchanged → reused.
+    mock_adapter.load_requirement_markdown.return_value = [
+        SimpleNamespace(name="page-1.md", content="# DRAFT stale"),
+        SimpleNamespace(name="page-1/requirement.md", content="# APPROVED final"),
+    ]
+    mock_adapter.load_all_metadata.return_value = {
+        "page-1/requirement.metadata.json": {"source_version": 7}
+    }
+
+    with (
+        patch("ai_qa.agents.bob.MCPClient", return_value=AsyncMock()),
+        patch("ai_qa.agents.bob.AppSettings"),
+        patch("ai_qa.agents.bob.LLMClient"),
+        patch("ai_qa.agents.bob.RequirementFormatter", return_value=mock_formatter),
+        patch("ai_qa.agents.bob.ContentParser", return_value=mock_parser),
+        patch("ai_qa.agents.bob.PipelineArtifactAdapter", return_value=mock_adapter),
+        patch("ai_qa.agents.bob.ConfluenceReader") as mock_reader_class,
+        patch("ai_qa.agents.bob.JiraReader"),
+        patch("ai_qa.agents.bob.get_user_secret", return_value="test-mcp-pat"),
+        patch.object(bob_agent, "get_llm_config", return_value=MagicMock()),
+    ):
+        mock_reader = AsyncMock()
+        mock_reader.get_children_by_id.return_value = StageResult(
+            success=True, data=[], errors=[], warnings=[], confidence=1.0
+        )
+        mock_reader.read_page_by_id.return_value = StageResult(
+            success=True, data=mock_page, errors=[], warnings=[], confidence=1.0
+        )
+        mock_reader_class.return_value = mock_reader
+
+        result = await bob_agent._extract_descendants("My Page")
+
+    assert result.success
+    assert len(bob_agent.pages) == 1
+    assert bob_agent.pages[0]["requirement_md"] == "# APPROVED final"
+    mock_formatter.convert_markdown.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bob_extract_descendants_reextracts_on_version_change(bob_agent: BobAgent) -> None:
+    """When the Confluence version changed since the saved copy, the page is re-extracted
+    (convert_markdown IS called), the stale requirement is overridden, and the new version
+    is persisted to the per-page sidecar."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from ai_qa.pipelines.models import ConfluencePage, ParsedContent
+
+    bob_agent._page_id = "page-1"
+    bob_agent._space_key = "TEST"
+
+    assert bob_agent.project_context is not None
+    assert bob_agent.project_context.artifact_service is not None
+    bob_agent.project_context.artifact_service.db.get.side_effect = None
+    mock_project = MagicMock()
+    mock_project.confluence_base_url = "https://confluence.company.com"
+    bob_agent.project_context.artifact_service.db.get.return_value = mock_project
+
+    # Saved at v3; Confluence now reports v5 → changed → must re-extract.
+    page_v5 = ConfluencePage(
+        page_id="page-1",
+        title="My Page",
+        content="<p>New content</p>",
+        space_key="TEST",
+        url="https://confluence.company.com/page-1",
+        retrieved_at=datetime.now(UTC),
+        labels=[],
+        version=5,
+    )
+    parse_result = StageResult(
+        success=True,
+        data=ParsedContent(
+            page_id="page-1",
+            page_title="My Page",
+            source_url="https://confluence.company.com/page-1",
+            markdown="# Clean new content with enough length",
+            mermaid_diagrams=[],
+            image_paths=[],
+            test_cases_detected=[],
+            parsed_at=datetime.now(UTC),
+        ),
+        errors=[],
+        warnings=[],
+        confidence=0.9,
+    )
+
+    mock_formatter = AsyncMock()
+    mock_formatter.convert_markdown.return_value = "# Re-extracted"
+    mock_parser = AsyncMock()
+    mock_parser.parse.return_value = parse_result
+    mock_adapter = MagicMock()
+    mock_adapter.load_requirement_markdown.return_value = [
+        SimpleNamespace(name="page-1.md", content="# STALE saved")
+    ]
+    mock_adapter.load_all_metadata.return_value = {
+        "page-1/requirement.metadata.json": {"source_version": 3}
+    }
+
+    with (
+        patch("ai_qa.agents.bob.MCPClient", return_value=AsyncMock()),
+        patch("ai_qa.agents.bob.AppSettings"),
+        patch("ai_qa.agents.bob.LLMClient"),
+        patch("ai_qa.agents.bob.RequirementFormatter", return_value=mock_formatter),
+        patch("ai_qa.agents.bob.ContentParser", return_value=mock_parser),
+        patch("ai_qa.agents.bob.PipelineArtifactAdapter", return_value=mock_adapter),
+        patch("ai_qa.agents.bob.ConfluenceReader") as mock_reader_class,
+        patch("ai_qa.agents.bob.JiraReader"),
+        patch("ai_qa.agents.bob.get_user_secret", return_value="test-mcp-pat"),
+        patch.object(bob_agent, "get_llm_config", return_value=MagicMock()),
+    ):
+        mock_reader = AsyncMock()
+        mock_reader.get_children_by_id.return_value = StageResult(
+            success=True, data=[], errors=[], warnings=[], confidence=1.0
+        )
+        mock_reader.read_page_by_id.return_value = StageResult(
+            success=True, data=page_v5, errors=[], warnings=[], confidence=1.0
+        )
+        mock_reader_class.return_value = mock_reader
+
+        result = await bob_agent._extract_descendants("https://confluence.company.com/page-1")
+
+    assert result.success
+    assert len(bob_agent.pages) == 1
+    page = bob_agent.pages[0]
+    # Overridden with the freshly converted content (NOT the stale saved copy).
+    assert page["requirement_md"] == "# Re-extracted"
+    assert page["source_version"] == 5
+    mock_formatter.convert_markdown.assert_called_once()
+    # The new version was persisted to the per-page sidecar at convert time.
+    persisted = [c.args[1].get("source_version") for c in mock_adapter.save_metadata.call_args_list]
+    assert 5 in persisted
+
+
+@pytest.mark.asyncio
+async def test_bob_extract_descendants_parent_node_uses_real_title(bob_agent: BobAgent) -> None:
+    """Regression: the prepended parent node must show its real Confluence title, not the
+    URL the user confirmed — including on the reuse path (where the bug lived)."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from ai_qa.pipelines.models import ConfluencePage
+
+    bob_agent._page_id = "777945456"
+    bob_agent._space_key = "CORPHRSOL"
+
+    assert bob_agent.project_context is not None
+    assert bob_agent.project_context.artifact_service is not None
+    bob_agent.project_context.artifact_service.db.get.side_effect = None
+    mock_project = MagicMock()
+    mock_project.confluence_base_url = "https://confluence.svc.corp.ch"
+    bob_agent.project_context.artifact_service.db.get.return_value = mock_project
+
+    confirmed_url = (
+        "https://confluence.svc.corp.ch/spaces/CORPHRSOL/pages/777945456/General+knowledge"
+    )
+    parent_page = ConfluencePage(
+        page_id="777945456",
+        title="General knowledge",
+        content="<p>Body</p>",
+        space_key="CORPHRSOL",
+        url=confirmed_url,
+        retrieved_at=datetime.now(UTC),
+        labels=[],
+        version=2,
+    )
+
+    mock_formatter = AsyncMock()
+    mock_parser = AsyncMock()
+    mock_adapter = MagicMock()
+    # Parent saved at the current version (2) → reused (the path that showed the URL).
+    mock_adapter.load_requirement_markdown.return_value = [
+        SimpleNamespace(name="777945456.md", content="# Saved")
+    ]
+    mock_adapter.load_all_metadata.return_value = {
+        "777945456/requirement.metadata.json": {"source_version": 2}
+    }
+
+    with (
+        patch("ai_qa.agents.bob.MCPClient", return_value=AsyncMock()),
+        patch("ai_qa.agents.bob.AppSettings"),
+        patch("ai_qa.agents.bob.LLMClient"),
+        patch("ai_qa.agents.bob.RequirementFormatter", return_value=mock_formatter),
+        patch("ai_qa.agents.bob.ContentParser", return_value=mock_parser),
+        patch("ai_qa.agents.bob.PipelineArtifactAdapter", return_value=mock_adapter),
+        patch("ai_qa.agents.bob.ConfluenceReader") as mock_reader_class,
+        patch("ai_qa.agents.bob.JiraReader"),
+        patch("ai_qa.agents.bob.get_user_secret", return_value="test-mcp-pat"),
+        patch.object(bob_agent, "get_llm_config", return_value=MagicMock()),
+    ):
+        mock_reader = AsyncMock()
+        mock_reader.get_children_by_id.return_value = StageResult(
+            success=True, data=[], errors=[], warnings=[], confidence=1.0
+        )
+        mock_reader.read_page_by_id.return_value = StageResult(
+            success=True, data=parent_page, errors=[], warnings=[], confidence=1.0
+        )
+        mock_reader_class.return_value = mock_reader
+
+        result = await bob_agent._extract_descendants(confirmed_url)
+
+    assert result.success
+    assert len(bob_agent.pages) == 1
+    # The node title is the real page title, NOT the confirmed URL.
+    assert bob_agent.pages[0]["page_title"] == "General knowledge"
+    assert bob_agent.pages[0]["page_title"] != confirmed_url
+    mock_formatter.convert_markdown.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2492,3 +2851,69 @@ def test_parse_clarification_plan_extracts_only_valid_blocks(bob_agent: BobAgent
     assert set(plan.keys()) == {"p1", "p2"}
     assert plan["p1"] == "What is the precondition for creating a journey?"
     assert plan["p2"] == "What does success look like for the journey list?"
+
+
+@pytest.mark.asyncio
+async def test_bob_reprocess_provider_error_secret_safety(bob_agent: BobAgent) -> None:
+    """Verify that a provider error in reprocess does not leak secret exception details."""
+    bob_agent.pages = [{"page_id": "1", "page_title": "P1", "raw_html": "<p>x</p>"}]
+    bob_agent.current_page_index = 0
+
+    from ai_qa.ai_connection.config import LLMConfig
+
+    with (
+        patch("ai_qa.agents.bob.RequirementFormatter") as mock_formatter_class,
+        patch.object(
+            bob_agent,
+            "get_llm_config",
+            return_value=LLMConfig(provider="openai", api_key="sk-123", model_name="test"),
+        ),
+        patch.object(bob_agent, "send_message", new_callable=AsyncMock) as mock_send_message,
+    ):
+        mock_formatter = mock_formatter_class.return_value
+        mock_formatter.convert_page = AsyncMock(
+            side_effect=Exception("Provider failed with token secret_abc123")
+        )
+
+        res = await bob_agent.process({"action": "reprocess"}, feedback="fix it")
+
+        assert res.success is True
+
+        # Ensure the secret is not in any sent messages
+        for call in mock_send_message.call_args_list:
+            msg = call.args[0]
+            assert "secret_abc123" not in msg
+
+        # Ensure we sent a generic provider error warning
+        warning_calls = [
+            c.args[0] for c in mock_send_message.call_args_list if c.args[1] == "warning"
+        ]
+        assert any("provider error" in c for c in warning_calls)
+
+
+@pytest.mark.asyncio
+async def test_bob_reprocess_timeout_classification(bob_agent: BobAgent) -> None:
+    """Verify that a timeout error is specifically classified."""
+    bob_agent.pages = [{"page_id": "1", "page_title": "P1", "raw_html": "<p>x</p>"}]
+    bob_agent.current_page_index = 0
+
+    from ai_qa.ai_connection.config import LLMConfig
+
+    with (
+        patch("ai_qa.agents.bob.RequirementFormatter") as mock_formatter_class,
+        patch.object(
+            bob_agent,
+            "get_llm_config",
+            return_value=LLMConfig(provider="openai", api_key="sk-123", model_name="test"),
+        ),
+        patch.object(bob_agent, "send_message", new_callable=AsyncMock) as mock_send_message,
+    ):
+        mock_formatter = mock_formatter_class.return_value
+        mock_formatter.convert_page = AsyncMock(side_effect=TimeoutError())
+
+        await bob_agent.process({"action": "reprocess"}, feedback="fix it")
+
+        warning_calls = [
+            c.args[0] for c in mock_send_message.call_args_list if c.args[1] == "warning"
+        ]
+        assert any("timed out (model too slow)" in c for c in warning_calls)

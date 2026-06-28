@@ -40,6 +40,9 @@ def _reset_shared_module_globals() -> Generator[None]:
       depend on which WebSocket tests ran before them.
     * ``ai_qa.api.routes._user_agents`` / ``_project_user_agents`` — per-user and
       per-(user, project) agent caches that only grow as tests drive the pipeline.
+    * ``ai_qa.db.session._ENGINE_CACHE`` — the process-global pooled-engine cache; a
+      test that calls ``create_db_engine`` with a real DB url would otherwise leave an
+      engine cached for the rest of the suite.
 
     Clearing them around every test makes each test independent of ordering. Cleared
     on both entry and exit so a test starts clean regardless of who ran before it and
@@ -49,10 +52,12 @@ def _reset_shared_module_globals() -> Generator[None]:
 
     def _clear() -> None:
         from ai_qa.api import routes, websocket
+        from ai_qa.db import session as db_session
 
         websocket.active_connections.clear()
         routes._user_agents.clear()
         routes._project_user_agents.clear()
+        db_session.dispose_all_engines()
 
     _clear()
     yield

@@ -92,6 +92,34 @@ def mock_llm_client(mock_llm_response: str) -> MagicMock:
     return client
 
 
+class TestFenceStripping:
+    """An LLM-wrapped Markdown fence must be stripped, else pytest collection fails."""
+
+    def test_strip_removes_fence_lines_and_yields_valid_python(self) -> None:
+        import ast
+
+        raw = '"""hdr"""\nimport pytest\n\n```python\nimport os\n\n\ndef test_x(page):\n    pass\n```\n'
+        cleaned = ScriptGenerator._strip_code_fences(raw)
+        assert "```" not in cleaned
+        ast.parse(cleaned)  # raises SyntaxError if a fence survived
+
+    def test_strip_is_noop_without_a_fence(self) -> None:
+        raw = "import pytest\n\n\ndef test_x(page):\n    pass\n"
+        assert ScriptGenerator._strip_code_fences(raw) == raw
+
+    def test_postprocess_strips_fence_from_script_content(
+        self, temp_workspace: Path, sample_test_case: TestCase
+    ) -> None:
+        import ast
+
+        gen = ScriptGenerator(output_base_dir=temp_workspace)
+        fenced = "```python\nimport pytest\n\n\ndef test_x(page):\n    page.goto('/')\n```"
+        result = gen._postprocess_script(fenced, sample_test_case, [])
+        assert result["success"]
+        assert "```" not in result["script_content"]
+        ast.parse(result["script_content"])
+
+
 class TestScriptGeneratorInitialization:
     """Test suite for ScriptGenerator initialization."""
 
@@ -1623,3 +1651,132 @@ class TestScriptGeneratorFeedback:
         # The injected portion must not exceed 2000 chars of the original feedback
         assert "x" * 2001 not in feedback_prompts[0], "Feedback must be capped at 2000 chars"
         assert "x" * 2000 in feedback_prompts[0], "2000 chars of feedback must be included"
+
+
+# ---------------------------------------------------------------------------
+# Tier-1 server-side explore — role_sessions wiring
+# ---------------------------------------------------------------------------
+
+
+class TestRoleSessionsExplore:
+    """role_sessions enables the server-side explore path and feeds the right blob in."""
+
+    def test_explore_enabled_when_only_role_sessions_present(self, temp_workspace: Path) -> None:
+        """A captured session + a driving LLM is a valid browser source (no Chrome needed)."""
+        generator = ScriptGenerator(
+            output_base_dir=temp_workspace,
+            explore_llm=object(),
+            role_sessions={"Admin": {"cookies": []}},
+        )
+        assert generator._explore_enabled is True
+
+    def test_explore_disabled_when_role_sessions_empty_and_no_browser(
+        self, temp_workspace: Path
+    ) -> None:
+        """No browser source at all -> explore stays off (LLM-only)."""
+        generator = ScriptGenerator(output_base_dir=temp_workspace, explore_llm=object())
+        assert generator._explore_enabled is False
+
+    def test_explore_disabled_without_driving_llm(self, temp_workspace: Path) -> None:
+        """role_sessions alone is not enough — a driving LLM is still required."""
+        generator = ScriptGenerator(
+            output_base_dir=temp_workspace, role_sessions={"Admin": {"cookies": []}}
+        )
+        assert generator._explore_enabled is False
+
+    async def test_explore_passes_role_storage_state_for_test_case_role(
+        self, temp_workspace: Path
+    ) -> None:
+        """The explore call receives the storageState for THIS test case's role."""
+        admin_blob = {"cookies": [{"name": "sid", "value": "admin"}]}
+        user_blob = {"cookies": [{"name": "sid", "value": "user"}]}
+        generator = ScriptGenerator(
+            output_base_dir=temp_workspace,
+            explore_llm=object(),
+            role_sessions={"Admin": admin_blob, "User": user_blob},
+        )
+        test_case = TestCase(title="Admin edits config", role="Admin")
+
+        captured: dict[str, object] = {}
+
+        async def fake_explore(tc: object, url: str, **kwargs: object) -> None:
+            captured.update(kwargs)
+            return None  # force fallback to LLM-only after the call
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = "    expect(page).to_be_visible()\n"
+        mock_client.invoke = MagicMock(return_value=mock_response)
+
+        with (
+            patch("ai_qa.browser.explorer.explore_test_case", side_effect=fake_explore),
+            patch.object(generator, "_get_llm_client", return_value=mock_client),
+        ):
+            result = await generator.generate([test_case], target_url="https://app.test")
+
+        assert result.success is True
+        assert captured.get("storage_state") == admin_blob
+        # No local browser source -> chrome_path/cdp_url passed empty.
+        assert captured.get("chrome_path") == ""
+        assert captured.get("cdp_url") == ""
+
+    async def test_explore_single_session_fallback_for_roleless_test_case(
+        self, temp_workspace: Path
+    ) -> None:
+        """A test case with no role uses the sole captured session when exactly one exists."""
+        only_blob = {"cookies": [{"name": "sid", "value": "x"}]}
+        generator = ScriptGenerator(
+            output_base_dir=temp_workspace,
+            explore_llm=object(),
+            role_sessions={"Admin": only_blob},
+        )
+        test_case = TestCase(title="No role here")  # role is None
+
+        captured: dict[str, object] = {}
+
+        async def fake_explore(tc: object, url: str, **kwargs: object) -> None:
+            captured.update(kwargs)
+            return None
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = "    expect(page).to_be_visible()\n"
+        mock_client.invoke = MagicMock(return_value=mock_response)
+
+        with (
+            patch("ai_qa.browser.explorer.explore_test_case", side_effect=fake_explore),
+            patch.object(generator, "_get_llm_client", return_value=mock_client),
+        ):
+            result = await generator.generate([test_case], target_url="https://app.test")
+
+        assert result.success is True
+        assert captured.get("storage_state") == only_blob
+
+    async def test_explore_no_storage_state_when_role_unmatched(self, temp_workspace: Path) -> None:
+        """A role with no captured session passes storage_state=None (explore falls back)."""
+        generator = ScriptGenerator(
+            output_base_dir=temp_workspace,
+            explore_llm=object(),
+            role_sessions={"Admin": {"cookies": []}},
+        )
+        test_case = TestCase(title="User flow", role="User")  # no session for User
+
+        captured: dict[str, object] = {}
+
+        async def fake_explore(tc: object, url: str, **kwargs: object) -> None:
+            captured.update(kwargs)
+            return None
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = "    expect(page).to_be_visible()\n"
+        mock_client.invoke = MagicMock(return_value=mock_response)
+
+        with (
+            patch("ai_qa.browser.explorer.explore_test_case", side_effect=fake_explore),
+            patch.object(generator, "_get_llm_client", return_value=mock_client),
+        ):
+            result = await generator.generate([test_case], target_url="https://app.test")
+
+        assert result.success is True
+        assert captured.get("storage_state") is None

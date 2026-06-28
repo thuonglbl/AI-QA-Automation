@@ -3,7 +3,7 @@ baseline_commit: d97e58533b04901b688a1c04f24032cfc8dc0e53
 ---
 # Story 16.9: Multilingual Agent Conversation with English Specifications
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

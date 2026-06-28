@@ -1,7 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { ScriptInput } from "@/types/script";
 
 export interface ProjectEnvironment {
@@ -12,6 +18,8 @@ export interface ProjectEnvironment {
 export interface CapturedSessionSlot {
   environment: string;
   role: string;
+  /** ISO expiry of the captured session; past this it can't be used (auto-login ignores it). */
+  expires_at?: string | null;
 }
 
 /** Confirm payload Jack's panel emits (full-stack sync with the backend confirm data). */
@@ -28,13 +36,21 @@ interface JackInputSelectionProps {
   appRoles?: string[];
   sessions?: CapturedSessionSlot[];
   onConfirm: (selectedIds: string[], config: JackRunConfig) => void;
+  /**
+   * Opens the test-account session flow (the Sessions matrix panel).
+   */
+  onCaptureSession?: () => void;
   disabled?: boolean;
+  /** True while a confirmed run is starting/in flight — disables the button and shows a spinner
+   *  so the user gets feedback and cannot launch duplicate runs by clicking again. */
+  running?: boolean;
 }
 
+// Chrome and Edge are Chromium channels (same engine), so the headless Chromium build covers
+// both — we offer one "Chromium" option instead of three. Only engines installed in the
+// backend image are listed (see Dockerfile.backend: chromium, firefox, webkit).
 const BROWSER_CHOICES: { label: string; name: string }[] = [
-  { label: "chromium", name: "Chromium" },
-  { label: "chrome", name: "Chrome" },
-  { label: "msedge", name: "Edge" },
+  { label: "chromium", name: "Chromium (Chrome, Edge)" },
   { label: "firefox", name: "Firefox" },
   { label: "webkit", name: "WebKit" },
 ];
@@ -124,13 +140,21 @@ export function JackInputSelection({
   scripts,
   environments = [],
   appRoles = [],
-  sessions = [],
   onConfirm,
   disabled = false,
+  running = false,
 }: JackInputSelectionProps) {
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(scripts.filter((s) => s.default_selected).map((s) => s.artifact_id)),
   );
+  // Local guard so a rapid second click can't fire onConfirm before the parent's `running`
+  // state propagates. Clears when the parent says the run is no longer starting (e.g. it
+  // errored back to the selection panel) or a fresh selection panel arrives.
+  const [submitting, setSubmitting] = useState(false);
+  useEffect(() => {
+    if (!running) setSubmitting(false);
+  }, [running, scripts]);
+  const isRunning = submitting || running;
   const hasEnvironments = environments.length > 0;
   const [environmentName, setEnvironmentName] = useState<string>(
     () => environments[0]?.name ?? "",
@@ -168,25 +192,23 @@ export function JackInputSelection({
   const selectedEnv = environments.find((e) => e.name === environmentName);
   const targetUrl = hasEnvironments ? (selectedEnv?.url ?? "") : freeUrl.trim();
 
-  // Slice 6: each selected script runs AS its own role (falling back to the chosen default
-  // role when it carries none). EVERY involved role needs a captured session for the chosen
-  // environment — mirrors the backend's per-role hard-block.
-  const involvedRoles = Array.from(
-    new Set(
-      scripts
-        .filter((s) => selected.has(s.artifact_id))
-        .map((s) => (s.role && s.role.trim() ? s.role : role)),
-    ),
-  );
-  const missingRoles = involvedRoles.filter(
-    (r) =>
-      !(environmentName && r && sessions.some((s) => s.environment === environmentName && s.role === r)),
-  );
-  const allRolesHaveSession = involvedRoles.length > 0 && missingRoles.length === 0;
+  // Backend will auto-login via TestAccountCredential if session is missing.
+  // We no longer block the frontend run if the session is not yet cached.
+  const allRolesHaveSession = true;
   const canRun =
     selectedCount > 0 && browsers.size > 0 && targetUrl.length > 0 && allRolesHaveSession;
 
+  let disabledReason = "";
+  if (!canRun) {
+    if (selectedCount === 0) disabledReason = "Select at least one script to run";
+    else if (targetUrl.length === 0) disabledReason = "Configure target environment first";
+    else if (browsers.size === 0) disabledReason = "Select at least one browser";
+    else if (!allRolesHaveSession) disabledReason = "All roles must have a captured session";
+  }
+
   function handleConfirm() {
+    if (isRunning) return; // prevent duplicate runs from a double-click
+    setSubmitting(true);
     onConfirm(Array.from(selected), {
       targetUrl,
       environment: environmentName,
@@ -323,17 +345,17 @@ export function JackInputSelection({
           </div>
         </div>
 
-        {missingRoles.length > 0 && !!environmentName && (
-          <p className="text-xs text-red-600">
-            No captured session for {environmentName} /{" "}
-            {missingRoles.map((r) => r || "(no role)").join(", ")}. Capture a session for each
-            role to run.
+        <div className="mt-2 flex items-start gap-2 bg-amber-50 text-amber-800 p-3 rounded-md border border-amber-200">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <p className="text-xs leading-relaxed">
+            <strong>Note for Scheduled Tests:</strong> If the environment uses Interactive MFA (waiting for an Authenticator code), overnight or scheduled runs will timeout when they hit the MFA screen. To fully automate scheduled tests, please configure a <strong>TOTP Secret</strong> in the Project Test Accounts settings instead.
           </p>
-        )}
+        </div>
+
         {!hasEnvironments && selectedCount > 0 && (
           <p className="text-xs text-amber-700">
-            This project has no configured environments. A run needs a captured session, which
-            is bound to an environment, so a project admin must add an environment before Jack
+            This project has no configured environments. A run needs an environment to resolve
+            the corresponding Test Account, so a project admin must add an environment before Jack
             can run.
           </p>
         )}
@@ -344,14 +366,34 @@ export function JackInputSelection({
         <span className="text-xs text-slate-500">
           {selectedCount} of {scripts.length} selected
         </span>
-        <button
-          type="button"
-          onClick={handleConfirm}
-          disabled={disabled || !canRun}
-          className="bg-orange-600 text-white px-6 py-2 rounded-md text-sm font-medium hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          Confirm &amp; Run →
-        </button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-block">
+                <button
+                  type="button"
+                  onClick={handleConfirm}
+                  disabled={disabled || !canRun || isRunning}
+                  className="inline-flex items-center bg-orange-600 text-white px-6 py-2 rounded-md text-sm font-medium hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isRunning ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Running…
+                    </>
+                  ) : (
+                    "Confirm & Run →"
+                  )}
+                </button>
+              </span>
+            </TooltipTrigger>
+            {(disabled || !canRun) && !isRunning && (
+              <TooltipContent side="top">
+                <p>{disabled ? "Run is disabled" : disabledReason}</p>
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
       </div>
     </div>
   );

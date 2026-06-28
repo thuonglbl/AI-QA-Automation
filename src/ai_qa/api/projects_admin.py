@@ -10,7 +10,6 @@ the admin UI is trimmed in the FE slice).
 
 from __future__ import annotations
 
-from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -29,9 +28,7 @@ from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.rbac import get_current_active_user, require_project_admin_for_project
 from ai_qa.api.projects import ProjectMembershipSummary
 from ai_qa.auth.service import ADMIN_ROLE, PROJECT_ADMIN_ROLE, STANDARD_ROLE
-from ai_qa.db.models import Project, ProjectAccount, ProjectMembership, User
-
-LoginType = Literal["SSO", "PASSWORD"]
+from ai_qa.db.models import Project, ProjectMembership, User
 
 # The only membership role a project_admin may assign or remove. Elevated roles
 # (project_admin, owner) are platform-admin-only operations.
@@ -62,38 +59,6 @@ class AssignableUserResponse(BaseModel):
     is_active: bool
 
 
-class AccountResponse(BaseModel):
-    """A test-login account WITHOUT its password (only whether one is stored)."""
-
-    id: UUID
-    environment: str
-    role: str
-    login_identifier: str
-    label: str | None
-    has_password: bool
-
-
-def _account_response(acc: ProjectAccount) -> AccountResponse:
-    # Reading encrypted_password decrypts it (EncryptedString); we only expose whether
-    # a password exists — never the value.
-    return AccountResponse(
-        id=acc.id,
-        environment=acc.environment,
-        role=acc.role,
-        login_identifier=acc.login_identifier,
-        label=acc.label,
-        has_password=bool(acc.encrypted_password),
-    )
-
-
-class AccountUpsertRequest(BaseModel):
-    environment: str = Field(min_length=1, max_length=64)
-    role: str = Field(min_length=1, max_length=64)
-    login_identifier: str = Field(min_length=1, max_length=320)
-    password: str | None = Field(default=None, max_length=512)
-    label: str | None = Field(default=None, max_length=255)
-
-
 class ProjectConfigRequest(BaseModel):
     """Project-admin-owned configuration (everything except name/description)."""
 
@@ -102,7 +67,6 @@ class ProjectConfigRequest(BaseModel):
     enabled_providers: list[str] = Field(default_factory=list)
     environments: list[Environment] = Field(default_factory=list)
     app_roles: list[str] = Field(default_factory=list)
-    login_type: LoginType = "SSO"
 
     @field_validator("environments")
     @classmethod
@@ -118,7 +82,14 @@ class ProjectConfigRequest(BaseModel):
             if key in seen:
                 raise ValueError(f"Duplicate environment name: {name!r}")
             seen.add(key)
-            cleaned.append(Environment(name=name, url=url))
+            cleaned.append(
+                Environment(
+                    name=name,
+                    url=url,
+                    login_type=env.login_type or "standard",
+                    login_hint=(env.login_hint or "").strip(),
+                )
+            )
         return cleaned
 
     @field_validator("app_roles")
@@ -216,7 +187,6 @@ async def update_project_config(
     project.enabled_providers = request.enabled_providers
     project.environments = [env.model_dump() for env in request.environments]
     project.app_roles = request.app_roles
-    project.login_type = request.login_type
     db.commit()
     db.refresh(project)
     return project
@@ -311,116 +281,4 @@ async def remove_project_member(
             detail="Project admins can only remove standard members.",
         )
     db.delete(membership)
-    db.commit()
-
-
-@router.get("/projects/{project_id}/accounts", response_model=list[AccountResponse])
-async def list_project_accounts(
-    project_id: UUID,
-    _admin: User = ProjectAdminDependency,
-    db: Session = DbSessionDependency,
-) -> list[AccountResponse]:
-    """List the project's test-login accounts (passwords never returned)."""
-    if db.get(Project, project_id) is None:
-        raise HTTPException(status_code=404, detail="Resource not found")
-    rows = (
-        db.execute(select(ProjectAccount).where(ProjectAccount.project_id == project_id))
-        .scalars()
-        .all()
-    )
-    return [_account_response(acc) for acc in rows]
-
-
-@router.post("/projects/{project_id}/accounts", response_model=AccountResponse)
-async def upsert_project_account(
-    project_id: UUID,
-    request: AccountUpsertRequest,
-    _admin: User = ProjectAdminDependency,
-    db: Session = DbSessionDependency,
-) -> AccountResponse:
-    """Create or update the test-login account for one (environment, role)."""
-    project = db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Resource not found")
-
-    env_names = {str(e.get("name")) for e in (project.environments or []) if isinstance(e, dict)}
-    if request.environment not in env_names:
-        raise HTTPException(status_code=422, detail="Unknown environment for this project.")
-    if request.role not in (project.app_roles or []):
-        raise HTTPException(status_code=422, detail="Unknown role for this project.")
-
-    existing = db.execute(
-        select(ProjectAccount).where(
-            ProjectAccount.project_id == project_id,
-            ProjectAccount.environment == request.environment,
-            ProjectAccount.role == request.role,
-        )
-    ).scalar_one_or_none()
-
-    provided_pwd = (request.password or "").strip() or None
-    if project.login_type == "SSO":
-        # SSO projects never store a password (only the email/username).
-        new_pwd: str | None = None
-    else:
-        # PASSWORD: use the provided password, or keep the existing one on update.
-        new_pwd = provided_pwd or (existing.encrypted_password if existing else None)
-        if not new_pwd:
-            raise HTTPException(
-                status_code=422,
-                detail="A password is required for a password-login project.",
-            )
-
-    if existing is None:
-        existing = ProjectAccount(
-            project_id=project_id,
-            environment=request.environment,
-            role=request.role,
-            login_identifier=request.login_identifier,
-            encrypted_password=new_pwd,
-            label=request.label,
-        )
-        db.add(existing)
-    else:
-        existing.login_identifier = request.login_identifier
-        existing.encrypted_password = new_pwd
-        existing.label = request.label
-    try:
-        db.commit()
-    except IntegrityError:
-        # Concurrent first-create for the same (project, environment, role): re-select the row
-        # the other request inserted and apply this update on top (keeps the upsert idempotent).
-        db.rollback()
-        existing = db.execute(
-            select(ProjectAccount).where(
-                ProjectAccount.project_id == project_id,
-                ProjectAccount.environment == request.environment,
-                ProjectAccount.role == request.role,
-            )
-        ).scalar_one()
-        existing.login_identifier = request.login_identifier
-        existing.encrypted_password = new_pwd
-        existing.label = request.label
-        db.commit()
-    db.refresh(existing)
-    return _account_response(existing)
-
-
-@router.delete("/projects/{project_id}/accounts/{account_id}", status_code=204)
-async def delete_project_account(
-    project_id: UUID,
-    account_id: UUID,
-    _admin: User = ProjectAdminDependency,
-    db: Session = DbSessionDependency,
-) -> None:
-    """Delete a project test-login account."""
-    deleted = (
-        db.query(ProjectAccount)
-        .filter(
-            ProjectAccount.id == account_id,
-            ProjectAccount.project_id == project_id,
-        )
-        .delete(synchronize_session=False)
-    )
-    if deleted == 0:
-        raise HTTPException(status_code=404, detail="Resource not found")
     db.commit()

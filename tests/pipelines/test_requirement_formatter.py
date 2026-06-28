@@ -291,17 +291,17 @@ def test_absolutize_links_rewrites_relative_confluence_links(mock_llm_client):
         page_id="1",
         title="T",
         content="",
-        url="https://domain.com/pages/1",
+        url="https://confluence.svc.corp.ch/pages/1",
         space_key="TST",
     )
     md = (
-        "See [US03](/spaces/SPACES/pages/1252755298/US03+-+Advanced) and "
+        "See [US03](/spaces/EXPERTGROUP/pages/1252755298/US03+-+Advanced) and "
         "[ext](https://other.example/x) and [anchor](#section) and [mail](mailto:a@b.c)."
     )
     out = formatter._absolutize_links(page, md)
 
     assert (
-        "[US03](https://domain.com/spaces/SPACES/pages/1252755298/US03+-+Advanced)"
+        "[US03](https://confluence.svc.corp.ch/spaces/EXPERTGROUP/pages/1252755298/US03+-+Advanced)"
         in out
     )
     assert "[ext](https://other.example/x)" in out  # absolute link untouched
@@ -375,7 +375,6 @@ async def test_format_story_returns_content_within_timeout(mock_llm_client):
 @pytest.mark.asyncio
 async def test_format_story_times_out_on_hung_llm(mock_llm_client, monkeypatch):
     """A hung provider call is bounded — it raises instead of stalling the step forever."""
-    import ai_qa.pipelines.requirement_formatter as rf
 
     async def _hang(*_args, **_kwargs):
         await asyncio.sleep(5)
@@ -383,9 +382,8 @@ async def test_format_story_times_out_on_hung_llm(mock_llm_client, monkeypatch):
 
     # Real coroutine fn so wait_for can cancel it deterministically on timeout.
     mock_llm_client._chat_model.ainvoke = _hang
-    monkeypatch.setattr(rf, "_CONVERT_LLM_TIMEOUT", 0.05)
 
-    formatter = RequirementFormatter(mock_llm_client)
+    formatter = RequirementFormatter(mock_llm_client, timeout=0.05)
     page = ConfluencePage(
         page_id="1", title="T", content="<p>x</p>", url="https://c.example/p", space_key="TST"
     )

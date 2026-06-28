@@ -10,14 +10,13 @@ from ai_qa.auth.bootstrap_admin import main
 class TestBootstrapAdminMain:
     """Test bootstrap_admin main() CLI entrypoint."""
 
-    def test_main_with_password_env_var(self) -> None:
-        """When AI_QA_BOOTSTRAP_ADMIN_PASSWORD is set, skip getpass."""
+    def test_main_success(self) -> None:
+        """Main correctly parses args and provisions the admin."""
         mock_user = MagicMock()
         mock_user.email = "admin@example.com"
         mock_user.display_name = "Admin"
 
         with (
-            patch.dict("os.environ", {"AI_QA_BOOTSTRAP_ADMIN_PASSWORD": "secure-pw"}),
             patch("ai_qa.auth.bootstrap_admin.create_session_factory") as mock_factory,
             patch("ai_qa.auth.bootstrap_admin.bootstrap_admin") as mock_bootstrap,
         ):
@@ -32,36 +31,6 @@ class TestBootstrapAdminMain:
             mock_session,
             "admin@example.com",
             "Admin",
-            "secure-pw",
-            update_password=True,
-        )
-
-    def test_main_no_update_password_flag(self) -> None:
-        """--no-update-password flag is passed correctly."""
-        mock_user = MagicMock()
-        mock_user.email = "admin@example.com"
-        mock_user.display_name = "Admin"
-
-        with (
-            patch.dict("os.environ", {"AI_QA_BOOTSTRAP_ADMIN_PASSWORD": "secure-pw"}),
-            patch("ai_qa.auth.bootstrap_admin.create_session_factory") as mock_factory,
-            patch("ai_qa.auth.bootstrap_admin.bootstrap_admin") as mock_bootstrap,
-        ):
-            mock_bootstrap.return_value = mock_user
-            mock_session = MagicMock()
-            mock_factory.return_value.return_value.__enter__.return_value = mock_session
-
-            result = main(
-                ["--email", "admin@example.com", "--name", "Admin", "--no-update-password"]
-            )
-
-        assert result == 0
-        mock_bootstrap.assert_called_once_with(
-            mock_session,
-            "admin@example.com",
-            "Admin",
-            "secure-pw",
-            update_password=False,
         )
 
     def test_main_raises_system_exit_on_invalid_input(self) -> None:
@@ -69,15 +38,14 @@ class TestBootstrapAdminMain:
         from ai_qa.auth.service import InvalidBootstrapInputError
 
         with (
-            patch.dict("os.environ", {"AI_QA_BOOTSTRAP_ADMIN_PASSWORD": "short"}),
             patch("ai_qa.auth.bootstrap_admin.create_session_factory") as mock_factory,
             patch("ai_qa.auth.bootstrap_admin.bootstrap_admin") as mock_bootstrap,
         ):
-            mock_bootstrap.side_effect = InvalidBootstrapInputError("Password too short")
+            mock_bootstrap.side_effect = InvalidBootstrapInputError("Invalid input")
             mock_session = MagicMock()
             mock_factory.return_value.return_value.__enter__.return_value = mock_session
 
-            with pytest.raises(SystemExit, match="Password too short"):
+            with pytest.raises(SystemExit, match="Invalid input"):
                 main(["--email", "admin@example.com", "--name", "Admin"])
 
     def test_main_raises_system_exit_on_db_error(self) -> None:
@@ -85,7 +53,6 @@ class TestBootstrapAdminMain:
         from sqlalchemy.exc import SQLAlchemyError
 
         with (
-            patch.dict("os.environ", {"AI_QA_BOOTSTRAP_ADMIN_PASSWORD": "secure-pw"}),
             patch("ai_qa.auth.bootstrap_admin.create_session_factory") as mock_factory,
             patch("ai_qa.auth.bootstrap_admin.bootstrap_admin") as mock_bootstrap,
         ):

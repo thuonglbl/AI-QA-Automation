@@ -8,27 +8,38 @@ import {
 } from "@/components/ui/card";
 import { useAuth } from "@/hooks/useAuth";
 import { Loader2 } from "lucide-react";
-import { apiFetch } from "@/lib/api";
-
-import { normalizeUser } from "@/lib/auth";
+import { MicrosoftLoginButton } from "@/components/auth/MicrosoftLoginButton";
 
 interface LoginPageProps {
   onLoginSuccess?: () => void;
 }
 
-export function LoginPage({ onLoginSuccess }: LoginPageProps) {
-  const {
-    isAuthenticated,
-    isLoading,
-    error: authError,
-    logout,
-    setAuthStatus,
-  } = useAuth();
+// SSO callback failures redirect back to "/?sso_error=<code>" — map the safe codes
+// to friendly English messages (App-UI-English-only). Never echo tokens/secrets.
+const SSO_ERROR_MESSAGES: Record<string, string> = {
+  not_provisioned:
+    "Your account is not provisioned for this platform yet. Contact an administrator.",
+  domain_not_allowed: "Your email domain is not allowed to sign in.",
+  invalid_token: "SSO sign-in failed to validate your identity. Please try again.",
+  state_mismatch: "Your sign-in session expired. Please try again.",
+  idp_unreachable: "SSO sign-in could not reach the identity provider. Please try again.",
+  idp_error: "SSO sign-in was cancelled or failed. Please try again.",
+  not_found: "SSO sign-in is not available in this environment.",
+};
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
+function readSsoError(): string | null {
+  try {
+    const code = new URLSearchParams(window.location.search).get("sso_error");
+    if (!code) return null;
+    return SSO_ERROR_MESSAGES[code] ?? "SSO sign-in failed. Please try again.";
+  } catch {
+    return null;
+  }
+}
+
+export function LoginPage({ onLoginSuccess }: LoginPageProps) {
+  const { isAuthenticated, isLoading, error: authError } = useAuth();
+  const [ssoError] = useState<string | null>(readSsoError);
 
   // Redirect when authenticated
   useEffect(() => {
@@ -37,63 +48,11 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
     }
   }, [isAuthenticated, onLoginSuccess]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    setFormError(null);
-
-    try {
-      await logout();
-      // Backend returns { access_token, user: UserProfileResponse }
-      // UserProfileResponse has display_name (not name), id, email, role, is_active
-      const loginResult = await apiFetch<{
-        user?: {
-          email?: string;
-          display_name?: string;
-          name?: string;
-          id?: string;
-          role?: string;
-          is_active?: boolean;
-        };
-        access_token?: string;
-      }>("/login", {
-        method: "POST",
-        authRoute: true,
-        safeMessage: "Invalid username or password.",
-        body: JSON.stringify({ email, password }),
-      });
-
-      if (loginResult.access_token) {
-        try {
-          localStorage.setItem("aiqa_access_token", loginResult.access_token);
-        } catch {}
-      } else {
-        try {
-          localStorage.removeItem("aiqa_access_token");
-        } catch {}
-      }
-
-      const rawUser = loginResult.user;
-      if (!rawUser?.email) {
-        throw new Error("Login response did not include a user profile.");
-      }
-
-      // Normalise: backend may return display_name instead of name
-      const userForNormalize = {
-        ...rawUser,
-        email: rawUser.email as string,
-        name: rawUser.name ?? rawUser.display_name ?? rawUser.email,
-      };
-      setAuthStatus({
-        authenticated: true,
-        user: normalizeUser(userForNormalize),
-      });
-    } catch {
-      setAuthStatus({ authenticated: false, user: null });
-      setFormError("Invalid username or password.");
-    } finally {
-      setIsSubmitting(false);
-    }
+  const handleSsoLogin = () => {
+    // Full-page navigation to the backend SSO entry point. The browser is then
+    // redirected to the corporate IdP (or the built-in mock IdP in dev/CI/E2E),
+    // and lands back authenticated with the app session cookie set.
+    window.location.assign("/auth/sso/login");
   };
 
   return (
@@ -120,7 +79,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
               AI QA Automation
             </CardTitle>
             <CardDescription className="text-surface-500 mt-2">
-              Sign in to access the AI-powered QA automation platform
+              Sign in with your corporate account to access the platform
             </CardDescription>
           </div>
         </CardHeader>
@@ -133,58 +92,18 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
               </p>
             </div>
           ) : (
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="space-y-2">
-                <label
-                  className="text-sm font-medium text-surface-700"
-                  htmlFor="email"
-                >
-                  Email
-                </label>
-                <input
-                  id="email"
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-md border-surface-300 focus:outline-none focus:ring-2 focus:ring-primary/50"
-                />
-              </div>
+            <div className="space-y-4">
+              <MicrosoftLoginButton onClick={handleSsoLogin} />
 
-              <div className="space-y-2">
-                <label
-                  className="text-sm font-medium text-surface-700"
-                  htmlFor="password"
+              {(ssoError || authError) && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-lg bg-error-light text-error text-sm text-center"
                 >
-                  Password
-                </label>
-                <input
-                  id="password"
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-md border-surface-300 focus:outline-none focus:ring-2 focus:ring-primary/50"
-                />
-              </div>
-
-              {(authError || formError) && (
-                <div className="p-3 rounded-lg bg-error-light text-error text-sm text-center">
-                  {formError || authError}
+                  {ssoError || authError}
                 </div>
               )}
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full py-2 px-4 bg-primary text-white rounded-md hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 flex items-center justify-center"
-              >
-                {isSubmitting && (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                )}
-                Sign In
-              </button>
-            </form>
+            </div>
           )}
         </CardContent>
       </Card>

@@ -165,9 +165,9 @@ OpenAPI documentation is available at:
 ### Prerequisites
 
 - Python 3.14.6
-- Node.js 26.3.0
+- Node.js 26.4.0
 - Docker (prefer Rancher Desktop 1.22.2)
-- `uv` 0.11.20
+- `uv` 0.11.24
 - PostgreSQL 18.4 with pgAdmin 4 9.15
 
 ### Database & File Storage Setup
@@ -193,7 +193,7 @@ uv venv
 .venv\Scripts\activate
 uv sync
 uv add --dev pytest
-uv run playwright install
+uv run playwright install chromium firefox webkit
 
 copy .env.example .env
 ```
@@ -213,7 +213,6 @@ Interactive password prompt (cd to repo root directory):
 
 ```powershell
 uv run alembic upgrade head
-uv run python -m ai_qa.auth.bootstrap_admin --email admin@example.com --name "Admin User"
 ```
 
 ### Frontend Setup
@@ -261,7 +260,7 @@ Backend:
 ```powershell
 .venv\Scripts\activate
 npx kill-port 8000
-uv run uvicorn ai_qa.api:app --host 0.0.0.0 --port 8000 --reload
+uv run uvicorn ai_qa.api:app --host 0.0.0.0 --port 8000
 ```
 
 Frontend:
@@ -307,17 +306,17 @@ The production deployment uses separate images, all grouped under the
 
 | Component | Image path |
 | --- | --- |
-| Backend | ai-qa-automation/backend:0.5.1 |
-| Frontend | ai-qa-automation/frontend:0.5.1 |
+| Backend | ai-qa-automation/backend:0.6.1 |
+| Frontend | ai-qa-automation/frontend:0.6.1 |
 | Database | ai-qa-automation/database:18.4 |
-| Storage Server | ai-qa-automation/file-storage:4.33 |
+| Storage Server | ai-qa-automation/file-storage:4.36 |
 
 ### Build images locally
 
-Need to input the newest version number from your local development environment in .env file e.g 0.5.1
+Need to input the newest version number from your local development environment in .env file e.g 0.6.1
 
 ```powershell
-.\scripts\build-docker-images.ps1 -Version 0.5.1
+.\scripts\build-docker-images.ps1 -Version 0.6.1
 ```
 
 Confirm image files exist
@@ -330,13 +329,13 @@ DB and SeaweedFS images (update only when version change)
 
 ```powershell
 docker pull postgres:18.4-alpine
-docker pull chrislusf/seaweedfs:4.33
+docker pull chrislusf/seaweedfs:4.36
 # Tag and push to your private registry if necessary
 docker login <docker-image-prefix>
 docker tag postgres:18.4-alpine <docker-image-prefix>/ai-qa-automation/database:18.4
-docker tag chrislusf/seaweedfs:4.33 <docker-image-prefix>/ai-qa-automation/file-storage:4.33
+docker tag chrislusf/seaweedfs:4.36 <docker-image-prefix>/ai-qa-automation/file-storage:4.36
 docker push <docker-image-prefix>/ai-qa-automation/database:18.4
-docker push <docker-image-prefix>/ai-qa-automation/file-storage:4.33
+docker push <docker-image-prefix>/ai-qa-automation/file-storage:4.36
 ```
 
 ### Push images to Artifactory
@@ -344,7 +343,7 @@ docker push <docker-image-prefix>/ai-qa-automation/file-storage:4.33
 Automation login using ARTIFACTORY_USERNAME and ARTIFACTORY_PASSWORD in `.env` file:
 
 ```powershell
-.\scripts\build-docker-images.ps1 -Version 0.5.1 -Login -Push
+.\scripts\build-docker-images.ps1 -Version 0.6.1 -Login -Push
 ```
 
 ### Deploy on UAT web server
@@ -365,7 +364,7 @@ docker --version
 docker compose version
 ```
 
-For Docker deployment, the server does not need the same Python or Node.js versions as local development. Python `3.14.6`, Node.js `26.3.0`, uv `0.11.20`, and Nginx `1.31.1` are already inside the Docker images. The UAT server mainly needs Docker Engine and Docker Compose.
+For Docker deployment, the server does not need the same Python or Node.js versions as local development. Python `3.14.6`, Node.js `26.4.0`, uv `0.11.24`, and Nginx `1.31.2` are already inside the Docker images. The UAT server mainly needs Docker Engine and Docker Compose.
 
 Find the existing Compose file:
 
@@ -383,7 +382,7 @@ nano .env
 nano docker-compose.yml
 ```
 
-Use the pushed images with the newest version e.g 0.4.0 and keep the services on the same Docker Compose network.
+Use the pushed images with the newest version e.g 0.6.0 and keep the services on the same Docker Compose network.
 
 Pull and recreate the containers:
 
@@ -398,12 +397,6 @@ Run database migrations after the backend image is deployed:
 
 ```bash
 docker compose -f docker-compose.yml exec backend alembic upgrade head
-```
-
-Create admin account (one time only)
-
-```bash
-docker compose -f docker-compose.yml exec backend python -m ai_qa.auth.bootstrap_admin --email <admin-email> --name <admin-name>
 ```
 
 The frontend image serves the Vite build through Nginx and proxies `/api`, `/auth`, and `/ws` to the backend service named `ai-qa-backend` inside the Docker Compose network.
@@ -479,6 +472,14 @@ npm run test
 - API responses must not expose password hashes, tokens, raw storage paths, or ORM relationship graphs.
 - Artifact storage sanitizes file names and blocks path traversal.
 - Keep real credentials, API keys, and secret-like values out of documentation, tests, fixtures, and commits.
+
+## Test Accounts and Authentication Limitations
+
+When testing external applications, the automated login routine leverages AI browser navigation to complete standard login forms or third-party SSO flows (e.g. Google, Apple). However, there are hard limitations:
+- **CAPTCHAs and Bot Detection:** Strict bot protection (like Cloudflare Turnstile, ReCAPTCHA) will actively block the headless browser. 
+- **Interactive MFA:** SMS or Email MFA requiring an out-of-band device cannot be automated by the core pipeline. TOTP is supported if you provide the Base32 TOTP Secret.
+
+**Mitigation:** For targets with these limitations, you must work with the target app's owners to whitelist your test accounts, or bypass CAPTCHA/MFA for designated test environments.
 
 ## Troubleshooting
 

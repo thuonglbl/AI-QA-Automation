@@ -177,6 +177,8 @@ class MaryAgent(BaseAgent):
           3. Run a risk-based test-design pass and, only when there are genuine gaps,
              ask the author to clarify (one question at a time) before generating.
         """
+        await self.send_message("I'll design test cases based on your approved requirements.")
+
         blockers = self._check_preconditions()
         if blockers:
             await self.send_message(self._format_blocked_message(blockers), message_type="error")
@@ -570,7 +572,7 @@ class MaryAgent(BaseAgent):
             + "\n\n"
             f"Output one question per line starting with '- ', at most "
             f"{_MAX_CLARIFY_QUESTIONS} questions, each concise and specific to this "
-            "feature. If nothing genuinely needs clarification, output exactly: "
+            f"feature. Write the questions in {self._get_conversation_language()} language. If nothing genuinely needs clarification, output exactly: "
             f"{_NO_CLARIFICATION_SENTINEL}\nOutput only the questions (or the sentinel)."
         )
         client = LLMClient(self.config)
@@ -737,7 +739,7 @@ class MaryAgent(BaseAgent):
             # reported the moment it finishes — instead of one opaque multi-minute call.
             # On the slow on-prem model the first case lands in ~1 min, then a steady
             # trickle, each visible + persisted as it arrives.
-            used_names: set[str] = set()
+            used_names: set[str] = self._get_existing_test_case_bases()
             streamed: list[TestCase] = []
 
             async def _on_streamed_case(tc: TestCase) -> None:
@@ -1266,17 +1268,6 @@ class MaryAgent(BaseAgent):
         used_names.add(base)
         return base
 
-    @staticmethod
-    def _role_folder(role: str | None) -> str:
-        """Map a test-case role to its per-role sub-folder segment (``<role>/<case>.md``).
-
-        Thin wrapper over the shared :func:`ai_qa.artifacts.storage.role_to_folder` so
-        Mary's test-case folders and Sarah's script folders use the SAME role→folder rule.
-        """
-        from ai_qa.artifacts.storage import role_to_folder
-
-        return role_to_folder(role)
-
     def _persist_test_case(
         self,
         adapter: PipelineArtifactAdapter,
@@ -1300,9 +1291,6 @@ class MaryAgent(BaseAgent):
         """
         base_name = self._unique_artifact_base(tc, position, used_names)
         artifact_name = f"{base_name}.md"
-        role_folder = self._role_folder(tc.role)
-        if role_folder:
-            artifact_name = f"{role_folder}/{artifact_name}"
         artifact = adapter.save_test_case(
             artifact_name,
             tc.to_markdown(),
@@ -1327,7 +1315,7 @@ class MaryAgent(BaseAgent):
             raise ValueError("MaryAgent requires an active project context.")
         adapter = PipelineArtifactAdapter(self.project_context)
         saved_ids: list[UUID] = []
-        used_names: set[str] = set()
+        used_names: set[str] = self._get_existing_test_case_bases()
         try:
             for position, tc in enumerate(self.test_cases, start=1):
                 saved_ids.append(self._persist_test_case(adapter, tc, position, used_names))
@@ -1380,6 +1368,29 @@ class MaryAgent(BaseAgent):
                     service.delete_artifact(project_id=project_id, artifact_id=art.id)
                 except Exception:
                     logger.warning("Could not delete orphan draft test case %s", art.id)
+
+    def _get_existing_test_case_bases(self) -> set[str]:
+        """Return the set of existing test case base names for collision resolution."""
+        bases: set[str] = set()
+        if self.project_context is None or self.project_context.artifact_service is None:
+            return bases
+        project_id = self.project_context.project_id
+        if project_id is None:
+            return bases
+        try:
+            artifacts = list(
+                self.project_context.artifact_service.list_artifacts(
+                    project_id=project_id, kind="testcase"
+                )
+            )
+            for art in artifacts:
+                if art.name and art.name.endswith(".md"):
+                    # Extract the base name, ignoring any legacy role folders
+                    base = art.name.split("/")[-1][:-3]
+                    bases.add(base)
+        except Exception:
+            logger.warning("Could not list existing test cases for collision resolution")
+        return bases
 
     def _materialize_requirement_artifacts(
         self, requirement_artifacts: list[PipelineArtifact]

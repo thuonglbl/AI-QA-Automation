@@ -18,6 +18,12 @@ import {
   Eye,
   UserCheck,
 } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { ScriptReviewItem, ScriptValidationError } from "@/types/testcase";
 
 // Must match react-syntax-highlighter's internal style type
@@ -106,8 +112,8 @@ export function SarahScriptReviewPanel({
 }: SarahScriptReviewPanelProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [resolvedIndices, setResolvedIndices] = useState<Set<number>>(new Set());
-  const [showRejectInput, setShowRejectInput] = useState(false);
-  const [rejectFeedback, setRejectFeedback] = useState("");
+  const [showRejectInput, setShowRejectInput] = useState<Record<number, boolean>>({});
+  const [rejectFeedback, setRejectFeedback] = useState<Record<number, string>>({});
 
   // 13.6 — per-script edit buffer (AC1: retained across Prev/Next, reset on new payload)
   const [edits, setEdits] = useState<Record<number, string>>({});
@@ -158,11 +164,7 @@ export function SarahScriptReviewPanel({
     }
   }, [scripts.length, currentIndex]);
 
-  // Reset feedback when navigating
-  useEffect(() => {
-    setShowRejectInput(false);
-    setRejectFeedback("");
-  }, [currentIndex]);
+  // Feedback is preserved per index across navigation
 
   // Sync resolved set from server-emitted status
   useEffect(() => {
@@ -202,17 +204,22 @@ export function SarahScriptReviewPanel({
   }
 
   function handleRejectSubmit() {
-    if (!rejectFeedback.trim()) return;
-    onReject(item.index, rejectFeedback.trim());
+    const feedback = rejectFeedback[currentIndex] || "";
+    if (!feedback.trim()) return;
+    onReject(item.index, feedback.trim());
     const next = new Set(resolvedIndices);
     next.delete(currentIndex);
     setResolvedIndices(next);
-    setShowRejectInput(false);
-    setRejectFeedback("");
+    setShowRejectInput((prev) => ({ ...prev, [currentIndex]: false }));
+    setRejectFeedback((prev) => ({ ...prev, [currentIndex]: "" }));
   }
 
   if (!item) {
-    return <div className="p-4 text-center text-slate-500">No scripts to review.</div>;
+    return (
+      <div className="p-4 text-center text-slate-500 text-sm bg-slate-50 border rounded-md">
+        No scripts to review. Please select a test case from the sidebar to generate scripts, or ask Sarah to try again.
+      </div>
+    );
   }
 
   const tc = item.test_case;
@@ -264,10 +271,23 @@ export function SarahScriptReviewPanel({
               <button
                 key={i}
                 onClick={() => setCurrentIndex(i)}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowLeft") {
+                    e.preventDefault();
+                    const prev = Math.max(0, i - 1);
+                    setCurrentIndex(prev);
+                    (e.currentTarget.previousElementSibling as HTMLElement)?.focus();
+                  } else if (e.key === "ArrowRight") {
+                    e.preventDefault();
+                    const next = Math.min(scripts.length - 1, i + 1);
+                    setCurrentIndex(next);
+                    (e.currentTarget.nextElementSibling as HTMLElement)?.focus();
+                  }
+                }}
                 title={`${i + 1}: ${s.test_case.title} — ${label}`}
                 aria-label={`Script ${i + 1}: ${label}`}
                 className={cn(
-                  "w-4 h-4 rounded-full border-2 transition-all",
+                  "w-4 h-4 rounded-full border-2 transition-all focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-[#3b82f6]",
                   statusClass,
                   i === currentIndex ? "border-slate-700 scale-125" : "border-transparent",
                 )}
@@ -325,6 +345,7 @@ export function SarahScriptReviewPanel({
           Errors do not hide the script pane — the user can still see and fix their code. */}
       {hasValidationErrors && (
         <div
+          id="validation-errors-banner"
           className="mx-3 mt-3 bg-red-50 border border-red-200 rounded-md p-3"
           role="alert"
           aria-label="Validation errors"
@@ -526,6 +547,7 @@ export function SarahScriptReviewPanel({
               }
               disabled={disabled}
               aria-label="Edit script content"
+              aria-describedby={hasValidationErrors ? "validation-errors-banner" : undefined}
               spellCheck={false}
             />
           )}
@@ -533,7 +555,7 @@ export function SarahScriptReviewPanel({
       </div>
 
       {/* Reject feedback input */}
-      {showRejectInput && (
+      {showRejectInput[currentIndex] && (
         <div className="px-4 py-3 border-t bg-slate-50">
           <div className="text-xs text-slate-600 mb-1 font-medium">
             Describe what needs to be changed:
@@ -543,25 +565,25 @@ export function SarahScriptReviewPanel({
             rows={3}
             placeholder="Describe what needs to be changed…"
             maxLength={1000}
-            value={rejectFeedback}
-            onChange={(e) => setRejectFeedback(e.target.value)}
+            value={rejectFeedback[currentIndex] || ""}
+            onChange={(e) => setRejectFeedback((prev) => ({ ...prev, [currentIndex]: e.target.value }))}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (rejectFeedback.trim() && !disabled) handleRejectSubmit();
+                if ((rejectFeedback[currentIndex] || "").trim() && !disabled) handleRejectSubmit();
               }
             }}
             disabled={disabled}
           />
           <div className="flex items-center justify-between mt-1">
-            <span className="text-xs text-slate-400">{rejectFeedback.length}/1000</span>
+            <span className="text-xs text-slate-400">{(rejectFeedback[currentIndex] || "").length}/1000</span>
             <div className="flex gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  setShowRejectInput(false);
-                  setRejectFeedback("");
+                  setShowRejectInput((prev) => ({ ...prev, [currentIndex]: false }));
+                  setRejectFeedback((prev) => ({ ...prev, [currentIndex]: "" }));
                 }}
               >
                 Cancel
@@ -570,7 +592,7 @@ export function SarahScriptReviewPanel({
                 size="sm"
                 className="bg-red-600 hover:bg-red-700 text-white"
                 onClick={handleRejectSubmit}
-                disabled={!rejectFeedback.trim() || disabled}
+                disabled={!(rejectFeedback[currentIndex] || "").trim() || disabled}
               >
                 Submit Feedback
               </Button>
@@ -581,35 +603,75 @@ export function SarahScriptReviewPanel({
 
       {/* Footer (AC2, AC3) */}
       <div className="flex items-center justify-between gap-3 px-4 py-3 bg-slate-50 border-t">
-        <Button
-          variant="outline"
-          onClick={() => setShowRejectInput((v) => !v)}
-          disabled={disabled}
-          className="text-red-600 border-red-300 hover:bg-red-50"
-        >
-          <MessageSquareX className="w-4 h-4 mr-2" />
-          Reject
-        </Button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-block">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowRejectInput((prev) => ({ ...prev, [currentIndex]: !prev[currentIndex] }))}
+                  disabled={disabled}
+                  className="text-red-600 border-red-300 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <MessageSquareX className="w-4 h-4 mr-2" />
+                  Reject
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {disabled && (
+              <TooltipContent side="top">
+                <p>Review unavailable: please answer the active prompt first</p>
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
         <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleSkip}
-            disabled={disabled}
-            className="text-slate-600"
-          >
-            <SkipForward className="w-4 h-4 mr-1" />
-            Skip
-          </Button>
-          <Button
-            variant="default"
-            onClick={handleApprove}
-            disabled={disabled}
-            className="bg-blue-600 hover:bg-blue-700"
-          >
-            <Check className="w-4 h-4 mr-2" />
-            Approve
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-block">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSkip}
+                    disabled={disabled}
+                    className="text-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <SkipForward className="w-4 h-4 mr-1" />
+                    Skip
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {disabled && (
+                <TooltipContent side="top">
+                  <p>Review unavailable: please answer the active prompt first</p>
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
+
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-block">
+                  <Button
+                    variant="default"
+                    onClick={handleApprove}
+                    disabled={disabled}
+                    className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Check className="w-4 h-4 mr-2" />
+                    Approve
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {disabled && (
+                <TooltipContent side="top">
+                  <p>Review unavailable: please answer the active prompt first</p>
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
     </div>

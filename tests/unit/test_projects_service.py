@@ -26,7 +26,7 @@ def db_session() -> Generator[Session]:
 
 
 def _create_user(session: Session, email: str) -> User:
-    user = User(email=email, display_name="Test", password_hash="hash", role="standard")
+    user = User(email=email, display_name="Test", role="standard")
     session.add(user)
     session.commit()
     session.refresh(user)

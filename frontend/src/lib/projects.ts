@@ -135,7 +135,9 @@ export async function runE2ETests(): Promise<E2ETestRunResult> {
 
 /** Poll the current/last E2E run state (poll while status === "running"). */
 export async function getE2EStatus(): Promise<E2ETestRunResult> {
-  return await apiFetch<E2ETestRunResult>("/admin/tests/e2e/status");
+  return await apiFetch<E2ETestRunResult>("/admin/tests/e2e/status", {
+    cache: "no-store",
+  });
 }
 
 /**

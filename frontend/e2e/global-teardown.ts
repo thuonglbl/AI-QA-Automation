@@ -1,6 +1,7 @@
 import process from "node:process";
 import { request as playwrightRequest } from "@playwright/test";
 import type { FullConfig } from "@playwright/test";
+import { getAdminToken } from "../support/helpers/users";
 
 /**
  * Global teardown: sweep ALL leftover E2E test data after the whole suite runs.
@@ -31,8 +32,9 @@ const adminPassword =
 
 // Synthetic test emails registered by the specs.
 const TEST_EMAIL_PATTERN = /@example\.(com|test)$/i;
-// Synthetic test project names, e.g. "S7.7 Solo ...", "Story 7.2 Assigned ...".
-const TEST_PROJECT_NAME_PATTERN = /^(S\d|Story \d)/;
+// Synthetic test project names, e.g. "S7.7 Solo ...", "Story 7.2 Assigned ...",
+// "E2E Isolated OnPrem ..." (the throwaway project created by group-8).
+const TEST_PROJECT_NAME_PATTERN = /^(S\d|Story \d|E2E Isolated)/;
 
 type AdminUser = { id: string; email: string; role: string };
 type AdminProject = { id: string; name: string };
@@ -47,16 +49,22 @@ export default async function globalTeardown(_config: FullConfig): Promise<void>
 
   const context = await playwrightRequest.newContext();
   try {
-    const loginResponse = await context.post(`${apiBaseUrl}/auth/login`, {
-      data: { email: adminEmail, password: adminPassword },
-    });
-    if (!loginResponse.ok()) {
+    // Epic 23 removed local password login — the app is SSO-only now. Authenticate
+    // the same way global-setup does (Azure SSO); getAdminToken reuses the cookies
+    // cached during setup, so this is a fast lookup rather than a fresh round-trip.
+    let adminToken: string;
+    try {
+      adminToken = await getAdminToken();
+    } catch (err) {
       console.warn(
-        `[e2e teardown] Admin login failed (${loginResponse.status()}) — skipping cleanup.`,
+        `[e2e teardown] Could not obtain admin SSO token — skipping cleanup: ${err}`,
       );
       return;
     }
-    const adminToken = (await loginResponse.json()).access_token as string;
+    if (!adminToken) {
+      console.warn("[e2e teardown] Empty admin SSO token — skipping cleanup.");
+      return;
+    }
     const authHeaders = { Authorization: `Bearer ${adminToken}` };
 
     // 1) Delete test users (cascades to their threads / agent_runs / messages).

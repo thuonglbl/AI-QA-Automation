@@ -28,6 +28,7 @@ FR9: Pipeline can map expected results from test case documentation into Playwri
 FR10: Engineer can trigger the pipeline by providing a Confluence page URL
 FR11: Pipeline can execute end-to-end (MCP → LLM → browser-use → Playwright output) without manual intervention
 FR12: Pipeline can control a local Chrome instance via browser-use framework using active SSO login session
+> **REVISED 2026-06-25 (Epic 25, see `sprint-change-proposal-2026-06-25-no-session-capture.md` / `sprint-change-proposal-2026-06-27-test-credentials.md`):** target-app auth no longer reuses the end user's active SSO session — it authenticates via an automated login with a DEDICATED TEST ACCOUNT in the tool's own isolated browser. Users must provide their own test account credentials (stored as user secrets), preventing central storage of passwords by Project Admins. Project Admins only configure the `login_type` (e.g. sso vs standard). Group Security prohibits capturing the employee's session. Final FR text reconciled in Story 25-7.
 FR13: Pipeline can output generated test files to a configurable output directory
 FR14: Provider API keys and MCP API keys must not be stored in `.env` or plaintext JSON columns. They must be collected from the user and stored in encrypted PostgreSQL fields, with only non-secret metadata persisted separately from encrypted secret material.
 FR14a: Users can update or replace expired MCP and AI provider API keys from the UI without admin support. The UI must never display stored secret values.
@@ -101,6 +102,7 @@ NFR7: User-provided MCP keys and AI provider API keys are stored only in encrypt
 NFR8: Secret encryption uses `USER_SECRETS_ENCRYPTION_KEY`, mapped to `AppSettings.user_secrets_encryption_key`; the encryption key must not be stored in PostgreSQL.
 NFR9: Passwords are stored as one-way password hashes, not reversible encryption or plaintext.
 NFR10: Browser sessions reuse existing SSO and the pipeline must not store, cache, or log credentials.
+> **REVISED 2026-06-25 (Epic 25, see `sprint-change-proposal-2026-06-25-no-session-capture.md` / `sprint-change-proposal-2026-06-27-test-credentials.md`):** the pipeline must NEVER read, store, or replay an END USER's browser session or corporate credentials. Target-app auth uses DEDICATED TEST ACCOUNTS whose credentials are stored encrypted as per-user secrets, resolved only at runtime, and never logged/echoed (leak-canary enforced). Storing dedicated test-account credentials as user secrets is the security-accepted replacement for the now-prohibited session capture. (Also revises Story 13.4 + Story 14.4 "existing authenticated session / without storing credentials" framing — login now happens in setup/harness; the generated script body still hardcodes no credentials.) Final text reconciled in Story 25-7.
 NFR11: AI browser agent is restricted to read-only navigation with no form submissions, data modifications, or write operations during generation.
 NFR12: Audit logging records all pipeline executions, including who, when, which page, and which scripts.
 NFR13: On-premises LLMs eliminate external API data transfer entirely where selected.
@@ -183,7 +185,7 @@ FR15a: Epic 9 - Assign only discovered available models
 FR15b: Epic 9 - User-reviewable provider/model review
 FR16: Epic 8 - Admin CRUD for users, projects, and memberships
 FR16a: Epic 8 - Admin E2E test execution and report download
-FR17: Epic 20 - Provider comparison backlog support
+FR17: Epic 21 - Provider comparison backlog support
 FR18: Not implemented - removed from MVP
 FR19: Epic 13 - Side-by-side script/source review
 FR20: Epic 13 - Approve or reject generated scripts
@@ -191,11 +193,11 @@ FR21: Epic 13 - Edit scripts before approval
 FR22: Epic 12 / Epic 13 - Low-confidence review flagging
 FR23: Epic 11 - Jira MCP connection
 FR24: Epic 11 - Retrieve Jira test-related requirements
-FR25: Epic 20 - Audit logging
+FR25: Epic 21 - Audit logging
 FR26: Epic 14 - Script execution success-rate reporting
 FR27: Epic 11 / Epic 12 - Input quality detection and warnings
-FR28: Epic 20 - Leadership metrics dashboard
-FR29: Epic 20 - LLM cost tracking and comparison data
+FR28: Epic 21 - Leadership metrics dashboard
+FR29: Epic 21 - LLM cost tracking and comparison data
 FR30: Epic 7 - Project conversation threads
 FR31: Epic 7 - Create and resume threads
 FR32: Epic 7 - Private per-user conversation threads
@@ -2127,7 +2129,57 @@ As a frontend developer, I want lightweight checks and documented conventions th
 
 _Provisional — acceptance criteria TBD via PRD._
 
-### Epic 20: Audit, Metrics, and Leadership Visibility
+### Epic 20: Retrieval-Augmented Requirements for Context-Bounded Generation (RAG)
+
+Today Mary loads every requirement Bob extracted (effectively the whole Confluence space) plus the Jira ticket before reasoning, so even a modest project already consumes 100k+ tokens of context and a larger space would overflow the model outright. This epic adds a retrieval layer so the pipeline reads only the requirement pages relevant to the current test target, the way a developer opens just the few Confluence pages that matter rather than the entire space. Each requirement page is indexed by its title plus an LLM-enriched description (built from the page's own content and rolled-up summaries of its child pages, so terse or unclear titles still retrieve well), and the relevant pages are selected by semantic similarity over the existing page hierarchy. Below a configurable size threshold the pipeline keeps the current full-load behavior, so small projects are unaffected.
+
+**FRs covered:** new (extends Epic 11 FR23/FR24 source retrieval and FR45 artifact lineage; directly serves Epic 12 Mary test-case generation; relates to the Story 16-8 hierarchical requirements tree and Epic 18 source-change re-index). New FR numbers to be allocated during the PRD.
+
+**Status:** Provisional — single product-owner one-liner, no PRD yet; acceptance criteria to be elaborated via a PRD before development. RECOMMENDED APPROACH (to be confirmed): hierarchy-aware semantic retrieval over LLM-enriched page-level descriptions — NOT full Graph RAG (overkill at current scale; the parent/child tree is already captured via Artifact.parent_source_id and the Story 16-8 ancestor chain) and NOT plain keyword/JSON matching (brittle when titles are terse, which is the core complaint). Page-level retrieval (read whole relevant pages), not chunk-level. DECISION GATES: (1) the embedding model MUST be reachable on the air-gapped on-premises host (LiteLLM proxy at https://ai.svc.corp.ch/api) — confirm an embedding endpoint exists, with a lexical/BM25 index or a small bundled local embedder as fallback if none; (2) vector storage — pgvector (a Postgres-only optimization) versus an embedding column stored as JSON/array with cosine computed in Python (a cross-dialect default that also works in the SQLite test suite), defaulting to the JSON+Python path at project scale (hundreds of pages); (3) retrieval tuning — top-K, similarity threshold, and whether to expand along the hierarchy to include parent pages for context. Conventions: persisted descriptions and index data stay English (App-UI-English-only); embedding API calls follow the per-user-secret and no-secret-leak rules; the index must work under both Postgres (prod) and SQLite (tests). Graph RAG (entity/relationship extraction) is explicitly deferred as a future enhancement.
+
+### Story 20.1: Page Retrieval Index Foundation
+
+As the system, I want a persisted per-page retrieval record (source id, title, hierarchy path, enriched description, and embedding vector) with an Alembic migration, so that requirement pages can be searched without loading them all.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 20.2: LLM-Enriched Page Descriptions with Hierarchy Roll-Up
+
+As the indexer, I want each page description generated from its own content plus bottom-up summaries of its child pages, so that pages with terse or unclear titles are still described richly enough to retrieve accurately.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 20.3: Embedding Generation via On-Prem-Compatible Provider
+
+As the indexer, I want title and description embeddings produced through an embedding model reachable on the air-gapped on-premises deployment (with a lexical fallback when none is available), so that retrieval works in the UAT and production environments, not only where cloud egress exists.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 20.4: Semantic Retrieval of Relevant Pages
+
+As Mary, I want to retrieve the top-K requirement pages most relevant to the current test target (optionally expanded along the page hierarchy for parent context), so that I reason over the pages that matter instead of the whole space.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 20.5: Mary Context-Bounded Retrieval Integration
+
+As Mary, I want to load only the retrieved relevant pages (with a full-load fallback below a configurable size threshold and a token-budget guard), so that test-case generation no longer overflows context on large requirement sets while small projects behave exactly as before.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 20.6: Incremental Index Maintenance and Re-Index on Source Change
+
+As the system, I want the retrieval index updated incrementally when pages are added, changed, or removed (reusing Epic 18 source-change detection so only deltas are re-embedded), so that retrieval stays accurate without rebuilding the whole index every run.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Story 20.7: Retrieval Transparency and Tuning
+
+As a QA user, I want to see which pages were retrieved and why, and to adjust top-K and the similarity threshold, so that I can trust the source coverage of generated test cases and tune recall against context size, mirroring the attachment-coverage transparency from Epic 17.
+
+_Provisional — acceptance criteria TBD via PRD._
+
+### Epic 21: Audit, Metrics, and Leadership Visibility
 
 Admins and leadership can see audit trail, execution metrics, success rates, effort reduction, LLM cost tracking, and provider comparison backlog support.
 
@@ -2135,7 +2187,7 @@ Admins and leadership can see audit trail, execution metrics, success rates, eff
 
 **Note:** Lower business value (2026-06-20 reprioritization) — sequenced after the core pipeline, UX, and new-feature epics but ahead of the externally-blocked SSO epics. Absorbs the former standalone audit-logger backlog (foundation + extended event types).
 
-### Story 20.1: Audit Event Model and Persistence
+### Story 21.1: Audit Event Model and Persistence
 
 As an admin,
 I want pipeline and security-relevant actions recorded as structured audit events,
@@ -2156,7 +2208,7 @@ So that activity can be reviewed consistently across projects and agents.
 **When** they are queried later
 **Then** events retain immutable core fields needed for compliance and troubleshooting
 
-### Story 20.2: Pipeline Audit Logging
+### Story 21.2: Pipeline Audit Logging
 
 As an admin,
 I want all major pipeline actions logged,
@@ -2176,7 +2228,7 @@ So that I can trace who read, generated, reviewed, approved, edited, executed, o
 **When** execution starts, completes, or fails
 **Then** audit logs record execution scope, browser where applicable, result summary, report artifact ID, and duration
 
-### Story 20.3: Admin Audit Trail View
+### Story 21.3: Admin Audit Trail View
 
 As an admin,
 I want to view and filter audit events,
@@ -2196,7 +2248,7 @@ So that I can investigate project activity and compliance questions.
 **When** the request is made
 **Then** access is denied and no audit event details are returned
 
-### Story 20.4: Execution Metrics Aggregation
+### Story 21.4: Execution Metrics Aggregation
 
 As a QA lead,
 I want script execution metrics aggregated over time,
@@ -2216,7 +2268,7 @@ So that I can understand automation reliability and coverage trends.
 **When** results include failed or skipped tests
 **Then** failure and skip counts remain distinguishable from passed tests
 
-### Story 20.5: Leadership Metrics Dashboard
+### Story 21.5: Leadership Metrics Dashboard
 
 As a leadership or admin user,
 I want a metrics dashboard for QA automation impact,
@@ -2237,7 +2289,7 @@ So that I can understand success rate, usage, and effort reduction indicators.
 **When** the request is made
 **Then** restricted metrics are denied or scoped according to their project permissions
 
-### Story 20.6: LLM Cost Tracking
+### Story 21.6: LLM Cost Tracking
 
 As an admin,
 I want estimated LLM usage and costs tracked by provider and model,
@@ -2258,7 +2310,7 @@ So that I can monitor cost trends without exposing secrets.
 **Then** costs can be grouped by provider, model, project, agent, and time range
 **And** no API key, endpoint secret, request payload secret, or decrypted credential is exposed
 
-### Story 20.7: Provider Comparison Backlog Support
+### Story 21.7: Provider Comparison Backlog Support
 
 As an admin,
 I want normalized provider/model metrics stored for future comparison,
@@ -2278,78 +2330,211 @@ So that the product can later support provider quality and cost comparison witho
 **When** the query is authorized
 **Then** results return only safe metadata and aggregate summaries, not prompts containing secrets or confidential source content
 
-### Epic 21: Claude SSO Authentication for Browser Use (IT-gated)
+### Epic 22: Company-Provided Claude API Key (separate from personal keys)
 
-Let Sarah's browser-use exploration authenticate to Claude through enterprise SSO or the internal company gateway/MCP, so users never paste a raw Anthropic key — when IT enables it. The codebase already has the SSO login flow (OAuth+PKCE, mock IdP, the per-user `claude_sso` secret, `ClaudeSSOAdapter`, and `build_browser_use_llm` mapping `claude-sso` -> `ChatAnthropic`), but browser-use still needs a REAL `sk-ant-api...` key that SSO login alone never yields, so it falls back to a server-side enterprise key. This epic closes that gap by sourcing a usable Claude credential from the SSO/IT path, with no raw-key entry.
+Let users drive Claude inference (Sarah's browser-use exploration, and any Claude provider use) with a **company-issued Anthropic API key** obtained through the company Anthropic workspace, kept strictly separate from a user's personal Claude key because the two carry different security and governance levels. Company IT confirmed the credential mechanism: each employee logs in to `platform.claude.com` with their `@corp.ch` identity, IT grants workspace access via a Change Request, and the employee creates their own API key (credits requested via Manager/CR). This is a real `sk-ant-api...` key — NOT an OAuth/SSO token — so it slots into the existing `claude` provider path; the work is the separation, selection, and validation around it.
 
-**FRs covered:** FR1, FR12, FR14, FR36, FR54 (existing); new — "SSO/IT path yields a usable Claude credential for browser-use, or the company gateway/MCP proxies Claude, without raw-key entry"
+This RESOLVES the previously-provisional credential unknown: the mechanism is a real per-user API key (option a), not an OAuth-token-accepting API (b). The existing SSO login flow (OAuth+PKCE mock IdP, the `claude_sso` secret, `ClaudeSSOAdapter`, `build_browser_use_llm` claude mapping) stays for login UX, but the **inference credential is now a company API key stored in its own secret slot** (`claude_company`) alongside the personal `claude` key.
 
-**Status:** Provisional and heavily IT-dependent. The core unknown is which mechanism IT provides: (a) a real Anthropic key provisioned behind SSO, (b) an OAuth/SSO token the Anthropic/gateway API accepts directly, or (c) a Claude-capable company gateway/MCP that proxies inference. Confirm the IT mechanism via a PRD/correct-course before dev. Honor conventions: secrets never in messages/logs/artifacts; leak-canary coverage; deterministic model selection.
+**FRs covered:** FR14, FR36, FR54 (existing per-user encrypted secrets), NFR7 (secrets never leak); new — "a company-scoped Claude API key is stored and used separately from a personal Claude key, selectable per run, with a gateway/MCP fallback where direct egress is unavailable."
 
-### Story 21.1: Confirm the IT-Supported Claude Credential Path
+**Status:** Planning, IT-gated. The API key is **requested from IT but not yet provisioned** — plan now, implement when it arrives. Decisions (Thuong, 2026-06-23): (1) **separation = per-user dedicated secret slot** `claude_company` alongside personal `claude`; each user pastes their own company key, encrypted per-user, tagged company-scope with stricter handling/audit (the headline security concern); (2) **selection = user chooses per provider-config / per-thread** which Claude credential to use (company vs personal); (3) **scope = simplify but keep the gateway fallback** — dropped the OAuth-token story, kept the internal gateway/MCP story for air-gapped hosts. ⚠️ **Air-gapped caveat:** a company Claude key still needs egress to `api.anthropic.com`; the no-internet/no-proxy UAT host cannot use it without an IT egress proxy, so UAT keeps falling back to on-prem models and Story 22.5 (gateway/MCP) remains the air-gapped Claude path. Honor conventions: secrets never in messages/logs/artifacts; leak-canary coverage; deterministic model selection.
 
-As the team, we want to confirm with company IT which mechanism is available (SSO-issued real key vs OAuth-token-accepting API vs Claude-capable internal gateway/MCP), so that the rest of the epic targets a real, IT-blessed credential path instead of the current server-side-key stopgap.
+### Story 22.1: Company Claude API Key Secret Slot Separate From Personal
 
-_Provisional — acceptance criteria TBD via PRD._
+As a QA user, I want to store my company-issued Claude API key in a dedicated secret slot separate from my personal Claude key, so that the company credential is governed and handled independently (different security level) and the two are never conflated.
 
-### Story 21.2: Source a Usable Claude Credential from the SSO/IT Path
+_Provisional — acceptance criteria TBD via PRD / bmad-create-story._
 
-As a QA user, I want logging in via SSO to make a usable Claude credential available for the pipeline (without pasting a raw sk-ant key), so that Claude inference works through the company-approved path rather than a manually entered key.
+### Story 22.2: Per-Thread Company vs Personal Claude Credential Selection
 
-_Provisional — acceptance criteria TBD via PRD._
+As a QA user, I want to choose whether a given configuration/thread uses my company Claude key or my personal Claude key, so that I control which credential each run consumes (company credits vs personal account).
 
-### Story 21.3: Drive Sarah's Browser-Use with the SSO-Sourced Claude Credential
+_Provisional — acceptance criteria TBD via PRD / bmad-create-story._
 
-As a QA user, I want Sarah's browser-use exploration to authenticate to Claude using the SSO/gateway-sourced credential, so that script generation runs end-to-end on Claude without a raw key, and falls back gracefully when the IT path is unavailable.
+### Story 22.3: Drive Browser-Use With the Selected Company Claude Key
 
-_Provisional — acceptance criteria TBD via PRD._
+As a QA user, I want Sarah's browser-use exploration to authenticate to Claude using the selected company API key, so that script generation runs end-to-end on the company-approved credential, falling back gracefully when it is unavailable.
 
-### Story 21.4: Validate Claude-SSO Connection and Discover Models
+_Provisional — acceptance criteria TBD via PRD / bmad-create-story._
 
-As a user, I want Alice to validate the Claude-SSO/gateway connection and discover available Claude models through that path, so that configuration review reflects real reachability and never silently assumes a working credential.
+### Story 22.4: Validate Company Claude Connection and Discover Models
 
-_Provisional — acceptance criteria TBD via PRD._
+As a user, I want Alice to validate the company Claude key and discover available Claude models through it, so that configuration review reflects real reachability (including the air-gapped no-egress case) and never silently assumes a working credential.
 
-### Story 21.5: Support Claude via the Internal Company Gateway/MCP
+_Provisional — acceptance criteria TBD via PRD / bmad-create-story._
 
-As an enterprise deployment, I want Claude inference to optionally route through a Claude-capable internal gateway/MCP endpoint, so that browser-use can use Claude even when no SSO-issued Anthropic key is obtainable, reusing the on-premises/OpenAI-compatible adapter pattern.
+### Story 22.5: Claude via Internal Company Gateway/MCP Fallback
 
-_Provisional — acceptance criteria TBD via PRD._
+As an enterprise deployment, I want Claude inference to optionally route through a Claude-capable internal gateway/MCP endpoint, so that browser-use can use Claude on air-gapped hosts (e.g. UAT with no direct egress to api.anthropic.com), reusing the on-premises/OpenAI-compatible adapter pattern.
 
-### Epic 22: Company SSO and User Directory Sync
+_Provisional — acceptance criteria TBD via PRD / bmad-create-story._
 
-Let employees sign in with their corporate Azure Entra ID identity instead of (or alongside) local email/password accounts, and keep the user directory in step with the company source of truth by syncing users from Oracle SharedERP. This subsumes the previously deferred Azure Entra SSO foundation and layers automated user provisioning on top of the existing local auth + RBAC + admin user-management foundation. Per-user encrypted secrets and project-scoped RBAC stay unchanged; only the identity and account-provisioning layer is added.
+### Epic 23: SSO-First Authentication, Azure App-Role Mapping, and Auto-Provisioning
 
-**FRs covered:** reuses/extends Epic 6 auth + RBAC (6-2, 6-3) and admin user management (2-2); revives the deferred Azure Entra SSO foundation. SharedERP directory sync is new (no existing FR).
+Let the company identity provider be the **only** front door. The login screen collapses to a **single "Sign in with SSO" button** — there is no email/password field and no second login surface. Every user (standard, project-admin, platform-admin) signs in through Azure Entra ID; the platform **auto-provisions** their User record on first login and **derives their platform role(s) from Azure App Roles** (`admin`, `project-admin`, `user`). A user may hold **multiple** app roles at once; multi-role users land on the standard user workspace by default and get header links to the Project Admin Dashboard and/or Admin Dashboard for the roles they hold. The app header shows the user's name, role(s), and an **avatar synced from Azure**. The `admin` role carries **implicit project-admin authority over every project** and the power to **assign project-admin users to one or more projects**. Local email/password login is **removed** and the redundant credential column (`users.password_hash`) is **dropped**. Both **local and UAT** environments must be able to complete SSO. Pre-provisioning needs no bulk directory sync: an admin **creates a user by email** (identity-only, no password) and a project admin assigns them to projects, so a user lands on their projects on first login.
 
-**Status:** Provisional, LOW priority, gated on company IT/security policy approval. SSO is additive to local auth, not a hard replacement (local bootstrap-admin retained as break-glass fallback). The UserSession dataclass already exposes groups/given_name/family_name, so SSO claims slot into the existing session layer. SharedERP sync is the only genuinely new external integration (likely an ai_connection/ directory adapter) and needs a reconciliation policy (create/update/deactivate, never hard-delete). Open questions: group-claim-to-role mapping, deprovisioning policy, sync cadence, and the stable join key between Entra and SharedERP.
+This **RESHAPES** the earlier two-origin plan (SSO at `/` + local `/admin` login). Thuong's 2026-06-25 direction supersedes it: one SSO button, no local passwords, Azure-app-role-driven RBAC. Per-user encrypted secrets and project-scoped RBAC mechanics stay; only the identity, role-source, and account-provisioning layers change.
 
-### Story 22.1: Azure Entra ID SSO Login Foundation
+**FRs covered:** reuses/extends Epic 6 auth + RBAC (6-2, 6-3), admin user management (2-2, Epic 15), and the project-admin↔project many-to-many (Epic 15, story 16-13); revives the deferred Azure Entra SSO foundation (prior art in reverted commit `73980bf` — `api/auth/azure.py`, `MicrosoftLoginButton.tsx`, config). New: single-SSO login, Azure-app-role→platform-role mapping, multi-role users, role-aware in-app navigation, Azure avatar sync, and removal of local password auth (no existing FR; final FR text deferred to a PRD pass, consistent with Epics 14–24).
 
-As an employee, I want to sign in with my corporate Azure Entra ID account, so that I authenticate with my existing company identity instead of a local password.
+**Decisions (sprint planning 2026-06-25, Thuong — supersede the 2026-06-24 two-origin decisions):** (1) **Spike first** — the topology + air-gapped UAT egress are genuinely unknown, so 23-1 is a feasibility investigation before production code; the spike must confirm a path that works on **both** local and UAT. (2) **Single SSO front door** — one "Sign in with SSO" button, no password field, no `/admin` local login; all roles authenticate via SSO. (3) **Roles from Azure App Roles** — the app registration exposes `admin` / `project-admin` / `user`; one user may hold several; the platform maps the token `roles` claim → its platform roles on every login. (4) **Multi-role UX** — default to the user workspace; surface header links to the dashboards the user is entitled to. (5) **Avatar from Azure** — show the synced photo (initials fallback). (6) **Admin = global project-admin** + can assign project-admin users to 1..n projects (preserve many-to-many + platform-admin immutability from Epic 15). **A `project_admin` membership CONFERS the project-admin role** (Thuong 2026-06-25): an admin can create a user and assign them as project-admin of a project **entirely in-app, before that person ever logs in** — no Azure `project-admin` app-role grant needed; the membership confers `project_admin` on first SSO login. Only the platform **`admin`** role is Azure-only. (7) **Remove local password auth and drop `users.password_hash`.** (8) **No bulk directory sync** — the earlier SharedERP/Graph user-sync (was story 23.7) is **DROPPED** (Thuong 2026-06-25): admin **Create-User** (identity-only after 23.6) + the **existing project-admin member assignment** already let an admin pre-provision a user by email and assign them to projects before first login, so no automated user pull is needed.
 
-_Provisional — acceptance criteria TBD via PRD._
+**Status:** Provisional, gated on company IT/security policy approval; 23-1 (spike) can start now. Azure inputs are **already provisioned** (Thuong has an app registration with tenant id / app (client) id / client secret + the 3 app roles; on the Enterprise Application a user can be assigned multiple app roles). The `msal>=1.28` + `python-jose[cryptography]>=3.3` deps are already in `pyproject.toml` (leftover from the reverted SSO foundation). Grounding (verified in code 2026-06-25): login today is local email/password only (`api/auth/local.py` → `/auth/login`, JWT cookie via `SessionManager` at `api/auth/session.py:78`); the FE has a single password `LoginPage.tsx` (`frontend/src/components/auth/LoginPage.tsx`) and `App.tsx` renders by auth state (1702-1711) with **no URL routing / no router dep**; `UserSession` (`api/auth/session.py:17-76`) already exposes `given_name`/`family_name`/`groups`, so Azure claims slot into the existing session layer; `User.role` is a **single** `String(50)` (`db/models.py:38`); the only credential column left after migration `c7e3a9f04b21` (which already dropped `login_type`/`project_accounts`/`users.chrome_path`) is **`users.password_hash`** (`db/models.py:37`) — there is **no `account` column**; `claude_sso.py` is provider auth for browser-use, NOT user login. **Air-gap reality:** app-level OIDC needs backend egress to `login.microsoftonline.com` (token + JWKS) and `graph.microsoft.com` (avatar), which the **air-gapped UAT host blocks** without an IT proxy (see memory `uat-airgapped-egress-model-transfer.md`); the spike weighs **(A) app-level OIDC + IT egress proxy** vs **(B) SPA/MSAL.js browser-side code exchange + cached/bundled JWKS** (browser has the corporate session and internet; backend only validates the ID token) vs **(C) reverse-proxy header SSO**. Decision gates (topology, multi-role persistence, avatar storage, break-glass, in-app navigation) are baked into the individual stories.
 
-### Story 22.2: SSO Identity to Platform Account Linking
+### Story 23.1: SSO Feasibility Spike — Topology, UAT Egress, App-Roles, and Avatar
 
-As a returning SSO user, I want my Entra identity matched to (or provisioning) my platform User record, so that my role, project memberships, and per-user secrets carry over across logins.
+As an operator, I want a time-boxed feasibility investigation of how to reuse corporate Azure SSO on **both** local and air-gapped UAT, so that we commit to the right topology and know the exact app-registration / IT asks (egress proxy or reverse proxy), the app-role claim shape, and the avatar path before building.
 
-_Provisional — acceptance criteria TBD via PRD._
+_Provisional — investigation/spike; acceptance criteria TBD. Output = recommended topology + UAT egress verdict + app-role→platform-role mapping spec + avatar plan + concrete IT asks._
 
-### Story 22.3: Oracle SharedERP User Directory Sync
+### Story 23.2: SSO Login Foundation and Single SSO-Only Login Screen
 
-As an admin, I want company users synced from Oracle SharedERP, so that the platform user directory stays aligned with the official employee list without manual entry.
+As an employee, I want the login screen to offer a single "Sign in with SSO" button that authenticates me with my corporate Azure identity (no password field), so that I sign in with my existing company account and the platform no longer manages local passwords.
 
-_Provisional — acceptance criteria TBD via PRD._
+_Provisional — acceptance criteria TBD; mechanism follows the 23.1 topology decision. Establishes the OIDC round-trip + session for an existing user; first-login provisioning + role mapping is 23.3._
 
-### Story 22.4: Auth Mode Config and Local Fallback
+### Story 23.3: Auto-Provision on First Login and Azure App-Role → Platform-Role Mapping
 
-As an operator, I want to configure SSO vs local auth (and a break-glass fallback for admins), so that the platform works during R&D and degrades safely if SSO is unavailable.
+As a first-time or returning SSO user, I want the platform to auto-create my User record on first login and derive my platform role(s) from my Azure App Roles (supporting multiple roles), so that I can use the platform immediately without an admin adding me, and an Azure `admin` app-role bootstraps platform-admin access.
 
-_Provisional — acceptance criteria TBD via PRD._
+_Provisional — acceptance criteria TBD. Decision gate: persist a multi-role set (new `User.roles`) vs derive each login + keep `User.role` as the derived primary._
 
-### Story 22.5: Admin Sync and Directory Management UI
+### Story 23.4: Role-Aware Navigation and Header Identity with Azure Avatar
 
-As an admin, I want to trigger/review SharedERP syncs and manage SSO-provisioned users from the admin dashboard, so that I can oversee provisioning, deactivation, and role assignment.
+As a multi-role user, I want to land on the user workspace by default with header links to the Project Admin Dashboard and/or Admin Dashboard for the roles I hold, and to see my name, role(s), and Azure-synced avatar in the header, so that I can move between the surfaces I'm entitled to.
 
-_Provisional — acceptance criteria TBD via PRD._
+_Provisional — acceptance criteria TBD. Decision gates: in-app navigation (state-based vs add a router) and avatar storage (blob vs URL vs data-URI)._
+
+### Story 23.5: Admin Global Project-Admin Authority and Project-Admin Assignment
+
+As a platform admin, I want implicit project-admin rights over every project plus the ability to assign project-admin users to one or more projects, so that I can delegate project administration without hand-managing each membership row.
+
+_Provisional — acceptance criteria TBD. Largely audit-and-confirm of the existing admin backdoor (`rbac.py:68-69`, `projects_admin.py:125-127`) + new multi-project assignment UI/API; preserve many-to-many + platform-admin immutability (Epic 15)._
+
+### Story 23.6: Remove Local Password Auth and Drop Redundant Credential Columns
+
+As an operator, I want local email/password login removed and the redundant `users.password_hash` column dropped, so that SSO is the single source of authentication and no stale credential surface remains.
+
+_Provisional — acceptance criteria TBD. Sequenced LAST among the auth stories (after SSO is proven). Decision gate: break-glass = none (rely on Azure `admin` app role) vs an env-based emergency token._
+
+### Story 23.7: ~~Directory Sync~~ — DROPPED (2026-06-25)
+
+**Dropped (Thuong 2026-06-25).** The bulk directory sync (originally Oracle SharedERP, then reshaped to Azure Microsoft Graph `appRoleAssignedTo`) is **not needed**. The goal — assign a user to a project **before their first login** — is already met by the existing platform:
+
+- **Admin creates the user by email** — `POST /admin/users` (`create_user`), identity-only (no password) after story 23.6.
+- **Project admin assigns them to a project** — `POST /projects/{id}/members` (`add_project_member`); the assignable-user picker `GET /projects/{id}/users` (`list_assignable_users`) returns **all active users**, so a never-logged-in user is selectable.
+
+So Epic 23 ships as **6 stories (23.1–23.6)**; no automated user pull, no `Application.Read.All` Graph consent, no scheduler, no new migration.
+
+### Epic 24: DOM Snapshot Caching and Site Map for Faster Script Generation
+
+Speed up Sarah's Playwright script generation by capturing and caching the target web app's DOM ahead of time, versioned per environment and page, with change detection so a re-run only re-reads pages that changed. A project admin triggers a session-authenticated background crawl ("Get DOM") of an environment URL (or schedules it daily/weekly); the crawl stores only the important elements (button, text, label, input, selector, url, breadcrumb) plus a content hash and version per page. When any project user generates a script for a page that has a fresh cached DOM, Sarah reuses the cache and skips live exploration; on a miss or stale page it explores live and persists the result for the whole project to reuse. Admins can download the cached DOM to monitor the site.
+
+**FRs covered:** new (performance enhancement; relates to FR45 artifact lineage, FR61–FR63 realtime events, and the session/credentials work). Reserve FR90+ (final TBD via PRD; no `prd.md` FR-list edit now, consistent with Epics 14–23 which defer FR text to a PRD pass).
+
+**Status:** Provisional — acceptance criteria TBD via PRD/design doc (same convention as Epic 18). Grounding (verified in code 2026-06-23): `Project.environments` (`db/models.py:76`, migration `d4e7a1c93f20`), `CapturedSession` + encrypted `storageState` (`db/models.py:137`, `browser/session_capture.py`, `sessions/auto_capture.py`), browser-use + Playwright async (`browser/`, `playwright>=1.60`), snapshot+hash pattern (`DiscoveredModelSnapshot` `db/models.py:395`, `ArtifactVersion.content_hash`), Sarah explore hook (`pipelines/script_generator.py:208`). New work: full-site crawler (none today — only single-flow `explore_test_case`), DOM-snapshot table + Alembic migration, scheduler (no APScheduler/Celery/cron today), Sarah cache integration, FE "Get DOM" button/progress/schedule/download. Independent of Epic 18 but SHARES its snapshot/hash/versioning design (Epic 18 = Confluence/Jira source drift; Epic 24 = live DOM drift). Decision gates DG1–DG5 in `sprint-change-proposal-2026-06-23-epic24-dom-cache.md`.
+
+### Story 24.1: DOM Snapshot Schema and Storage
+
+As the system, I want a versioned per-(project, environment, page) DOM snapshot table that stores only key elements (button/text/label/input/selector/url/breadcrumb) plus a normalized content hash and version, so that DOM can be cached, diffed, and reused.
+
+_Provisional — acceptance criteria TBD via PRD/design (DG1, DG5)._
+
+### Story 24.2: "Get DOM" Trigger with Session-Authenticated Background Crawl
+
+As a project admin, I want a "Get DOM" button on each environment URL that kicks off a session-authenticated background crawl, so that I can populate the DOM cache without blocking the UI.
+
+> **REVISED 2026-06-25 (depends on Epic 25):** the crawl authenticates via the Epic 25 dedicated test-account auto-login (not a captured session — capture is prohibited). Epic 24 stays after Epic 25 in the dev order.
+
+_Provisional — acceptance criteria TBD via PRD/design._
+
+### Story 24.3: Bounded Full-Site Crawler and Element Extraction
+
+As the system, I want a bounded, same-origin crawler (driven by Playwright async + the captured session) that visits the site's pages and extracts only the important elements per page, so that a full DOM map is captured safely without runaway crawling.
+
+_Provisional — acceptance criteria TBD via PRD/design (DG2, DG5)._
+
+### Story 24.4: Incremental Re-Crawl via Change Detection
+
+As a project admin, I want a re-run of "Get DOM" to re-crawl only pages whose DOM changed since the last snapshot (diff by content hash) and bump their version, so that refreshes are cheap.
+
+_Provisional — acceptance criteria TBD via PRD/design (DG4)._
+
+### Story 24.5: Scheduled Crawl (Daily / Weekly)
+
+As a project admin, I want to schedule the crawl daily or weekly per environment, so that the DOM cache stays fresh automatically.
+
+_Provisional — acceptance criteria TBD via PRD/design (DG3; single-worker assumption)._
+
+### Story 24.6: Sarah Cache-Aware Script Generation
+
+As a project user, I want Sarah to reuse a fresh cached DOM for a page and skip live exploration, and on a miss/stale page to explore live and persist the result for project-wide reuse, so that script generation is fast and self-improving.
+
+_Provisional — acceptance criteria TBD via PRD/design (DG4). This is the payoff story; can be pulled forward once 24.1 + 24.3 land._
+
+### Story 24.7: Crawl Progress and DOM Download / Monitor
+
+As a project admin, I want to see background-crawl progress and download the cached DOM (key elements per page), so that I can monitor what the site exposes.
+
+_Provisional — acceptance criteria TBD via PRD/design._
+
+### Epic 25: Security-Compliant Target-App Authentication (Dedicated Test-Account Auto-Login)
+
+> **NEW 2026-06-25 (correct-course).** Source: `sprint-change-proposal-2026-06-25-no-session-capture.md` and `sprint-change-proposal-2026-06-27-test-credentials.md`. **MAJOR** change forced by Group Security: capturing the employee's browser session (cookies / `storageState` via CDP pull or the `capture-session.mjs`/`.cmd` client capture) is prohibited. This epic replaces session capture with an automated login with a DEDICATED TEST ACCOUNT, in its own isolated browser. Users store their test account credentials as user secrets. Project Admins only configure the `login_type` (SSO vs standard). The employee's actual session is never touched.
+
+Replace the now-prohibited capture mechanism (Stories 16-19 / 16-21 capture surface, `design-test-login-credentials-and-sessions-2026-06-20.md`) with dedicated test-account auto-login. Store per-(project, environment, role) test-account credentials encrypted (reusing the Fernet per-user-secret machinery); run a browser-use/Playwright login routine to produce a session; reuse the **existing** Tier-1 server-side injection (`browser/explorer.py`) and Jack conftest injection (`pipelines/script_runner.py`) — only the SOURCE of the session changes. Keep the `check-connections` reachability probe and the `c7e3a9f04b21` cleanup; remove `browser/session_capture.py`, the 4 capture/import routes in `api/sessions.py`, `frontend/public/capture-session.{mjs,cmd}`, and `ImportSessionForm.tsx`.
+
+**FRs covered:** revises FR12 + NFR10 (+ Story 13.4 / 14.4 framing); new TBD FR for test-account credential storage (reconciled via PRD pass in 25-7, same defer convention as Epics 14–24).
+
+**Status:** Provisional — acceptance criteria + design TBD via Story 25-1 (spike + IT asks). **High priority** — the capture path is dead, so Sarah/Jack are currently blocked against any authenticated corporate target app; sequence Epic 25 BEFORE Epic 24 (24 depends on it) and alongside Epic 23's live-validation window (both are auth work needing the real environment).
+
+**Load-bearing risk (like Epic 23's egress):** MFA / Conditional Access on internal Azure-SSO apps — a scripted login cannot pass push-MFA/biometrics. Mitigation is the §6 IT ask: a dedicated QA test account that is MFA-exempt OR provides a TOTP seed.
+
+**Grounding (verified in code 2026-06-25):** capture surface = `browser/session_capture.py` (CDP pull), `api/sessions.py` capture/import routes, `frontend/public/capture-session.{mjs,cmd}`, `ImportSessionForm.tsx`. Reusable seams = `browser/explorer.py:120` (Tier-1 `storage_state` temp-file injection), `pipelines/script_runner.py:574` (conftest injection), `ScriptGenerator(role_sessions=…)` (`pipelines/script_generator.py:105`), `sarah._resolve_role_sessions`, `api/sessions.py::check_environment_connections`. Credential storage = Fernet (`db/types.py`), same as provider keys. `CapturedSession` table repurposed as the (optional) cache of the TOOL-generated session.
+
+### Story 25.1: Auto-Login Design Note, Feasibility Spike, and IT Asks
+
+As the architect, I want a design note + feasibility spike that picks the login-automation mechanism (browser-use-driven vs scripted), the credential-storage model, and the per-app login-hint shape — plus the verbatim IT asks (dedicated test accounts; MFA-exempt or TOTP; security sign-off on storing test-account credentials) — so that production stories 25-2…25-7 build on a confirmed approach. *Load-bearing gate, like Story 23-1.*
+
+_Provisional — acceptance criteria TBD via design note._
+
+### Story 25.2: Remove the Prohibited Session-Capture Surface
+
+As the system, I want the session-capture/import surface removed (`browser/session_capture.py`; the `capture`/`import`/`import-token`/`import-with-token` routes in `api/sessions.py`; `frontend/public/capture-session.{mjs,cmd}`; `ImportSessionForm.tsx`) while keeping the consumption seams and `check-connections`, so that the behaviour Group Security flagged no longer exists in the product.
+
+_Provisional — acceptance criteria TBD via PRD/design._
+
+### Story 25.3: Dedicated Test-Account Credential Store
+
+As a user, I want to store my dedicated test-account credentials (username/password + optional TOTP secret) per (project, environment, role) as encrypted **user-scoped secrets**, so that the tool can log in to the target app securely without exposing my passwords to Project Admins. This includes:
+- User UI to input test accounts.
+- Encrypted CRUD (reusing Fernet per-user-secret machinery).
+- **CRITICAL**: A DB migration to drop the old project-level `test_account_credentials` table.
+- Project Admin dashboard UI update to only configure `login_type` (`standard`, `sso_microsoft`, `sso_google`, etc.) and `login_hint` for the environment.
+
+_Provisional — acceptance criteria TBD via PRD/design._
+
+### Story 25.4: Automated Login to Generate a Session
+
+As the system, I want an automated login routine (browser-use/Playwright) that, given a target-app login URL + stored test-account credentials (+ TOTP when configured), authenticates in a clean isolated browser and exports the resulting `storageState`, so that a session is produced without reading any employee browser.
+
+_Provisional — acceptance criteria TBD via PRD/design._
+
+### Story 25.5: Wire Auto-Login into Sarah Explore and Jack Run
+
+As a project user, I want Sarah's exploration and Jack's runs to dynamically parse the selected test cases to extract ONLY the specific roles actually required, and to resolve their session via auto-login (using my secure user-scoped test credentials). The FE `SarahInputsForm` should prompt me to enter credentials only for those missing test roles, so that script generation and execution authenticate securely and efficiently without over-asking for unused roles.
+
+_Provisional — acceptance criteria TBD via PRD/design._
+
+### Story 25.6: External-App Authentication (Username/Password and Third-Party OAuth)
+
+As a project user, I want external (non-Azure) apps supported — direct username/password login, and third-party OAuth (Google/Apple) via dedicated test accounts or the app's own test login — with hard limits documented where automation is genuinely blocked, so that the pipeline covers external as well as internal apps.
+
+_Provisional — acceptance criteria TBD via PRD/design._
+
+### Story 25.7: Docs, FR/NFR Reconciliation, and Live Validation
+
+As the team, I want FR12 / NFR10 / Story 13.4 / Story 14.4 reconciled to the new model, `project-context.md` updated, the `2026-06-20` design doc superseded, and a live validation on local + UAT against a real authenticated app, so that the change is complete, discoverable, and proven end-to-end.
+
+_Provisional — acceptance criteria TBD via PRD/design._

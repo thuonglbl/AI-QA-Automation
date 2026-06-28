@@ -5,8 +5,8 @@
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    # Matches the installed ruff (0.15.16); required for target-version = "py314".
-    rev: v0.15.16
+    # Matches the installed ruff (0.15.20); required for target-version = "py314".
+    rev: v0.15.20
     hooks:
       # Run ruff linter (with auto-fix)
       - id: ruff-check

@@ -17,6 +17,8 @@ from ai_qa.agents import AliceAgent
 from ai_qa.api.admin import router as admin_router
 from ai_qa.api.artifacts import router as artifacts_router
 from ai_qa.api.auth import AuthMiddleware, get_auth_router
+from ai_qa.api.auth.sso import router as sso_router
+from ai_qa.api.body_size_limit import BodySizeLimitMiddleware
 from ai_qa.api.claude_sso import router as claude_sso_router
 from ai_qa.api.executions import router as executions_router
 from ai_qa.api.projects import router as projects_router
@@ -25,6 +27,8 @@ from ai_qa.api.routes import register_agent
 from ai_qa.api.routes import router as api_router
 from ai_qa.api.secrets import router as secrets_router
 from ai_qa.api.sessions import router as sessions_router
+from ai_qa.api.test_credentials import router as test_credentials_router
+from ai_qa.api.test_login import router as test_login_router
 from ai_qa.api.threads import router as threads_router
 from ai_qa.api.websocket import websocket_endpoint
 from ai_qa.config import AppSettings
@@ -102,12 +106,42 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             import logging
 
             logging.warning(f"Failed to reconcile interrupted runs on startup: {e}")
+
+        # Warn early if browser automation cannot work under the current event loop.
+        # On Windows, `uvicorn --reload` runs a SelectorEventLoop that cannot spawn the
+        # Playwright browser subprocess (Test Login / Sarah explore fail with
+        # NotImplementedError). Without --reload, uvicorn uses the ProactorEventLoop.
+        try:
+            import asyncio
+            import logging
+            import sys
+
+            running_loop = asyncio.get_running_loop()
+            if sys.platform == "win32" and isinstance(running_loop, asyncio.SelectorEventLoop):
+                logging.getLogger(__name__).warning(
+                    "Event loop is SelectorEventLoop on Windows (likely `uvicorn --reload`): "
+                    "browser automation (Test Login, Sarah explore) WILL fail to launch the "
+                    "browser. Restart the backend WITHOUT --reload to use the ProactorEventLoop."
+                )
+        except Exception:  # pragma: no cover - diagnostic only, never blocks startup
+            pass
         yield
+
+        # Shutdown: dispose the process-wide pooled DB engines so their connections are
+        # returned/closed cleanly (see db/session.py engine cache).
+        try:
+            from ai_qa.db.session import dispose_all_engines
+
+            dispose_all_engines()
+        except Exception as e:  # pragma: no cover - shutdown best-effort
+            import logging
+
+            logging.warning(f"Failed to dispose DB engines on shutdown: {e}")
 
     app = FastAPI(
         title="AI QA Automation API",
         description="Backend API for AI-powered QA test automation pipeline",
-        version="0.1.0",
+        version=settings.docker_image_version,
         lifespan=lifespan,
     )
 
@@ -127,6 +161,11 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     # Auth middleware to protect routes (after session middleware)
     app.add_middleware(AuthMiddleware, settings=settings)
 
+    # Request body-size guard: reject oversized bodies with 413 before they are
+    # buffered/parsed into memory. Registered inside CORS but outside auth so the
+    # 413 still carries CORS headers and oversized bodies never reach the routes.
+    app.add_middleware(BodySizeLimitMiddleware, max_body_bytes=settings.max_request_body_bytes)
+
     # CORS for frontend dev server (Vite on localhost:5173)
     # Note: Must be after auth middleware to allow credentials
     app.add_middleware(
@@ -140,12 +179,17 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     # Auth routes (public, handled by middleware)
     auth_router = get_auth_router(settings)
     app.include_router(auth_router)
+    # Azure SSO user-login router (Epic 23) — root-level like the local auth router
+    # so the FE navigates the browser straight to /auth/sso/login.
+    app.include_router(sso_router)
 
     # REST API routes (protected by auth middleware)
     app.include_router(api_router, prefix="/api")
     app.include_router(projects_router, prefix="/api")
     app.include_router(projects_admin_router, prefix="/api")
     app.include_router(sessions_router, prefix="/api")
+    app.include_router(test_credentials_router, prefix="/api")
+    app.include_router(test_login_router, prefix="/api")
     app.include_router(executions_router, prefix="/api")
     app.include_router(artifacts_router, prefix="/api")
     app.include_router(admin_router, prefix="/api")

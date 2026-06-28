@@ -103,6 +103,23 @@ class AppSettings(BaseSettings):
     # --- Server ---
     server_host: str = Field(default="0.0.0.0", description="Server bind host")
     server_port: int = Field(default=8000, ge=1, le=65535, description="Server bind port")
+    max_request_body_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        ge=1024,
+        description=(
+            "Maximum accepted request body size in bytes. Larger requests are rejected "
+            "with HTTP 413 by the body-size middleware before the body is buffered/parsed "
+            "into memory. Default 8 MiB comfortably exceeds the largest legitimate JSON "
+            "endpoint (the ~1 MB artifact-content upload path)."
+        ),
+    )
+
+    # --- App metadata ---
+    # Surfaced as the FastAPI/OpenAPI version at /docs. Set from the deployed Docker
+    # image tag (DOCKER_IMAGE_VERSION) via docker-compose; defaults for local/dev.
+    docker_image_version: str = Field(
+        default="0.1.0", description="Deployed image version, shown in OpenAPI /docs"
+    )
 
     # --- External Service URLs ---
     browser_use_cloud_url: str = Field(
@@ -171,7 +188,52 @@ class AppSettings(BaseSettings):
     )
     claude_sso_allowed_email_domain: str = Field(
         default="",
-        description="If set, the mock IdP only accepts emails on this domain.",
+        description="If set, the mock IdP only accepts emails on this domain (e.g. 'corp.vn').",
+    )
+
+    # --- Azure Entra ID SSO (user login — Epic 23) ---
+    # Single "Sign in with SSO" user-login flow (NOT the claude_sso provider auth above).
+    # Topology A (app-level OIDC, confidential client) per design-sso-first-auth-spike-2026-06-25.md:
+    # the backend does the code->token exchange (msal) and validates the ID token (python-jose).
+    # When the tenant/client/secret triple is empty the router serves a built-in MOCK IdP
+    # (dev/CI/E2E) — no Microsoft, no network — mirroring the claude_sso mock flow.
+    # The client secret is resolved server-side only; never logged or returned to the frontend.
+    azure_sso_enabled: bool = Field(
+        default=False, description="Master switch for Azure SSO user login + avatar fetch."
+    )
+    azure_sso_auto_provision: bool = Field(
+        default=False,
+        description="If true, auto-create a User on first SSO login (requires azure_sso_enabled).",
+    )
+    azure_sso_tenant_id: str = Field(default="", description="Azure Entra ID tenant id")
+    azure_sso_client_id: str = Field(
+        default="", description="Azure Entra ID application (client) id"
+    )
+    azure_sso_client_secret: str = Field(
+        default="",
+        description="Azure Entra ID client secret (confidential client; server-side only)",
+    )
+    azure_sso_redirect_uri: str = Field(
+        default="",
+        description="OAuth redirect URI ('' => backend computes <base>/auth/sso/callback)",
+    )
+    azure_sso_scopes: str = Field(
+        default="openid profile email User.Read", description="OAuth/Graph scopes"
+    )
+    azure_sso_authority: str = Field(
+        default="https://login.microsoftonline.com/{tenant}",
+        description="OIDC authority ('{tenant}' is replaced with azure_sso_tenant_id)",
+    )
+    azure_sso_allowed_email_domain: str = Field(
+        default="",
+        description="If set, SSO only accepts emails on this domain (mock IdP + provisioning).",
+    )
+    azure_sso_jwks: str = Field(
+        default="",
+        description=(
+            "Optional bundled JWKS JSON for zero-egress ID-token validation on air-gapped "
+            "hosts (topology-B validation half). Empty => fetch from the tenant JWKS endpoint."
+        ),
     )
 
     # --- MCP (FR14) ---
@@ -214,6 +276,17 @@ class AppSettings(BaseSettings):
         default=10000, ge=1000, le=50000, description="Maximum characters per generated script"
     )
 
+    # --- Extraction (Story 16.17) ---
+    convert_llm_timeout: float = Field(
+        default=600.0,
+        ge=10.0,
+        le=1800.0,
+        description="Timeout in seconds for requirement conversion LLM calls",
+    )
+    extraction_text_model: str = Field(
+        default="sonnet", description="Fast instruction model used for bulk text conversion"
+    )
+
     # --- Test Execution (Jack, Story 14.2) ---
     execution_timeout: int = Field(
         default=120,
@@ -247,7 +320,18 @@ class AppSettings(BaseSettings):
         default=True, description="Persist execution screenshots through the artifact service"
     )
     execution_capture_traces: bool = Field(
-        default=True, description="Persist execution Playwright traces through the artifact service"
+        default=True,
+        description=(
+            "Capture + persist a Playwright trace for EVERY test (pass or fail) so headless "
+            "runs are reviewable; open the trace.zip in the Playwright trace viewer."
+        ),
+    )
+    execution_capture_videos: bool = Field(
+        default=False,
+        description=(
+            "Also record a video (.webm) of every test. Off by default — videos are large; "
+            "the trace already provides a full step-through replay."
+        ),
     )
     execution_capture_logs: bool = Field(
         default=True, description="Persist the execution run log through the artifact service"

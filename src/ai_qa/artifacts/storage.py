@@ -5,8 +5,19 @@ from __future__ import annotations
 import re
 import uuid
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
+
+
+class StorageObjectNotFoundError(FileNotFoundError):
+    """Raised when an artifact's stored object is absent from the backend.
+
+    Subclasses ``FileNotFoundError`` so existing ``except FileNotFoundError``
+    handlers (e.g. the artifact-content download endpoint) map a missing object to
+    404 for BOTH backends: the local backend already raised ``FileNotFoundError``;
+    the S3/SeaweedFS backend raised botocore ``ClientError`` (code ``NoSuchKey``),
+    which callers could not catch uniformly before.
+    """
 
 
 def build_artifact_key(
@@ -67,7 +78,7 @@ def folder_for_kind(kind: str, name: str = "") -> str:
         return "test_scripts"
     # Story 14.3: execution outputs browse under "reports" (explicit, though the
     # catch-all below already returns it — keeps intent clear next to the others).
-    if kind in ("report", "trace", "log", "execution_screenshot"):
+    if kind in ("report", "trace", "video", "log", "execution_screenshot"):
         return "reports"
     # catch-all: markdown, mermaid, other configuration (e.g. mary_selected_id.json)
     return "reports"
@@ -89,7 +100,10 @@ class ArtifactStorage(Protocol):
         """Persist content and return an opaque storage path/key."""
 
     def read(self, storage_path: str) -> bytes:
-        """Read previously persisted content by storage path/key."""
+        """Read previously persisted content by storage path/key.
+
+        Raises ``StorageObjectNotFoundError`` when the object is absent from the backend.
+        """
 
     def delete(self, storage_path: str) -> None:
         """Best-effort delete for cleanup after downstream failures."""
@@ -135,7 +149,10 @@ class LocalArtifactStorage:
 
     def read(self, storage_path: str) -> bytes:
         """Read bytes from a stored artifact path after containment validation."""
-        return self._resolve_storage_path(storage_path).read_bytes()
+        try:
+            return self._resolve_storage_path(storage_path).read_bytes()
+        except FileNotFoundError as exc:
+            raise StorageObjectNotFoundError(storage_path) from exc
 
     def delete(self, storage_path: str) -> None:
         """Best-effort local file cleanup used when DB commit fails after write."""
@@ -232,9 +249,15 @@ class S3ArtifactStorage:
 
     def read(self, storage_path: str) -> bytes:
         """Download content from S3 bucket."""
-        from typing import cast
+        from botocore.exceptions import ClientError
 
-        response = self.s3.get_object(Bucket=self.bucket_name, Key=storage_path)
+        try:
+            response = self.s3.get_object(Bucket=self.bucket_name, Key=storage_path)
+        except ClientError as exc:
+            code = (exc.response or {}).get("Error", {}).get("Code")
+            if code in ("NoSuchKey", "404"):
+                raise StorageObjectNotFoundError(storage_path) from exc
+            raise
         return cast(bytes, response["Body"].read())
 
     def delete(self, storage_path: str) -> None:

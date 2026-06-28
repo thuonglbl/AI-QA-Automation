@@ -229,20 +229,12 @@ describe("AdminDashboard", () => {
       ),
     );
 
-    expect(screen.queryByText(/manage membership/i)).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /sync existing company's users/i }),
-    ).toBeDisabled();
-    expect(
-      screen.getByText(
-        "This feature is not available at the moment, please add manually.",
-      ),
-    ).toBeInTheDocument();
+
 
     fireEvent.change(screen.getByLabelText(/email/i), {
       target: { value: "new.user@example.com" },
     });
-    fireEvent.change(screen.getByLabelText(/display name/i), {
+    fireEvent.change(screen.getByLabelText(/name \(optional\)/i), {
       target: { value: "New User" },
     });
     // Admin may only create project_admin / standard users (not another admin).
@@ -254,14 +246,11 @@ describe("AdminDashboard", () => {
     fireEvent.change(screen.getByLabelText(/^project$/i), {
       target: { value: "project-1" },
     });
-    fireEvent.change(screen.getByLabelText(/initial password/i), {
-      target: { value: "initial-secret" },
-    });
     // Pick a deterministic timezone (the default is the env's browser zone).
     fireEvent.change(screen.getByLabelText(/timezone/i), {
       target: { value: "UTC" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /create user/i }));
+    fireEvent.click(screen.getByRole("button", { name: /sync user/i }));
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/admin/users",
@@ -271,8 +260,8 @@ describe("AdminDashboard", () => {
             email: "new.user@example.com",
             display_name: "New User",
             role: "project_admin",
-            initial_password: "initial-secret",
             timezone: "UTC",
+            conversation_language: "en",
             project_id: "project-1",
           }),
         }),
@@ -293,6 +282,7 @@ describe("AdminDashboard", () => {
       within(userCard).queryByRole("button", { name: /assign project/i }),
     ).not.toBeInTheDocument();
 
+    fireEvent.click(screen.getByTitle("User menu"));
     fireEvent.click(screen.getByRole("button", { name: /logout/i }));
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -346,13 +336,10 @@ describe("AdminDashboard", () => {
     fireEvent.change(screen.getByLabelText(/email/i), {
       target: { value: "existing.user@example.com" },
     });
-    fireEvent.change(screen.getByLabelText(/display name/i), {
+    fireEvent.change(screen.getByLabelText(/name \(optional\)/i), {
       target: { value: "Existing User" },
     });
-    fireEvent.change(screen.getByLabelText(/initial password/i), {
-      target: { value: "another-secret" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /create user/i }));
+    fireEvent.click(screen.getByRole("button", { name: /sync user/i }));
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -475,7 +462,7 @@ describe("AdminDashboard", () => {
     it("renders the Run E2E Tests button", async () => {
       renderDashboard(defaultFetch);
 
-      await screen.findByText("Admin");
+      await screen.findByRole("heading", { name: /admin dashboard/i });
       expect(
         screen.getByRole("button", { name: /run e2e tests/i }),
       ).toBeInTheDocument();
@@ -505,7 +492,7 @@ describe("AdminDashboard", () => {
         return jsonResponse({}, 404);
       });
 
-      await screen.findByText("Admin");
+      await screen.findByRole("heading", { name: /admin dashboard/i });
       const runButton = screen.getByRole("button", { name: /run e2e tests/i });
       fireEvent.click(runButton);
 
@@ -571,7 +558,7 @@ describe("AdminDashboard", () => {
         return jsonResponse({}, 404);
       });
 
-      await screen.findByText("Admin");
+      await screen.findByRole("heading", { name: /admin dashboard/i });
       fireEvent.click(screen.getByRole("button", { name: /run e2e tests/i }));
 
       await waitFor(() =>
@@ -616,7 +603,7 @@ describe("AdminDashboard", () => {
         return jsonResponse({}, 404);
       });
 
-      await screen.findByText("Admin");
+      await screen.findByRole("heading", { name: /admin dashboard/i });
       fireEvent.click(screen.getByRole("button", { name: /run e2e tests/i }));
 
       await waitFor(() =>
@@ -661,7 +648,7 @@ describe("AdminDashboard", () => {
         return jsonResponse({}, 404);
       });
 
-      await screen.findByText("Admin");
+      await screen.findByRole("heading", { name: /admin dashboard/i });
       fireEvent.click(screen.getByRole("button", { name: /run e2e tests/i }));
 
       await waitFor(() =>
@@ -707,7 +694,7 @@ describe("AdminDashboard", () => {
         return jsonResponse({}, 404);
       });
 
-      await screen.findByText("Admin");
+      await screen.findByRole("heading", { name: /admin dashboard/i });
       fireEvent.click(screen.getByRole("button", { name: /run e2e tests/i }));
 
       await waitFor(() =>
@@ -1030,6 +1017,74 @@ test("Models table sorts by global → reasoning → coding → vision (desc)", 
   expect(order).toEqual(["a-high", "m-mid", "z-low"]);
 });
 
+test("vision tag follows the vision SCORE, not the gateway supports_vision flag", async () => {
+  const ts = "2026-06-21T00:00:00Z";
+  const score = (modelId: string, capability: string, value: number) => ({
+    id: `${modelId}-${capability}`,
+    model_id: modelId,
+    capability,
+    score: value,
+    note: null,
+    updated_by_user_id: null,
+    updated_at: ts,
+  });
+  const models = [
+    // gpt-oss: gateway flag TRUE but no vision score -> NO vision tag.
+    {
+      model_id: "inference-gpt-oss-120b",
+      display_name: "inference-gpt-oss-120b",
+      supports_vision: true,
+      last_seen_at: ts,
+      tier_source: "admin",
+      unbenchmarked: false,
+      scores: [score("inference-gpt-oss-120b", "global", 28.3)],
+    },
+    // gemma: gateway flag FALSE but HAS a vision score -> vision tag shown.
+    {
+      model_id: "inference-gemma4-31b",
+      display_name: "inference-gemma4-31b",
+      supports_vision: false,
+      last_seen_at: ts,
+      tier_source: "admin",
+      unbenchmarked: false,
+      scores: [
+        score("inference-gemma4-31b", "global", 29.4),
+        score("inference-gemma4-31b", "vision", 80),
+      ],
+    },
+  ];
+
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = String(input);
+    if (url === "/auth/status")
+      return jsonResponse({
+        authenticated: true,
+        email: "admin@example.com",
+        name: "Admin User",
+        role: "admin",
+      });
+    if (url === "/api/projects") return jsonResponse([]);
+    if (url === "/api/admin/users") return jsonResponse([]);
+    if (url === "/api/admin/discovered-models") return jsonResponse(models);
+    return jsonResponse({}, 404);
+  });
+
+  render(
+    <AuthProvider>
+      <ProjectProvider>
+        <AdminDashboard />
+      </ProjectProvider>
+    </AuthProvider>,
+  );
+
+  const gemmaCell = (await screen.findByText("inference-gemma4-31b")).closest("td")!;
+  const gptCell = screen.getByText("inference-gpt-oss-120b").closest("td")!;
+  // gemma has a vision score -> tag shown even though its gateway flag is false.
+  expect(within(gemmaCell).getByText("vision")).toBeInTheDocument();
+  // gpt-oss has no vision score -> tag NOT shown even though its gateway flag is true.
+  expect(within(gptCell).queryByText("vision")).not.toBeInTheDocument();
+});
+
 test("Create User shows the project picker only for Project Admin (Story 15.3)", async () => {
   mockAdminFetch([project, assignableProject]);
 
@@ -1081,7 +1136,7 @@ test("Create User blocks Project Admin when no projects exist (Story 15.3)", asy
   expect(
     screen.getByText(/create a project first before adding a project admin/i),
   ).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /create user/i })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /sync user/i })).toBeDisabled();
 });
 
 test("Users Management sorts by role/status/name and shows admin projects (Story 15.4)", async () => {
@@ -1284,4 +1339,132 @@ test("Users Management: edit/delete hidden for admin row, PUT/DELETE fire (Story
       expect.objectContaining({ method: "DELETE" }),
     ),
   );
+});
+
+test("editing a project_admin shows a pre-checked multi-select and saves project_ids (Story 23.5)", async () => {
+  const ts = "2026-01-01T00:00:00Z";
+  const projectOne = { ...project, id: "project-1", name: "Project One" };
+  const projectTwo = { ...project, id: "project-2", name: "Project Two" };
+  const paUser = {
+    id: "u-pa",
+    email: "pa@example.com",
+    display_name: "Pat Admin",
+    role: "project_admin",
+    is_active: true,
+    timezone: "UTC",
+    project_memberships: [
+      {
+        id: "m-1",
+        project_id: "project-1",
+        project_name: "Project One",
+        role: "project_admin",
+        created_at: ts,
+        updated_at: ts,
+      },
+    ],
+    created_at: ts,
+    updated_at: ts,
+  };
+
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/auth/status")
+        return jsonResponse({
+          authenticated: true,
+          email: "admin@example.com",
+          name: "Admin",
+          role: "admin",
+        });
+      if (url === "/api/projects") return jsonResponse([projectOne, projectTwo]);
+      if (url === "/api/admin/users") return jsonResponse([paUser]);
+      if (url === "/api/admin/users/u-pa" && init?.method === "PUT")
+        return jsonResponse(paUser);
+      if (url === "/api/admin/discovered-models") return jsonResponse([]);
+      if (url === "/api/admin/model-scores") return jsonResponse([]);
+      return jsonResponse({}, 404);
+    });
+
+  render(
+    <AuthProvider>
+      <ProjectProvider>
+        <AdminDashboard />
+      </ProjectProvider>
+    </AuthProvider>,
+  );
+
+  await screen.findByText("Pat Admin");
+  fireEvent.click(screen.getByRole("button", { name: /edit user pat admin/i }));
+
+  // The administered-project multi-select is shown with the current project pre-checked.
+  const one = await screen.findByRole("checkbox", { name: "Project One" });
+  const two = screen.getByRole("checkbox", { name: "Project Two" });
+  expect((one as HTMLInputElement).checked).toBe(true);
+  expect((two as HTMLInputElement).checked).toBe(false);
+
+  // Add the second project and save.
+  fireEvent.click(two);
+  fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/users/u-pa",
+      expect.objectContaining({ method: "PUT" }),
+    ),
+  );
+  const putCall = fetchMock.mock.calls.find(
+    (c) => c[0] === "/api/admin/users/u-pa" && c[1]?.method === "PUT",
+  );
+  expect(putCall).toBeTruthy();
+  const body = JSON.parse(String(putCall![1]!.body));
+  expect(new Set(body.project_ids)).toEqual(
+    new Set(["project-1", "project-2"]),
+  );
+});
+
+test("editing a standard user shows no project picker (Story 23.5)", async () => {
+  const ts = "2026-01-01T00:00:00Z";
+  const stdUser = {
+    id: "u-s",
+    email: "s@example.com",
+    display_name: "Sam Standard",
+    role: "standard",
+    is_active: true,
+    timezone: "UTC",
+    project_memberships: [],
+    created_at: ts,
+    updated_at: ts,
+  };
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = String(input);
+    if (url === "/auth/status")
+      return jsonResponse({
+        authenticated: true,
+        email: "admin@example.com",
+        name: "Admin",
+        role: "admin",
+      });
+    if (url === "/api/projects")
+      return jsonResponse([{ ...project, id: "project-1", name: "Project One" }]);
+    if (url === "/api/admin/users") return jsonResponse([stdUser]);
+    if (url === "/api/admin/discovered-models") return jsonResponse([]);
+    if (url === "/api/admin/model-scores") return jsonResponse([]);
+    return jsonResponse({}, 404);
+  });
+
+  render(
+    <AuthProvider>
+      <ProjectProvider>
+        <AdminDashboard />
+      </ProjectProvider>
+    </AuthProvider>,
+  );
+
+  await screen.findByText("Sam Standard");
+  fireEvent.click(screen.getByRole("button", { name: /edit user sam standard/i }));
+  // No administered-project checkbox for a standard user.
+  expect(
+    screen.queryByRole("checkbox", { name: "Project One" }),
+  ).not.toBeInTheDocument();
 });

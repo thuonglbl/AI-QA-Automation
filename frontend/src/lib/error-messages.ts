@@ -9,7 +9,7 @@ import type { ErrorInfo, ErrorType } from "@/types/pipeline";
  * UX-DR12: No technical jargon, stack traces, or HTTP status codes
  */
 
-export const ERROR_MESSAGES: Record<ErrorType, Omit<ErrorInfo, "type">> = {
+export const ERROR_MESSAGES: Record<Exclude<ErrorType, "BACKEND_PROVIDED">, Omit<ErrorInfo, "type">> = {
   MCP_TIMEOUT: {
     what: "Couldn't retrieve content from Confluence",
     why: "The connection timed out after 30 seconds",
@@ -40,7 +40,7 @@ export const ERROR_MESSAGES: Record<ErrorType, Omit<ErrorInfo, "type">> = {
 /**
  * Create a complete ErrorInfo object from an error type
  */
-export function createErrorInfo(type: ErrorType): ErrorInfo {
+export function createErrorInfo(type: Exclude<ErrorType, "BACKEND_PROVIDED">): ErrorInfo {
   return {
     type,
     ...ERROR_MESSAGES[type],
@@ -59,12 +59,29 @@ export function mapBackendError(backendError: {
   // Map backend error codes/patterns to ErrorType
   const code = backendError.code?.toUpperCase() || "";
   const _type = backendError.type?.toUpperCase() || "";
-  const message = (backendError.message || "").toLowerCase();
+  const message = backendError.message || "";
+  const messageLower = message.toLowerCase();
+
+  // Parse UX-DR12 3-part Markdown format from backend
+  if (message.includes("**What happened:**")) {
+    const whatMatch = message.match(/\*\*What happened:\*\*\s*(.*?)(?=\n\n|\*\*Why:\*\*|$)/s);
+    const whyMatch = message.match(/\*\*Why:\*\*\s*(.*?)(?=\n\n|\*\*What to do:\*\*|$)/s);
+    const whatToDoMatch = message.match(/\*\*What to do:\*\*\s*(.*?)(?=$)/s);
+
+    if (whatMatch || whyMatch || whatToDoMatch) {
+      return {
+        type: "BACKEND_PROVIDED",
+        what: whatMatch?.[1]?.trim() || "An error occurred",
+        why: whyMatch?.[1]?.trim() || "",
+        whatToDo: whatToDoMatch?.[1]?.trim() || "",
+      };
+    }
+  }
 
   if (
     code.includes("MCP") ||
     code.includes("TIMEOUT") ||
-    message.includes("timeout")
+    messageLower.includes("timeout")
   ) {
     return createErrorInfo("MCP_TIMEOUT");
   }
@@ -73,8 +90,8 @@ export function mapBackendError(backendError: {
     code.includes("LLM") ||
     code.includes("AI") ||
     _type.includes("LLM") ||
-    message.includes("ai") ||
-    message.includes("language model")
+    messageLower.includes("ai") ||
+    messageLower.includes("language model")
   ) {
     return createErrorInfo("LLM_FAILURE");
   }
@@ -82,8 +99,8 @@ export function mapBackendError(backendError: {
   if (
     code.includes("NETWORK") ||
     code.includes("CONNECTION") ||
-    message.includes("network") ||
-    message.includes("connection")
+    messageLower.includes("network") ||
+    messageLower.includes("connection")
   ) {
     return createErrorInfo("NETWORK_ERROR");
   }
@@ -91,8 +108,8 @@ export function mapBackendError(backendError: {
   if (
     code.includes("CONFIG") ||
     code.includes("MISSING") ||
-    message.includes("config") ||
-    message.includes("required")
+    messageLower.includes("config") ||
+    messageLower.includes("required")
   ) {
     return createErrorInfo("CONFIG_ERROR");
   }

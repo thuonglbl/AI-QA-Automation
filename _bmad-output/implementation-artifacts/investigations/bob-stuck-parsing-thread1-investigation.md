@@ -13,7 +13,7 @@
 | Ticket           | N/A                                                                                               |
 | Date opened      | 2026-06-22                                                                                        |
 | Status           | Concluded (root cause Confirmed)                                                                   |
-| System           | Windows 11, local dev. Backend `uvicorn ai_qa.api:app --host 0.0.0.0 --port 8000 --reload`. PostgreSQL `ai_qa_automation`. Provider `on-premises`. |
+| System           | Windows 11, local dev. Backend `uvicorn ai_qa.api:app --host 0.0.0.0 --port 8000 --reload`. PostgreSQL `ai_qa_automation`. Provider `on-premises` (LiteLLM proxy `ai.svc.corp.ch`). |
 | Evidence sources | Live PostgreSQL (threads/messages/agent_runs), OS process table + start times, `netstat`, source code, user screenshot |
 
 ## Problem Statement
@@ -56,7 +56,7 @@ Process tree: launcher `uvicorn.exe` (52304) → reloader (40244) → reload-sup
 
 ### Finding 3: No in-flight LLM call — the stuck task is gone, not waiting on the network
 
-The worker (21728) has outbound connections ONLY to PostgreSQL (`::1:5432` pool) and a local socketpair — **no `:443` to the on-prem proxy**. The one ESTABLISHED socket to `[IP_ADDRESS]` belongs to `msedge.exe` (the browser), not the backend. So the LLM HTTP request is gone; nothing is computing.
+`ai.svc.corp.ch` resolves to `10.10.9.50` / `192.168.200.40`. The worker (21728) has outbound connections ONLY to PostgreSQL (`::1:5432` pool) and a local socketpair — **no `:443` to the on-prem proxy**. The one ESTABLISHED socket to `10.10.9.50:443` belongs to `msedge.exe` (the browser), not the backend. So the LLM HTTP request is gone; nothing is computing.
 
 ### Finding 4: The convert LLM calls are unbounded and bypass the typed client
 

@@ -19,7 +19,6 @@ from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.session import SessionManager
 from ai_qa.artifacts.service import ArtifactService
 from ai_qa.artifacts.storage import LocalArtifactStorage
-from ai_qa.auth.password import hash_password
 from ai_qa.auth.service import STANDARD_ROLE
 from ai_qa.db.base import Base
 from ai_qa.db.models import Artifact, ArtifactVersion, Project, ProjectMembership, User
@@ -97,7 +96,6 @@ def _create_user_and_project(client: TestClient) -> tuple[User, Project]:
     user = User(
         email="prov@example.com",
         display_name="prov",
-        password_hash=hash_password("pass"),
         role=STANDARD_ROLE,
         is_active=True,
     )
@@ -221,7 +219,6 @@ def test_non_member_cannot_access_provenance(prov_client: TestClient, tmp_path: 
     intruder = User(
         email="intruder@example.com",
         display_name="intruder",
-        password_hash=hash_password("pass"),
         role=STANDARD_ROLE,
         is_active=True,
     )

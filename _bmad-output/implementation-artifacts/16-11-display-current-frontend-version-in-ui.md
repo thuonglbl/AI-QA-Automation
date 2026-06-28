@@ -3,7 +3,7 @@ baseline_commit: d97e58533b04901b688a1c04f24032cfc8dc0e53
 ---
 # Story 16.11: Display Current Frontend Version in UI
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -27,19 +27,19 @@ so that I can tell which build I am using when reporting issues or confirming a 
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Inject the version at build time (AC: 1, 4)**
-  - [ ] In `frontend/vite.config.ts`, read the version from `frontend/package.json` (current value `0.1.0`) and expose it via `define: { __APP_VERSION__: JSON.stringify(pkg.version ?? "dev") }` (and optionally a short commit/build id from an env var, defaulting safely). No `import.meta.env` runtime fetch needed.
-  - [ ] Declare the global in `frontend/src/vite-env.d.ts` (`declare const __APP_VERSION__: string;`) so TS strict mode resolves it.
-  - [ ] Ensure no secret/internal path is ever injected — version + optional short commit only (AC4).
+- [x] **Task 1 — Inject the version at build time (AC: 1, 4)**
+  - [x] In `frontend/vite.config.ts`, read the version from `frontend/package.json` (current value `0.1.0`) and expose it via `define: { __APP_VERSION__: JSON.stringify(pkg.version ?? "dev") }` (and optionally a short commit/build id from an env var, defaulting safely). No `import.meta.env` runtime fetch needed.
+  - [x] Declare the global in `frontend/src/vite-env.d.ts` (`declare const __APP_VERSION__: string;`) so TS strict mode resolves it.
+  - [x] Ensure no secret/internal path is ever injected — version + optional short commit only (AC4).
 
-- [ ] **Task 2 — Version display component (AC: 2, 3, 4)**
-  - [ ] Add a small `AppVersion` component (new `frontend/src/components/AppVersion.tsx`) rendering `v{__APP_VERSION__}` with a safe fallback to `dev`/`unknown` when missing/empty.
-  - [ ] Place it unobtrusively in the app shell — recommended: the top-nav right cluster near Sessions/Logout (the shell has no footer today) ([frontend/src/App.tsx](frontend/src/App.tsx)). Small muted text, clearly labelled as the frontend version, not overlapping controls.
-  - [ ] English-only label; meet contrast/focus baseline (muted slate that still passes AA; it is non-interactive text so no focus ring needed, but ensure it doesn't sit on a low-contrast background).
+- [x] **Task 2 — Version display component (AC: 2, 3, 4)**
+  - [x] Add a small `AppVersion` component (new `frontend/src/components/AppVersion.tsx`) rendering `v{__APP_VERSION__}` with a safe fallback to `dev`/`unknown` when missing/empty.
+  - [x] Place it unobtrusively in the app shell — recommended: the top-nav right cluster near Sessions/Logout (the shell has no footer today) ([frontend/src/App.tsx](frontend/src/App.tsx)). Small muted text, clearly labelled as the frontend version, not overlapping controls.
+  - [x] English-only label; meet contrast/focus baseline (muted slate that still passes AA; it is non-interactive text so no focus ring needed, but ensure it doesn't sit on a low-contrast background).
 
-- [ ] **Task 3 — Tests (AC: 2, 3, 4)**
-  - [ ] Add `frontend/src/components/__tests__/AppVersion.test.tsx`: renders the version when `__APP_VERSION__` is defined; renders the `dev`/`unknown` fallback when undefined/empty. Define/undefine the global via `vi.stubGlobal`/`globalThis` per the Vitest pattern.
-  - [ ] `npm run typecheck` (must resolve `__APP_VERSION__`) + `npm run lint` + `npm test`; `npm run build` to confirm the define injects.
+- [x] **Task 3 — Tests (AC: 2, 3, 4)**
+  - [x] Add `frontend/src/components/__tests__/AppVersion.test.tsx`: renders the version when `__APP_VERSION__` is defined; renders the `dev`/`unknown` fallback when undefined/empty. Define/undefine the global via `vi.stubGlobal`/`globalThis` per the Vitest pattern.
+  - [x] `npm run typecheck` (must resolve `__APP_VERSION__`) + `npm run lint` + `npm test`; `npm run build` to confirm the define injects.
 
 ## Dev Notes
 
@@ -86,9 +86,22 @@ Build-time `define` (AC1: no runtime request) + a tiny presentational component 
 ## Dev Agent Record
 
 ### Agent Model Used
+Gemini Pro
 
 ### Debug Log References
+- `npm run build` confirmed the define is correctly injected and minified into dist.
+- Vitest run for AppVersion passed all states (`v1.2.3`, `dev`, `unknown`).
 
 ### Completion Notes List
+- Injected `__APP_VERSION__` via `vite.config.ts` define block using `package.json` value.
+- Added type definition for `__APP_VERSION__` in `vite-env.d.ts`.
+- Created `AppVersion` component correctly rendering `v` prefix when applicable and falling back securely.
+- Injected `<AppVersion />` into the `App.tsx` top nav, meeting contrast and functional constraints.
+- Passed typecheck, lint, unit tests, and production build.
 
 ### File List
+- frontend/vite.config.ts
+- frontend/src/vite-env.d.ts
+- frontend/src/components/AppVersion.tsx
+- frontend/src/App.tsx
+- frontend/src/components/__tests__/AppVersion.test.tsx

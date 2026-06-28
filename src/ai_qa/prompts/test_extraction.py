@@ -146,6 +146,8 @@ not in the Available roles list.
 ## Response
 
 Generate as many test cases as needed to thoroughly cover all requirements. Each requirement should map to at least one test case. Return ONLY the JSON response, no additional commentary.
+
+**IMPORTANT**: All generated output (titles, objectives, preconditions, steps, expected results) MUST be written in English, regardless of the language of the input requirements or context.
 """
 
 

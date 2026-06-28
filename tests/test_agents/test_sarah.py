@@ -121,68 +121,24 @@ class TestSarahAgentInit:
 
 
 # -----------------------------------------------------------------------------
-# Chrome Path Persistence Tests
+# Chrome Path (transient, per-run) Tests
 # -----------------------------------------------------------------------------
 
 
-class TestChromePathPersistence:
-    """Test Chrome path loading and storage."""
+class TestChromePathTransient:
+    """The Chrome path is a transient per-run launch hint (no longer persisted)."""
 
     @pytest.mark.asyncio
-    async def test_load_chrome_path_from_storage(self, mock_project_context) -> None:
-        """Test Chrome path is loaded from persistent storage."""
+    async def test_chrome_path_set_from_input_without_persistence(
+        self, mock_project_context
+    ) -> None:
+        """A submitted Chrome path is kept transiently and never written to an artifact."""
         from ai_qa.agents.sarah import SarahAgent
 
         agent = SarahAgent()
         agent.project_context = mock_project_context
-
-        with patch("ai_qa.agents.sarah.PipelineArtifactAdapter") as mock_adapter_class:
-            mock_adapter = MagicMock()
-            mock_adapter_class.return_value = mock_adapter
-
-            mock_artifact = MagicMock()
-            mock_artifact.name = "chrome_path.json"
-            mock_adapter.service.list_artifacts.return_value = [mock_artifact]
-            mock_adapter.service.read_current_content.return_value = json.dumps(
-                {"chrome_path": "/usr/bin/chrome"}
-            ).encode("utf-8")
-
-            agent._load_chrome_path()
-            assert agent._chrome_path == "/usr/bin/chrome"
-
-    @pytest.mark.asyncio
-    async def test_store_chrome_path_saves_to_file(self, mock_project_context) -> None:
-        """Test Chrome path is saved to persistent storage."""
-        from ai_qa.agents.sarah import SarahAgent
-
-        agent = SarahAgent()
-        agent.project_context = mock_project_context
-
-        with patch("ai_qa.agents.sarah.PipelineArtifactAdapter") as mock_adapter_class:
-            mock_adapter = MagicMock()
-            mock_adapter_class.return_value = mock_adapter
-
-            await agent._store_chrome_path("/usr/bin/google-chrome")
-
-            mock_adapter.save_metadata.assert_called_once_with(
-                "chrome_path.json", {"chrome_path": "/usr/bin/google-chrome"}
-            )
-            assert agent._chrome_path == "/usr/bin/google-chrome"
-
-    def test_chrome_path_none_when_no_storage(self, mock_project_context) -> None:
-        """Test Chrome path is None when no storage exists."""
-        from ai_qa.agents.sarah import SarahAgent
-
-        agent = SarahAgent()
-        agent.project_context = mock_project_context
-
-        with patch("ai_qa.agents.sarah.PipelineArtifactAdapter") as mock_adapter_class:
-            mock_adapter = MagicMock()
-            mock_adapter_class.return_value = mock_adapter
-            mock_adapter.service.list_artifacts.return_value = []
-
-            agent._load_chrome_path()
-            assert agent._chrome_path is None
+        assert not hasattr(agent, "_store_chrome_path")
+        assert not hasattr(agent, "_load_chrome_path")
 
 
 class TestSarahProjectEnvironments:
@@ -212,6 +168,207 @@ class TestSarahProjectEnvironments:
         agent.project_context = mock_project_context
         # db.get returns a MagicMock whose .environments is not a list → guarded to [].
         assert agent._project_environments() == []
+
+
+# -----------------------------------------------------------------------------
+# Tier-1 server-side explore — captured-session resolution
+# -----------------------------------------------------------------------------
+
+
+class TestSarahResolveExploreModel:
+    """Sarah drives the browser-use explore with the project's VISION model (Bob's pick),
+    while code generation keeps its own (coding) model."""
+
+    def _agent(self, mock_project_context) -> Any:
+        from ai_qa.agents.sarah import SarahAgent
+
+        agent = SarahAgent()
+        agent.project_context = mock_project_context
+        return agent
+
+    def _set_bob_model(self, mock_project_context, model: str | None) -> None:
+        from types import SimpleNamespace
+
+        agent_configs = {"bob": {"model": model}} if model else {}
+        db = mock_project_context.artifact_service.db
+        # The shared fixture wires db.get via side_effect (returns a fixed Thread);
+        # clear it so this test's return_value (with the bob model we want) takes effect.
+        db.get.side_effect = None
+        db.get.return_value = SimpleNamespace(agent_configs=agent_configs)
+
+    def test_uses_bobs_vision_model_with_vision_on(self, mock_project_context) -> None:
+        agent = self._agent(mock_project_context)
+        self._set_bob_model(mock_project_context, "inference-qwen3-vl-235b")
+        model, use_vision = agent._resolve_explore_model("glm-5.1")
+        assert model == "inference-qwen3-vl-235b"
+        assert use_vision is True
+
+    def test_falls_back_to_codegen_dom_only_when_no_vision_model(
+        self, mock_project_context
+    ) -> None:
+        # Degraded pool: even Bob got a text-only model → run DOM-only, never send images.
+        agent = self._agent(mock_project_context)
+        self._set_bob_model(mock_project_context, "glm-5.1")
+        model, use_vision = agent._resolve_explore_model("glm-5.1")
+        assert model == "glm-5.1"
+        assert use_vision is False
+
+    def test_honours_codegen_model_when_it_is_itself_vision(self, mock_project_context) -> None:
+        agent = self._agent(mock_project_context)
+        self._set_bob_model(mock_project_context, None)  # no Bob config to borrow
+        model, use_vision = agent._resolve_explore_model("pixtral-large")
+        assert model == "pixtral-large"
+        assert use_vision is True
+
+    def _set_agent_configs(self, mock_project_context, configs: dict[str, dict]) -> None:
+        from types import SimpleNamespace
+
+        db = mock_project_context.artifact_service.db
+        db.get.side_effect = None
+        db.get.return_value = SimpleNamespace(agent_configs=configs)
+
+    def test_explicit_sarah_explore_slot_takes_precedence_over_bob(
+        self, mock_project_context
+    ) -> None:
+        # Alice now assigns Sarah a dedicated explore model; it wins over Bob's pick.
+        agent = self._agent(mock_project_context)
+        self._set_agent_configs(
+            mock_project_context,
+            {
+                "bob": {"model": "inference-qwen3-vl-235b"},
+                "sarah_explore": {"model": "inference-glm-5.1v-754b"},
+            },
+        )
+        model, use_vision = agent._resolve_explore_model("glm-5.1")
+        assert model == "inference-glm-5.1v-754b"
+        assert use_vision is True
+
+    def test_explicit_sarah_explore_override_to_text_model_runs_dom_only(
+        self, mock_project_context
+    ) -> None:
+        # A user override of the explore slot is honoured even if it's text-only — but vision
+        # is turned OFF (DOM-only) so browser-use never sends images a blind model can't read.
+        agent = self._agent(mock_project_context)
+        self._set_agent_configs(
+            mock_project_context, {"sarah_explore": {"model": "inference-deepseek-v32"}}
+        )
+        model, use_vision = agent._resolve_explore_model("glm-5.1")
+        assert model == "inference-deepseek-v32"
+        assert use_vision is False
+
+
+class TestSarahResolveRoleSessions:
+    """Sarah resolves the user's captured sessions per involved role for server-side explore."""
+
+    def _agent_with_env(
+        self,
+        mock_project_context,
+        target_url: str = "https://t1.app",
+        environment: str | None = "Test 1",
+    ) -> Any:
+        from ai_qa.agents.sarah import SarahAgent
+
+        agent = SarahAgent()
+        agent.project_context = mock_project_context
+        # The environment NAME is the authoritative session-resolve key — submitted from the
+        # inputs form alongside the target URL (no URL→name matching anymore).
+        agent._target_url = target_url
+        agent._environment = environment
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_resolves_per_role_and_builds_blob_map(self, mock_project_context) -> None:
+        agent = self._agent_with_env(mock_project_context)
+        agent._test_cases = [
+            TestCase(title="Admin flow", role="Admin"),
+            TestCase(title="User flow", role="User"),
+            TestCase(title="Another admin flow", role="Admin"),  # duplicate role
+        ]
+        admin_blob = {"cookies": [{"name": "sid", "value": "admin"}]}
+
+        async def fake_resolve(
+            db, *, user_id, project_id, environment, role, chrome_path, llm, timeout
+        ):
+            assert environment == "Test 1"  # the submitted env NAME, used directly
+            return admin_blob if role == "Admin" else None  # User has no captured session
+
+        with patch(
+            "ai_qa.sessions.auto_login.resolve_or_generate_storage_state",
+            new_callable=AsyncMock,
+            side_effect=fake_resolve,
+        ) as mock_resolve:
+            result = await agent._resolve_role_sessions()
+
+        # Called once per DISTINCT involved role.
+        assert {c.kwargs["role"] for c in mock_resolve.call_args_list} == {"Admin", "User"}
+        # Roles with no session are skipped.
+        assert result == {"Admin": admin_blob}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_environment_submitted(self, mock_project_context) -> None:
+        """No env NAME (e.g. free-text URL path) → no session resolve, falls back to LLM-only."""
+        agent = self._agent_with_env(mock_project_context, environment=None)
+        agent._test_cases = [TestCase(title="Admin flow", role="Admin")]
+        with patch(
+            "ai_qa.sessions.auto_login.resolve_or_generate_storage_state", new_callable=AsyncMock
+        ) as mock_resolve:
+            result = await agent._resolve_role_sessions()
+        assert result == {}
+        mock_resolve.assert_not_called()  # no environment -> never query the session store
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_roles(self, mock_project_context) -> None:
+        agent = self._agent_with_env(mock_project_context)
+        agent._test_cases = [TestCase(title="Roleless")]  # role is None
+        with patch(
+            "ai_qa.sessions.auto_login.resolve_or_generate_storage_state", new_callable=AsyncMock
+        ) as mock_resolve:
+            result = await agent._resolve_role_sessions()
+        assert result == {}
+        mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_without_target_url(self, mock_project_context) -> None:
+        agent = self._agent_with_env(mock_project_context, target_url="")
+        agent._test_cases = [TestCase(title="Admin flow", role="Admin")]
+        with patch(
+            "ai_qa.sessions.auto_login.resolve_or_generate_storage_state", new_callable=AsyncMock
+        ) as mock_resolve:
+            result = await agent._resolve_role_sessions()
+        assert result == {}
+        mock_resolve.assert_not_called()
+
+    async def test_generate_scripts_passes_role_sessions_to_generator(
+        self, mock_project_context
+    ) -> None:
+        """_generate_scripts wires the resolved role_sessions into the ScriptGenerator."""
+        agent = self._agent_with_env(mock_project_context)
+        agent._test_cases = [TestCase(title="Admin flow", role="Admin")]
+        agent._test_case_source_ids = [None]
+        admin_blob = {"cookies": []}
+
+        with (
+            patch("ai_qa.agents.sarah.ScriptGenerator") as mock_generator_class,
+            patch(
+                "ai_qa.sessions.auto_login.resolve_or_generate_storage_state",
+                new_callable=AsyncMock,
+                return_value=admin_blob,
+            ),
+            patch.object(agent, "_build_explore_llm", return_value=object()),
+            patch.object(agent, "send_message", new=AsyncMock()),
+        ):
+            mock_generator = MagicMock()
+            mock_generator.generate = AsyncMock(
+                return_value=StageResult(success=True, data=[], warnings=[], confidence=1.0)
+            )
+            mock_generator._generate_script_header = MagicMock(return_value="# header")
+            mock_generator._generate_filename = MagicMock(return_value="test_x.py")
+            mock_generator_class.return_value = mock_generator
+
+            await agent._generate_scripts()
+
+        _, kwargs = mock_generator_class.call_args
+        assert kwargs["role_sessions"] == {"Admin": admin_blob}
 
 
 # -----------------------------------------------------------------------------
@@ -384,49 +541,6 @@ class TestSarahAgentProcess:
                 c for c in mock_broadcast.call_args_list if c[0][0].message_type == "info"
             ]
             assert len(progress_calls) >= len(sample_test_cases)
-
-    @pytest.mark.asyncio
-    async def test_process_stores_chrome_path_when_provided(
-        self, tmp_path: Path, sample_test_cases: list[TestCase], mock_project_context
-    ) -> None:
-        """Test process stores Chrome path when provided in input."""
-        from ai_qa.agents.sarah import SarahAgent
-
-        mock_artifact = MagicMock()
-        mock_artifact.content = json.dumps([tc.model_dump() for tc in sample_test_cases]).encode(
-            "utf-8"
-        )
-        self.mock_adapter.load_test_cases.return_value = [mock_artifact]
-
-        with patch("ai_qa.agents.sarah.ScriptGenerator") as mock_generator_class:
-            mock_generator = MagicMock()
-            mock_generator.generate = AsyncMock()
-            mock_generator._generate_script_header.return_value = "# Header"
-            mock_generator._generate_filename.return_value = "file.py"
-            mock_generator.generate.return_value = StageResult(
-                success=True,
-                data=[
-                    {
-                        "file_path": str(tmp_path / "testscripts" / "test_login.py"),
-                        "test_case_title": tc.title,
-                        "confidence": 0.85,
-                    }
-                    for tc in sample_test_cases
-                ],
-                errors=[],
-                warnings=[],
-                confidence=0.85,
-            )
-            mock_generator_class.return_value = mock_generator
-
-            agent = SarahAgent(workspace_dir=tmp_path)
-            agent.project_context = mock_project_context
-            await agent.process({"chrome_path": "/usr/bin/google-chrome"})
-
-            # Check Chrome path was stored via adapter
-            self.mock_adapter.save_metadata.assert_called_with(
-                "chrome_path.json", {"chrome_path": "/usr/bin/google-chrome"}
-            )
 
 
 # -----------------------------------------------------------------------------
@@ -1728,7 +1842,9 @@ class TestSarahAgentInputSelection:
         ]
         assert requests, "expected a sarah_inputs_request"
         assert requests[-1]["needs_url"] is True
-        assert requests[-1]["needs_chrome"] is True  # no chrome on file
+        # No browser-source fields anymore — the server-side captured session is the auth.
+        assert "needs_chrome" not in requests[-1]
+        assert "environments" in requests[-1]
 
     @pytest.mark.asyncio
     async def test_reentry_stores_target_url_and_chrome_then_proceeds(
@@ -1759,6 +1875,43 @@ class TestSarahAgentInputSelection:
         assert agent._target_url == "https://app.test"
         assert agent._chrome_path == "/usr/bin/chrome"
         # Inputs satisfied -> it must NOT re-emit an inputs request.
+        reqs = [
+            c
+            for c in mock_broadcast.call_args_list
+            if c[0][0].metadata and c[0][0].metadata.get("type") == "sarah_inputs_request"
+        ]
+        assert len(reqs) == 0
+
+    @pytest.mark.asyncio
+    async def test_reentry_with_env_only_proceeds_without_browser_source(
+        self, tmp_path: Path, mock_broadcast: AsyncMock, mock_project_context
+    ) -> None:
+        """Tier-1: a re-start with only {target_url, environment} (no Chrome/CDP) proceeds to
+        generation. The server-side captured session is the browser auth, so a local browser
+        source is no longer required (the gate previously looped forever here)."""
+        from ai_qa.agents.sarah import SarahAgent
+
+        agent = SarahAgent(workspace_dir=tmp_path)
+        agent.project_context = mock_project_context
+        agent.confirmed_test_cases = [
+            TestCase(title="Login", preconditions=[], steps=[], expected_results=[])
+        ]
+        agent.phase = "script_review"
+        agent._chrome_path = None
+        agent._cdp_url = None
+        agent._target_url = None
+        agent._awaiting_inputs = True
+
+        ok = StageResult(success=True, data=[], errors=[], warnings=[], confidence=1.0)
+        with (
+            patch.object(agent, "process", new=AsyncMock(return_value=ok)),
+            patch.object(agent, "_present_script_review", new=AsyncMock()),
+        ):
+            await agent.handle_start({"target_url": "https://app.test", "environment": "Test 1"})
+
+        assert agent._target_url == "https://app.test"
+        assert agent._environment == "Test 1"
+        # No browser source submitted, yet it must NOT loop back to an inputs request.
         reqs = [
             c
             for c in mock_broadcast.call_args_list
@@ -2528,7 +2681,7 @@ class TestSarahApprovalMetadata:
             file_path="test.py",
             confidence=0.9,
             approved=True,
-            approved_by="[EMAIL_ADDRESS]",
+            approved_by="qa@corp.vn",
             approved_at="2026-06-13T10:00:00+00:00",
         )
         agent._generated_scripts.append(gs)
@@ -3632,25 +3785,21 @@ class TestSarahRolePropagation:
         agent._generated_scripts = scripts
         return agent
 
-    def test_role_script_saved_under_role_subfolder(self, tmp_path: Path) -> None:
+    def test_role_script_saved_flat(self, tmp_path: Path) -> None:
         scripts = [self._script(role="Admin", file_path="test_login.py")]
-        agent = self._agent(tmp_path, scripts)
-        assert agent._unique_script_name(scripts[0], 0) == "Admin/test_login.py"
-
-    def test_no_role_stays_flat(self, tmp_path: Path) -> None:
-        scripts = [self._script(role=None, file_path="test_login.py")]
         agent = self._agent(tmp_path, scripts)
         assert agent._unique_script_name(scripts[0], 0) == "test_login.py"
 
-    def test_same_base_different_roles_do_not_collide(self, tmp_path: Path) -> None:
+    def test_same_base_different_roles_collide_with_suffix(self, tmp_path: Path) -> None:
         scripts = [
             self._script(role="Admin", file_path="test_login.py", sid="a1"),
             self._script(role="User", file_path="test_login.py", sid="u1"),
         ]
         agent = self._agent(tmp_path, scripts)
-        # Different role folders separate them — neither gets a disambiguation suffix.
-        assert agent._unique_script_name(scripts[0], 0) == "Admin/test_login.py"
-        assert agent._unique_script_name(scripts[1], 1) == "User/test_login.py"
+        # Without role folders separating them, they collide at the flat root.
+        # Both are suffixed because they collide with each other.
+        assert agent._unique_script_name(scripts[0], 0) == "test_login__a1.py"
+        assert agent._unique_script_name(scripts[1], 1) == "test_login__u1.py"
 
     def test_same_base_same_role_collides_with_suffix(self, tmp_path: Path) -> None:
         scripts = [
@@ -3658,14 +3807,14 @@ class TestSarahRolePropagation:
             self._script(role="Admin", file_path="test_login.py", sid="a2"),
         ]
         agent = self._agent(tmp_path, scripts)
-        assert agent._unique_script_name(scripts[1], 1) == "Admin/test_login__a2.py"
+        assert agent._unique_script_name(scripts[1], 1) == "test_login__a2.py"
 
     @pytest.mark.asyncio
-    async def test_sidecar_preserves_role_folder_and_role_field(
+    async def test_sidecar_flat_name_preserves_role_field(
         self, tmp_path: Path, mock_project_context
     ) -> None:
         script = self._script(role="Admin", file_path="test_login.py", sid="a1")
-        script.saved_file_name = "Admin/test_login.py"  # as handle_approve would set it
+        script.saved_file_name = "test_login.py"  # as handle_approve would set it
         script.approved_by = "qa@example.com"
         script.approved_at = "2026-06-21T00:00:00Z"
         agent = self._agent(tmp_path, [script])
@@ -3679,8 +3828,8 @@ class TestSarahRolePropagation:
         call = mock_adapter.save_metadata.call_args
         sidecar_name = call.args[0]
         payload = call.args[1]
-        # Sidecar keeps the <role>/ prefix so it stays 1:1 with the role-foldered script.
-        assert sidecar_name == "Admin/test_login.metadata.json"
+        # Sidecar is flat, but metadata role remains intact.
+        assert sidecar_name == "test_login.metadata.json"
         assert payload["role"] == "Admin"
         assert payload["source_test_case_id"] == "a1"
 

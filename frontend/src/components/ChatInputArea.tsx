@@ -315,26 +315,54 @@ export function ChatInputArea({
         {/* Action buttons */}
         <div className="flex justify-between gap-3">
           {/* Reject button - secondary, left (AC 6) */}
-          <Button
-            variant="outline"
-            onClick={onReject}
-            className="border-red-500 text-red-500 hover:bg-red-50 hover:text-red-600 min-w-[100px]"
-            aria-label="Reject and provide feedback"
-          >
-            <X className="w-4 h-4 mr-2" />
-            Reject
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-block">
+                  <Button
+                    variant="outline"
+                    onClick={onReject}
+                    disabled={!!disabledReason || isLoading}
+                    className="border-red-500 text-red-500 hover:bg-red-50 hover:text-red-600 min-w-[100px] disabled:opacity-50 disabled:cursor-not-allowed"
+                    aria-label="Reject and provide feedback"
+                  >
+                    <X className="w-4 h-4 mr-2" />
+                    Reject
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {disabledReason && (
+                <TooltipContent side="top">
+                  <p>{disabledReason}</p>
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
 
           {/* Approve button - primary, right (AC 6) */}
-          <Button
-            ref={primaryButtonRef}
-            onClick={onApprove}
-            className="bg-green-500 hover:bg-green-600 text-white min-w-[100px]"
-            aria-label="Approve and continue"
-          >
-            <Check className="w-4 h-4 mr-2" />
-            Approve
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-block">
+                  <Button
+                    ref={primaryButtonRef}
+                    onClick={onApprove}
+                    disabled={!!disabledReason || isLoading}
+                    className="bg-green-500 hover:bg-green-600 text-white min-w-[100px] disabled:opacity-50 disabled:cursor-not-allowed"
+                    aria-label="Approve and continue"
+                  >
+                    <Check className="w-4 h-4 mr-2" />
+                    Approve
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {disabledReason && (
+                <TooltipContent side="top">
+                  <p>{disabledReason}</p>
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
     );

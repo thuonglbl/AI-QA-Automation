@@ -13,7 +13,7 @@ from sqlalchemy import Table, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from ai_qa.auth.password import hash_password
+from ai_qa.auth.service import STANDARD_ROLE
 from ai_qa.db.base import Base
 from ai_qa.db.models import User
 from ai_qa.secrets.models import UserSecret
@@ -56,13 +56,14 @@ def session() -> Generator[Session]:
 def make_user(session: Session) -> Callable[..., User]:
     """Factory that persists and returns a standard ``User`` (unique email per call)."""
 
-    def _make(email: str = "user@example.com") -> User:
+    def _make(
+        email: str = "user@example.com", role: str = STANDARD_ROLE, active: bool = True
+    ) -> User:
         user = User(
             email=email,
-            display_name="Tester",
-            password_hash=hash_password("super-secret"),
-            role="standard",
-            is_active=True,
+            display_name=email.split("@")[0],
+            role=role,
+            is_active=active,
         )
         session.add(user)
         session.commit()

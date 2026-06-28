@@ -403,6 +403,32 @@ describe("SarahScriptReviewPanel", () => {
       expect(screen.getByRole("button", { name: /Skip/i })).toBeDisabled();
       expect(screen.getByRole("button", { name: /Reject/i })).toBeDisabled();
     });
+
+    it("preserves reject feedback when navigating to another script and back", () => {
+      render(
+        <SarahScriptReviewPanel
+          scripts={[makeItem({ index: 0 }), makeItem({ index: 1 })]}
+          onApprove={noop}
+          onReject={noop}
+          onSkip={noop}
+        />,
+      );
+      
+      // Navigate to Reject input on first script
+      fireEvent.click(screen.getByRole("button", { name: /Reject/i }));
+      const textarea = screen.getByPlaceholderText(/Describe what needs to be changed/i);
+      fireEvent.change(textarea, { target: { value: "Feedback for First Script" } });
+      expect(textarea).toHaveValue("Feedback for First Script");
+
+      // Navigate to second script
+      fireEvent.click(screen.getByRole("button", { name: /Next script/i }));
+      expect(screen.queryByPlaceholderText(/Describe what needs to be changed/i)).not.toBeInTheDocument();
+
+      // Navigate back to first script
+      fireEvent.click(screen.getByRole("button", { name: /Previous script/i }));
+      const restoredTextarea = screen.getByPlaceholderText(/Describe what needs to be changed/i);
+      expect(restoredTextarea).toHaveValue("Feedback for First Script");
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -786,7 +812,7 @@ describe("SarahScriptReviewPanel", () => {
     it("shows 'Approved by ...' caption when script is approved with metadata", () => {
       const approvedItem = makeItem({
         approved: true,
-        approved_by: "qa@company.com",
+        approved_by: "qa@corp.vn",
         approved_at: "2026-06-13T10:00:00+00:00",
         status: "approved",
       });
@@ -799,7 +825,7 @@ describe("SarahScriptReviewPanel", () => {
         />,
       );
       // Must use text, not color alone
-      expect(screen.getByText(/Approved by qa@company\.com/)).toBeInTheDocument();
+      expect(screen.getByText(/Approved by qa@corp\.vn/)).toBeInTheDocument();
     });
 
     it("shows 'Approved' without 'by' when approved_by is null", () => {
@@ -849,7 +875,7 @@ describe("SarahScriptReviewPanel", () => {
     it("renders gracefully when approved_at is null", () => {
       const approvedItem = makeItem({
         approved: true,
-        approved_by: "qa@company.com",
+        approved_by: "qa@corp.vn",
         approved_at: null,
         status: "approved",
       });
@@ -862,7 +888,34 @@ describe("SarahScriptReviewPanel", () => {
         />,
       );
       // Must still show approved_by without crashing
-      expect(screen.getByText(/Approved by qa@company\.com/)).toBeInTheDocument();
+      expect(screen.getByText(/Approved by qa@corp\.vn/)).toBeInTheDocument();
+    });
+  });
+  
+  describe("16.6 AC2 — Keyboard navigation for script dots", () => {
+    it("allows arrow keys to navigate between script dots", () => {
+      render(
+        <SarahScriptReviewPanel
+          scripts={[makeItem({ index: 0 }), makeItem({ index: 1 })]}
+          onApprove={vi.fn()}
+          onReject={vi.fn()}
+          onSkip={vi.fn()}
+        />
+      );
+      
+      const dots = screen.getAllByRole("button", { name: /^Script \d:/ });
+      expect(dots).toHaveLength(2);
+      
+      // Initially script 1 is selected
+      expect(screen.getByText("Review Script (1 of 2) —")).toBeInTheDocument();
+      
+      // Right arrow on the first dot should select the second script
+      fireEvent.keyDown(dots[0]!, { key: "ArrowRight" });
+      expect(screen.getByText("Review Script (2 of 2) —")).toBeInTheDocument();
+      
+      // Left arrow on the second dot should select the first script
+      fireEvent.keyDown(dots[1]!, { key: "ArrowLeft" });
+      expect(screen.getByText("Review Script (1 of 2) —")).toBeInTheDocument();
     });
   });
 });

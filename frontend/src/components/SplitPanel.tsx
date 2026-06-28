@@ -4,6 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ReviewContent } from "@/components/ReviewContent";
 import { ExternalLink, Check, X, ChevronLeft, ChevronRight, AlertTriangle, MessageSquareX } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { ExtractedPage } from "@/types/extraction";
 
 interface SplitPanelProps {
@@ -295,34 +301,74 @@ export function SplitPanel({
 
       {/* Footer Buttons */}
       <div className="flex items-center justify-between gap-3 px-4 py-3 bg-slate-50 border-t">
-        <Button
-          variant="outline"
-          onClick={() => setShowRejectInput((v) => !v)}
-          disabled={disabled}
-          className="text-red-600 border-red-300 hover:bg-red-50"
-        >
-          <MessageSquareX className="w-4 h-4 mr-2" />
-          Reject
-        </Button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-block">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowRejectInput((v) => !v)}
+                  disabled={disabled}
+                  className="text-red-600 border-red-300 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <MessageSquareX className="w-4 h-4 mr-2" />
+                  Reject
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {disabled && (
+              <TooltipContent side="top">
+                <p>Review unavailable: please answer the active prompt first</p>
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
         <div className="flex items-center gap-3">
-          <Button
-            variant="outline"
-            onClick={handleSkip}
-            disabled={disabled}
-            className="text-slate-600"
-          >
-            <X className="w-4 h-4 mr-2" />
-            Not requirement
-          </Button>
-          <Button
-            variant="default"
-            onClick={handleApprove}
-            disabled={disabled}
-            className="bg-blue-600 hover:bg-blue-700"
-          >
-            <Check className="w-4 h-4 mr-2" />
-            Approved
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-block">
+                  <Button
+                    variant="outline"
+                    onClick={handleSkip}
+                    disabled={disabled}
+                    className="text-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <X className="w-4 h-4 mr-2" />
+                    Not requirement
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {disabled && (
+                <TooltipContent side="top">
+                  <p>Review unavailable: please answer the active prompt first</p>
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
+
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-block">
+                  <Button
+                    variant="default"
+                    onClick={handleApprove}
+                    disabled={disabled}
+                    className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Check className="w-4 h-4 mr-2" />
+                    Approved
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {disabled && (
+                <TooltipContent side="top">
+                  <p>Review unavailable: please answer the active prompt first</p>
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
     </div>

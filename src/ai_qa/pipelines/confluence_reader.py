@@ -23,31 +23,65 @@ DEFAULT_PAGE_LIMIT = 100
 DEFAULT_MAX_CONCURRENT_REQUESTS = 5
 
 
-def _extract_parent_id(page_data: dict[str, Any], fallback_root_id: str | None) -> str | None:
-    """Best-effort immediate-parent page id from a Confluence search result.
+def _extract_version(page_data: dict[str, Any]) -> int | None:
+    """Best-effort Confluence revision number from a page or search-result dict.
 
-    Tries the ``ancestors`` chain (its last entry is the immediate parent — only
-    present when the search was expanded with ``ancestors``), then ``parentId`` /
-    ``parent.id``. Falls back to *fallback_root_id* so a page whose parent can't
-    be resolved still nests under the extraction root rather than floating at the
-    top level. Returns None only when there is no fallback (i.e. the root itself).
+    Mirrors read_page_by_id's extraction: nested ``version.number`` first, flat
+    ``version_number`` fallback. Returns None when absent or non-integer.
     """
+    raw = (
+        _safe_get(_safe_get(page_data, "version", {}), "number")
+        if isinstance(_safe_get(page_data, "version"), dict)
+        else _safe_get(page_data, "version_number")
+    )
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_parent_and_ancestors(
+    page_data: dict[str, Any], fallback_root_id: str | None
+) -> tuple[str | None, list[str]]:
+    """Best-effort immediate-parent page id and full ancestor chain from a search result.
+
+    Returns a tuple of (immediate_parent_id, ancestor_ids_list).
+    Tries the ``ancestors`` chain, then ``parentId`` / ``parent.id``.
+    Falls back to *fallback_root_id*.
+    """
+    ancestor_ids = []
+    immediate_parent_id = None
+
     ancestors = page_data.get("ancestors")
     if isinstance(ancestors, list) and ancestors:
-        last = ancestors[-1]
-        if isinstance(last, dict):
-            pid = str(last.get("id") or "")
-            if pid:
-                return pid
-    parent_id = page_data.get("parentId") or page_data.get("parent_id")
-    if parent_id:
-        return str(parent_id)
-    parent = page_data.get("parent")
-    if isinstance(parent, dict):
-        pid = str(parent.get("id") or "")
-        if pid:
-            return pid
-    return fallback_root_id
+        for a in ancestors:
+            if isinstance(a, dict):
+                aid = str(a.get("id") or "")
+                if aid:
+                    ancestor_ids.append(aid)
+        if ancestor_ids:
+            immediate_parent_id = ancestor_ids[-1]
+
+    if not immediate_parent_id:
+        parent_id = page_data.get("parentId") or page_data.get("parent_id")
+        if parent_id:
+            immediate_parent_id = str(parent_id)
+        else:
+            parent = page_data.get("parent")
+            if isinstance(parent, dict):
+                pid = str(parent.get("id") or "")
+                if pid:
+                    immediate_parent_id = pid
+
+        if not immediate_parent_id:
+            immediate_parent_id = fallback_root_id
+
+        if immediate_parent_id:
+            ancestor_ids = [immediate_parent_id]
+
+    return immediate_parent_id, ancestor_ids
 
 
 def _resolve_page_url(base_url: str | None, page_data: Any, page_id: str) -> str:
@@ -705,6 +739,8 @@ class ConfluenceReader:
         """Get all child pages of a Confluence page by its page_id via MCP using confluence_search.
 
         Returns a StageResult whose .data is a list of PageSummary objects.
+        This implementation performs a BFS to fetch descendants layer-by-layer
+        to accurately reconstruct the parent-child hierarchy.
 
         Args:
             page_id: Numeric Confluence page ID
@@ -722,73 +758,88 @@ class ConfluenceReader:
                 confidence=0.0,
             )
 
+        summaries = []
+        # Queue stores tuples of (current_page_id, ancestor_ids_excluding_current)
+        queue: list[tuple[str, list[str]]] = [(page_id, [])]
+        visited = set()
+        warnings = []
+
         try:
-            # Construct CQL query
-            cql = f"type=page AND (parent={page_id} OR ancestor={page_id})"
-            if space_key:
-                cql = f"space='{space_key}' AND " + cql
+            while queue:
+                current_id, current_ancestors = queue.pop(0)
 
-            tool_result = await self._mcp_client.call_tool(
-                self._get_tool_name("confluence_search"),
-                {
-                    "cql": cql,
-                    "limit": 50,
-                    # NOTE: do NOT pass an "expand" param — the MCP confluence_search
-                    # tool rejects unknown params ("Unknown parameter: expand") and
-                    # fails the whole search. Parent ids are read from whatever the
-                    # response already includes (ancestors/parentId), else the root.
-                    "userPrompt": "User initiated a story creation workflow that requires reading all children pages of a Confluence page.",
-                    "llmReasoning": "Need to search for child pages to recursively process all documentation linked to the parent page.",
-                },
-            )
+                if current_id in visited:
+                    continue
+                visited.add(current_id)
 
-            if not tool_result.success:
-                return StageResult(
-                    success=False,
-                    data=None,
-                    errors=[
-                        f"Failed to search for children of page {page_id}: {tool_result.error}"
-                    ],
-                    warnings=[],
-                    confidence=0.0,
+                # Fetch ONLY direct children of current_id
+                # NOTE: The CORP MCP confluence_search tool does NOT support
+                # 'start' (pagination offset) or 'space=...' CQL clauses —
+                # both are rejected with "Unknown parameter" / validation errors.
+                # We use limit=100 (server max) to fetch all children in one call.
+                cql = f"type=page AND parent={current_id}"
+
+                tool_result = await self._mcp_client.call_tool(
+                    self._get_tool_name("confluence_search"),
+                    {
+                        "cql": cql,
+                        "limit": 100,
+                        "userPrompt": "User initiated a story creation workflow that requires reading child pages of a Confluence page.",
+                        "llmReasoning": "Fetching direct children to recursively build the document tree.",
+                    },
                 )
 
-            children_data = tool_result.data
-            if isinstance(children_data, str):
-                try:
-                    children_data = json.loads(children_data)
-                except json.JSONDecodeError:
-                    return StageResult(
-                        success=False,
-                        data=None,
-                        errors=["Invalid JSON from MCP server"],
-                        warnings=[],
-                        confidence=0.0,
+                if not tool_result.success:
+                    warnings.append(
+                        f"Search failed for children of {current_id}: {tool_result.error}"
+                    )
+                    continue
+
+                children_data = tool_result.data
+                if isinstance(children_data, str):
+                    try:
+                        children_data = json.loads(children_data)
+                    except json.JSONDecodeError:
+                        warnings.append(f"Invalid JSON from MCP server for {current_id}")
+                        continue
+
+                if isinstance(children_data, dict) and "results" in children_data:
+                    results_list = children_data["results"]
+                else:
+                    results_list = children_data if isinstance(children_data, list) else []
+
+                for child in results_list:
+                    if not isinstance(child, dict):
+                        continue
+
+                    child_id = str(child.get("id", child.get("page_id", "")))
+                    if not child_id:
+                        continue
+
+                    title = child.get("title", "Untitled")
+                    url = child.get("url", "") or (
+                        f"{self._confluence_base_url}/pages/{child_id}"
+                        if self._confluence_base_url and child_id
+                        else ""
                     )
 
-            if isinstance(children_data, dict) and "results" in children_data:
-                results_list = children_data["results"]
-            else:
-                results_list = children_data if isinstance(children_data, list) else []
+                    # Since we fetched by parent=current_id, we KNOW the exact hierarchy
+                    child_ancestor_ids = current_ancestors + [current_id]
 
-            summaries = []
-            for child in results_list:
-                if not isinstance(child, dict):
-                    continue
-                child_id = str(child.get("id", child.get("page_id", "")))
-                title = child.get("title", "Untitled")
-                url = child.get("url", "") or (
-                    f"{self._confluence_base_url}/pages/{child_id}"
-                    if self._confluence_base_url and child_id
-                    else ""
-                )
-                # The search is rooted at page_id; default each result's parent to
-                # that root so even un-expandable servers yield a clean root→children
-                # tree, while ancestors (when present) give the true deeper parent.
-                parent_id = _extract_parent_id(child, page_id)
-                summaries.append(
-                    PageSummary(page_id=child_id, title=title, url=url, parent_id=parent_id)
-                )
+                    summaries.append(
+                        PageSummary(
+                            page_id=child_id,
+                            title=title,
+                            url=url,
+                            parent_id=current_id,
+                            ancestor_ids=child_ancestor_ids,
+                            version=_extract_version(child),
+                        )
+                    )
+
+                    # Enqueue the child to find its descendants
+                    if child_id not in visited:
+                        queue.append((child_id, child_ancestor_ids))
 
             return StageResult(
                 success=True,
@@ -859,8 +910,10 @@ class ConfluenceReader:
             )
 
         # Build CQL covering the most common requirement-page title patterns.
+        # NOTE: The CORP MCP server auto-applies space scope from the user's
+        # whitelist and rejects explicit `space = ...` CQL clauses.
         cql = (
-            f"space = {space_key} AND type = page AND ("
+            "type = page AND ("
             'title ~ "requirement" OR title ~ "requirements" OR title ~ "FR" '
             'OR title ~ "functional requirement" OR title ~ "spec")'
         )
@@ -1025,14 +1078,16 @@ class ConfluenceReader:
             )
 
         # 1. Search for the parent page by title exactly
-        # CQL: space = SPACE AND type = page AND title = "parent_title"
-        # We escape the title to be safe
+        # NOTE: The CORP MCP server auto-applies space scope from the user's
+        # whitelist and rejects explicit `space = ...` CQL clauses.
         safe_title = parent_title.replace('"', '\\"')
         search_result = await self._mcp_client.call_tool(
             self._get_tool_name("confluence_search"),
             {
-                "cql": f'space = {space_key} AND type = page AND title = "{safe_title}"',
+                "cql": f'type = page AND title = "{safe_title}"',
                 "limit": 10,
+                "userPrompt": "Finding a specific Confluence page by title to retrieve its descendants.",
+                "llmReasoning": "Search for the parent page by exact title match to get its ID for descendant traversal.",
             },
         )
         if not search_result.success:
@@ -1070,81 +1125,42 @@ class ConfluenceReader:
                 confidence=0.0,
             )
 
-        # 2. Search for descendants
-        target_pages_dict = {parent_id: parent_page}
-        desc_start = 0
-        desc_has_more = True
+        # 2. Search for descendants using the robust BFS method
+        descendant_result = await self.get_children_by_id(parent_id, space_key)
+
+        # 3. Build PageSummary list starting with the parent
+        page_url = (
+            parent_page.get("_links", {}).get("webui", "")
+            if isinstance(parent_page.get("_links"), dict)
+            else ""
+        )
+        if page_url and self._confluence_base_url:
+            page_url = f"{self._confluence_base_url}{page_url}"
+
+        parent_summary = PageSummary(
+            page_id=parent_id,
+            title=parent_page.get("title", "Untitled"),
+            url=page_url,
+            last_modified=None,
+            version=_extract_version(parent_page),
+            parent_id=None,
+            ancestor_ids=[],
+        )
+
+        summaries = [parent_summary]
         warnings = []
 
-        while desc_has_more:
-            desc_search = await self._mcp_client.call_tool(
-                self._get_tool_name("confluence_search"),
-                {
-                    "cql": f"space = {space_key} AND type = page AND ancestor IN ({parent_id})",
-                    "limit": DEFAULT_PAGE_LIMIT,
-                    "start": desc_start,
-                    # NOTE: no "expand" param — confluence_search rejects unknown
-                    # params and would fail the search. Parent ids come from the
-                    # response when present, else fall back to the root.
-                },
-            )
-
-            if not desc_search.success:
-                warnings.append(f"Failed to fetch descendants: {desc_search.error}")
-                break
-
-            desc_data = desc_search.data
-            if isinstance(desc_data, str):
-                try:
-                    desc_data = json.loads(desc_data)
-                except json.JSONDecodeError:
-                    warnings.append("Invalid descendant search response format")
-                    break
-
-            desc_pages = desc_data.get("results", []) if isinstance(desc_data, dict) else desc_data
-            if not isinstance(desc_pages, list):
-                desc_pages = []
-
-            for p_data in desc_pages:
-                if not isinstance(p_data, dict):
-                    continue
-                p_id = str(p_data.get("id", ""))
-                if p_id:
-                    target_pages_dict[p_id] = p_data
-
-            desc_has_more = len(desc_pages) == DEFAULT_PAGE_LIMIT
-            desc_start += len(desc_pages)
-
-        # 3. Build PageSummary list
-        summaries = []
-        for page_id, page_data in target_pages_dict.items():
-            page_url = (
-                page_data.get("_links", {}).get("webui", "")
-                if isinstance(page_data.get("_links"), dict)
-                else ""
-            )
-            if page_url and self._confluence_base_url:
-                page_url = f"{self._confluence_base_url}{page_url}"
-
-            # The root (the searched parent) has no parent in this tree; every other
-            # page falls back to the root when its own parent can't be resolved.
-            summary_parent = (
-                None if page_id == parent_id else _extract_parent_id(page_data, parent_id)
-            )
-            summary = PageSummary(
-                page_id=page_id,
-                title=page_data.get("title", "Untitled"),
-                url=page_url,
-                last_modified=None,
-                parent_id=summary_parent,
-            )
-            summaries.append(summary)
+        if descendant_result.success and descendant_result.data:
+            summaries.extend(descendant_result.data)
+            warnings.extend(descendant_result.warnings)
+        elif not descendant_result.success:
+            warnings.append(f"Failed to fetch descendants: {', '.join(descendant_result.errors)}")
 
         return StageResult(
             success=True,
             data=summaries,
             errors=[],
-            warnings=warnings if warnings else [],
+            warnings=warnings,
             confidence=0.9 if summaries else 0.5,
         )
 

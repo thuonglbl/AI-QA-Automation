@@ -187,8 +187,15 @@ class PageSummary(BaseModel):
     title: str = Field(description="Page title")
     url: str = Field(description="Full page URL")
     last_modified: datetime | None = Field(default=None, description="When page was last modified")
+    version: int | None = Field(
+        default=None, description="Confluence revision number (for change detection)"
+    )
     parent_id: str | None = Field(
         default=None, description="Immediate parent page id (for hierarchy), None for the root"
+    )
+    ancestor_ids: list[str] = Field(
+        default_factory=list,
+        description="Ordered list of ancestor page ids (root to immediate parent)",
     )
 
     model_config = ConfigDict(validate_assignment=True)

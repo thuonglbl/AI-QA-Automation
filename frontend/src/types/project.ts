@@ -10,6 +10,8 @@ export interface ProjectMembershipSummary {
 export interface ProjectEnvironment {
   name: string;
   url: string;
+  login_type?: string;
+  login_hint?: string;
 }
 
 export interface Project {
@@ -29,9 +31,6 @@ export interface Project {
   updated_at: string;
 }
 
-/** App-under-test login strategy for a project. */
-export type ProjectLoginType = "SSO" | "PASSWORD";
-
 export interface AdminProject {
   id: string;
   name: string;
@@ -41,20 +40,9 @@ export interface AdminProject {
   enabled_providers: string[];
   environments: ProjectEnvironment[];
   app_roles: string[];
-  login_type: ProjectLoginType;
   created_by_user_id: string | null;
   created_at: string;
   updated_at: string;
-}
-
-/** A project test-login account (per environment × role). Password is never exposed. */
-export interface ProjectAccount {
-  id: string;
-  environment: string;
-  role: string;
-  login_identifier: string;
-  label: string | null;
-  has_password: boolean;
 }
 
 /** An administered project as seen in the Project Admin dashboard (config + members). */
@@ -88,6 +76,7 @@ export interface AdminUser {
   is_active: boolean;
   /** IANA timezone the user's message times are localized to. */
   timezone: string;
+  conversation_language: string;
   created_at: string;
   updated_at: string;
   project_memberships: AdminUserProjectMembership[];
@@ -112,12 +101,12 @@ export interface CreateMembershipRequest {
 
 export interface CreateAdminUserRequest {
   email: string;
-  display_name: string;
+  display_name?: string;
   // An admin may only create project_admin / standard users (not another platform admin).
   role: "project_admin" | "standard";
-  initial_password: string;
   /** IANA timezone (e.g. "Asia/Ho_Chi_Minh") used to localize the user's message times. */
   timezone: string;
+  conversation_language: string;
   /** Required when role is "project_admin": the project the new admin is linked to. */
   project_id?: string | null;
 }
@@ -127,11 +116,15 @@ export interface UpdateAdminUserRequest {
   // Promotion to platform admin is not allowed (only project_admin / standard).
   role: "project_admin" | "standard";
   timezone: string;
+  conversation_language: string;
   is_active: boolean;
-  /** Optional password reset; omit to keep the current password. */
-  new_password?: string | null;
-  /** Required for a standard→project_admin transition; forbidden for standard. */
+  /** Legacy single-project link (still accepted for a standard→project_admin promotion). */
   project_id?: string | null;
+  /**
+   * Full administered-project set for a project_admin (Epic 23). When present it REPLACES
+   * the user's project_admin membership set (1..n). Forbidden for a standard user.
+   */
+  project_ids?: string[] | null;
 }
 
 export interface E2ETestRunResult {

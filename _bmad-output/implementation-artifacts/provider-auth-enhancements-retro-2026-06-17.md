@@ -11,7 +11,7 @@
 
 The Provider Auth Enhancements sprint delivered a complete OAuth/SSO authentication subsystem for Claude alongside a provider list reorder. All 5 stories were completed in a single day, with all quality gates green (backend 1432 passed, frontend 272 passed, mypy/ruff/eslint/typecheck/build clean).
 
-The sprint was technically successful. The most significant outcome was a **post-implementation discovery** that Anthropic's subscription SSO token cannot be used to authenticate the Messages API — a fundamental separation between product subscription and API access. This was documented thoroughly in the sprint-change-proposal and confirmed by Thuong testing `[IP_ADDRESS]` directly. IT has been contacted about an alternative path (Console API key).
+The sprint was technically successful. The most significant outcome was a **post-implementation discovery** that Anthropic's subscription SSO token cannot be used to authenticate the Messages API — a fundamental separation between product subscription and API access. This was documented thoroughly in the sprint-change-proposal and confirmed by Thuong testing `ai.svc.corp.ch` directly. IT has been contacted about an alternative path (Console API key).
 
 ---
 
@@ -81,7 +81,7 @@ The real Anthropic OAuth flow (real IdP → real token → real API call) is exp
 
 2. **"Theatrical" features need explicit labelling.** The `claude-sso` browser login is currently UX theatre (the browser password does not authenticate the API — a server-side key does). This is documented, but needs to be surfaced clearly in the UI when IT key is absent so users are not confused.
 
-3. **The gateway option should be verified early.** The sprint-change-proposal listed `[IP_ADDRESS]` as the best compliant option. Thuong verified directly that it does not serve Claude models, eliminating that option. This verification should happen during planning.
+3. **The gateway option should be verified early.** The sprint-change-proposal listed `ai.svc.corp.ch` as the best compliant option. Thuong verified directly that it does not serve Claude models, eliminating that option. This verification should happen during planning.
 
 4. **Correct-Course workflow works well for rapid pivots.** The sprint-change-proposal → sprint-status → dev → retro cycle handled a major new subsystem cleanly without disrupting the main epic sequence.
 
@@ -112,7 +112,7 @@ The real Anthropic OAuth flow (real IdP → real token → real API call) is exp
 | `claude-sso` mock path E2E | ✅ Covered by `claude-sso-login.spec.ts` |
 | `claude-sso` production path | ⚠️ Requires IT-provisioned Console API key |
 | IT contacted | ✅ Yes (Thuong) — awaiting response |
-| `[IP_ADDRESS]` Claude availability | ❌ Confirmed not available |
+| `ai.svc.corp.ch` Claude availability | ❌ Confirmed not available |
 
 ---
 

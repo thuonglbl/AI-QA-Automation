@@ -30,6 +30,7 @@ ARTIFACT_KINDS = frozenset(
         "testcase",
         "testscript",
         "trace",  # Story 14.3 — execution Playwright trace
+        "video",  # execution Playwright video (browses under reports)
     }
 )
 
@@ -57,6 +58,7 @@ class ArtifactTreeEntryDict(TypedDict):
     warnings: list[dict[str, Any]] | None
     title: str | None
     parent_source_id: str | None
+    ancestor_source_ids: list[str] | None
 
 
 class ArtifactTreeFolderDict(TypedDict):
@@ -91,6 +93,7 @@ class ArtifactService:
         warnings: list[dict[str, Any]] | None = None,
         title: str | None = None,
         parent_source_id: str | None = None,
+        ancestor_source_ids: list[str] | None = None,
     ) -> Artifact:
         """Create an artifact and initial version row for project-owned content."""
         self._validate_kind(kind)
@@ -115,6 +118,7 @@ class ArtifactService:
             warnings=warnings,
             title=title,
             parent_source_id=parent_source_id,
+            ancestor_source_ids=ancestor_source_ids,
         )
         self.db.add(artifact)
         self.db.flush()
@@ -330,6 +334,7 @@ class ArtifactService:
                 "warnings": artifact.warnings,
                 "title": artifact.title,
                 "parent_source_id": artifact.parent_source_id,
+                "ancestor_source_ids": artifact.ancestor_source_ids,
             }
             buckets[browse_folder].append(entry)
 

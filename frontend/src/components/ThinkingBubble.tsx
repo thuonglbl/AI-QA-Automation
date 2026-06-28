@@ -150,7 +150,9 @@ export const ThinkingBubble: React.FC<ThinkingBubbleProps> = ({
                   >
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-blue-600 capitalize">
-                        {a.agent}
+                        {a.agent.toLowerCase() === "sarah_explore"
+                          ? "Sarah · Browser explore"
+                          : a.agent}
                       </span>
                       {a.tier_source && (
                         <span

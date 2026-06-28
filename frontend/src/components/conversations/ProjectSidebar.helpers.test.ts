@@ -130,4 +130,29 @@ describe("buildResultTree", () => {
     expect(rows).toHaveLength(2);
     expect(new Set(rows.map((r) => r.artifact.id))).toEqual(new Set(["1/requirement.md", "2/requirement.md"]));
   });
+  it("synthesizes missing intermediate ancestors if provided in allEntries", () => {
+    // A grand-child requirement .md file.
+    // The immediate parent is "101", which has no .md file in the results.
+    // The root is "100", which has a .md file.
+    const root = mk("100/requirement.md", { title: "Root" });
+    const grandchild = mk("102/requirement.md", { title: "Grandchild", parent_source_id: "101", ancestor_source_ids: ["100", "101"] });
+
+    // The intermediate parent ONLY exists as a non-markdown artifact (e.g., raw HTML)
+    const intermediateFolderRaw = mk("101/raw_content.html", { title: "Intermediate Folder", parent_source_id: "100", ancestor_source_ids: ["100"] });
+
+    // If we only pass results, grandchild attaches to root
+    const flatRows = buildResultTree([grandchild, root]);
+    expect(flatRows.map((r) => [displayLabel(r.artifact), r.depth])).toEqual([
+      ["Root", 0],
+      ["Grandchild", 1],
+    ]);
+
+    // If we pass allEntries, the intermediate folder is synthesized
+    const hierRows = buildResultTree([grandchild, root], [root, grandchild, intermediateFolderRaw]);
+    expect(hierRows.map((r) => [displayLabel(r.artifact), r.depth])).toEqual([
+      ["Root", 0],
+      ["Intermediate Folder", 1],
+      ["Grandchild", 2],
+    ]);
+  });
 });

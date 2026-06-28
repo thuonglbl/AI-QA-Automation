@@ -3,9 +3,11 @@
 from collections.abc import Generator
 from pathlib import Path
 from typing import cast
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
+from botocore.exceptions import ClientError
 from sqlalchemy import Table, create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -14,6 +16,7 @@ from ai_qa.artifacts.service import ARTIFACT_KINDS, REQUIRED_ARTIFACT_FOLDERS, A
 from ai_qa.artifacts.storage import (
     LocalArtifactStorage,
     S3ArtifactStorage,
+    StorageObjectNotFoundError,
     build_artifact_key,
     folder_for_kind,
     sanitize_artifact_name,
@@ -170,7 +173,6 @@ def test_artifact_service_filters_kind_and_validates_pipeline_project(
     user = User(
         email="test@test.com",
         display_name="test",
-        password_hash="hash",
         role="user",
         is_active=True,
     )
@@ -431,6 +433,7 @@ _EXPECTED_FOLDERS = {
     "trace": "artifacts",
     "log": "artifacts",
     "execution_screenshot": "artifacts",
+    "video": "artifacts",
 }
 
 
@@ -532,7 +535,6 @@ def test_artifact_service_persists_creator_updater_and_thread(
     user = User(
         email="owner@example.com",
         display_name="Owner",
-        password_hash="hash",
         role="user",
         is_active=True,
     )
@@ -561,7 +563,6 @@ def test_artifact_service_persists_creator_updater_and_thread(
     editor = User(
         email="editor@example.com",
         display_name="Editor",
-        password_hash="hash2",
         role="user",
         is_active=True,
     )
@@ -590,7 +591,6 @@ def test_artifact_service_rejects_thread_from_different_project(
     user = User(
         email="u@example.com",
         display_name="U",
-        password_hash="h",
         role="user",
         is_active=True,
     )
@@ -658,13 +658,13 @@ def test_folder_for_kind_catch_all_is_reports() -> None:
 
 def test_folder_for_kind_execution_kinds_route_to_reports() -> None:
     """Story 14.3: execution outputs browse under 'reports'."""
-    for kind in ("trace", "log", "execution_screenshot"):
+    for kind in ("trace", "log", "execution_screenshot", "video"):
         assert folder_for_kind(kind) == "reports", f"Expected 'reports' for kind '{kind}'"
 
 
 def test_execution_kinds_are_registered() -> None:
     """Story 14.3: the new execution kinds are accepted by ARTIFACT_KINDS."""
-    assert {"trace", "log", "execution_screenshot"} <= ARTIFACT_KINDS
+    assert {"trace", "log", "execution_screenshot", "video"} <= ARTIFACT_KINDS
 
 
 def test_folder_for_kind_unknown_kind_returns_reports() -> None:
@@ -707,7 +707,6 @@ def _make_user(session: Session, *, email: str, display_name: str) -> User:
     u = User(
         email=email,
         display_name=display_name,
-        password_hash="hash",
         role="standard",
         is_active=True,
     )
@@ -925,3 +924,62 @@ def test_list_artifact_tree_is_cross_project_scoped(db_session: Session, tmp_pat
     names_b = {e["name"] for e in req_folder_b["entries"]}
 
     assert names_b == {"b_req.md"}, "project A artifact leaked into project B's tree"
+
+
+def test_storage_object_not_found_is_a_file_not_found_error() -> None:
+    """Subclassing FileNotFoundError lets existing handlers map both backends to 404."""
+    assert issubclass(StorageObjectNotFoundError, FileNotFoundError)
+
+
+def test_local_storage_read_missing_object_raises_storage_object_not_found(tmp_path: Path) -> None:
+    """A dangling key (object deleted on disk, DB row kept) raises the typed not-found error."""
+    storage = LocalArtifactStorage(tmp_path)
+    with pytest.raises(StorageObjectNotFoundError, match="missing.md"):
+        storage.read(f"projects/{uuid4()}/requirements/{uuid4()}/v1/missing.md")
+
+
+def test_s3_storage_read_missing_key_raises_storage_object_not_found() -> None:
+    """A botocore NoSuchKey is mapped to the storage-agnostic not-found error."""
+    storage = S3ArtifactStorage("localhost:8333", "key", "secret", "bucket")
+    fake_s3 = MagicMock()
+    fake_s3.get_object.side_effect = ClientError(
+        {"Error": {"Code": "NoSuchKey", "Message": "The specified key does not exist."}},
+        "GetObject",
+    )
+    storage.s3 = fake_s3
+    with pytest.raises(StorageObjectNotFoundError, match="gone.md"):
+        storage.read("projects/x/requirements/aid/v1/gone.md")
+
+
+def test_s3_storage_read_other_client_error_propagates() -> None:
+    """Non-missing S3 errors (e.g. AccessDenied) must NOT be swallowed as not-found."""
+    storage = S3ArtifactStorage("localhost:8333", "key", "secret", "bucket")
+    fake_s3 = MagicMock()
+    fake_s3.get_object.side_effect = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject"
+    )
+    storage.s3 = fake_s3
+    with pytest.raises(ClientError, match="AccessDenied"):
+        storage.read("projects/x/requirements/aid/v1/denied.md")
+
+
+def test_s3_storage_read_404_code_maps_to_storage_object_not_found() -> None:
+    """Some S3-compatible gateways report a missing object with code '404'."""
+    storage = S3ArtifactStorage("localhost:8333", "key", "secret", "bucket")
+    fake_s3 = MagicMock()
+    fake_s3.get_object.side_effect = ClientError(
+        {"Error": {"Code": "404", "Message": "Not Found"}}, "GetObject"
+    )
+    storage.s3 = fake_s3
+    with pytest.raises(StorageObjectNotFoundError, match="code404.md"):
+        storage.read("projects/x/requirements/aid/v1/code404.md")
+
+
+def test_s3_storage_read_clienterror_without_error_code_propagates() -> None:
+    """A ClientError whose response carries no error code must re-raise, not be swallowed."""
+    storage = S3ArtifactStorage("localhost:8333", "key", "secret", "bucket")
+    fake_s3 = MagicMock()
+    fake_s3.get_object.side_effect = ClientError({}, "GetObject")
+    storage.s3 = fake_s3
+    with pytest.raises(ClientError, match="GetObject"):
+        storage.read("projects/x/requirements/aid/v1/weird.md")

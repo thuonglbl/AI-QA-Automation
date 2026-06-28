@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { ModelAssignment } from "@/types/provider";
+import React, { useState } from "react";
+import type { ModelAssignment, ProviderBenchmark } from "@/types/provider";
 import { MessageTime } from "@/components/MessageTime";
 
 interface ModelAssignmentReviewProps {
@@ -10,8 +10,10 @@ interface ModelAssignmentReviewProps {
   unavailableModels?: Array<{ id: string; name: string }>;
   onApprove: (updatedAssignments: Record<string, string>) => void;
   disabled?: boolean;
+  disabledReason?: string;
   /** ISO timestamp of Alice's message; rendered as hh:mm:ss beside the "Alice" label. */
   messageTimestamp?: string;
+  benchmark?: ProviderBenchmark | null;
 }
 
 const AGENT_COLORS: Record<string, string> = {
@@ -22,6 +24,20 @@ const AGENT_COLORS: Record<string, string> = {
   Jack: "bg-orange-500",
 };
 
+/** Override key for an assignment: the explicit `key` (e.g. "sarah_explore") or, for older
+ *  payloads, the lowercased display name. Must match the backend agent-config key. */
+function assignmentKey(a: ModelAssignment): string {
+  return a.key ?? a.agent.toLowerCase();
+}
+
+/** Dot color: match on the leading word of the label so "Sarah · Browser explore" still
+ *  shows Sarah's violet. */
+function agentColor(agent: string): string {
+  if (AGENT_COLORS[agent]) return AGENT_COLORS[agent];
+  const lead = agent.split(/[\s·]/)[0] ?? "";
+  return AGENT_COLORS[lead] ?? "bg-black";
+}
+
 export function ModelAssignmentReview({
   provider,
   assignments,
@@ -29,7 +45,9 @@ export function ModelAssignmentReview({
   unavailableModels = [],
   onApprove,
   disabled = false,
+  disabledReason,
   messageTimestamp,
+  benchmark,
 }: ModelAssignmentReviewProps) {
   const [selectedModels, setSelectedModels] = useState<Record<string, string>>(
     {},
@@ -42,8 +60,8 @@ export function ModelAssignmentReview({
   const handleOk = () => {
     const updatedAssignments: Record<string, string> = {};
     assignments?.forEach((a) => {
-      const lowercaseAgent = a.agent.toLowerCase();
-      updatedAssignments[lowercaseAgent] = selectedModels[a.agent] || a.model;
+      const k = assignmentKey(a);
+      updatedAssignments[k] = selectedModels[k] || a.model;
     });
     onApprove(updatedAssignments);
   };
@@ -69,6 +87,14 @@ export function ModelAssignmentReview({
           </div>
         )}
 
+        {/* Benchmark Score */}
+        {benchmark && benchmark.accuracy_percent != null && (
+          <div className="mt-1 mb-2 text-xs text-[#64748b]">
+            Global Benchmark Score: <strong>{benchmark.accuracy_percent}%</strong>
+            {benchmark.note && <span className="ml-1">({benchmark.note})</span>}
+          </div>
+        )}
+
         {/* Model Table */}
         <table className="w-full border-collapse my-2 text-xs">
           <thead>
@@ -86,55 +112,67 @@ export function ModelAssignmentReview({
           </thead>
           <tbody>
             {assignments?.map((assignment) => (
-              <tr key={assignment.agent}>
-                <td className="py-1.5 px-2 border-b border-[#f1f5f9]">
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={`w-2 h-2 rounded-full inline-block ${AGENT_COLORS[assignment.agent] || "bg-black"}`}
-                    ></span>
-                    <span>{assignment.agent}</span>
-                  </div>
-                </td>
-                <td className="py-1.5 px-2 border-b border-[#f1f5f9] text-[#64748b]">
-                  {assignment.purpose}
-                </td>
-                <td className="py-1.5 px-2 border-b border-[#f1f5f9]">
-                  <select
-                    aria-label={`Model for ${assignment.agent}`}
-                    value={selectedModels[assignment.agent] || assignment.model}
-                    onChange={(e) =>
-                      handleModelChange(assignment.agent, e.target.value)
-                    }
-                    disabled={disabled}
-                    className="w-full p-1 border border-[#e2e8f0] rounded text-xs bg-white text-[#0f172a] focus:outline-none focus:ring-1 focus:ring-[#3b82f6]"
-                  >
-                    {availableModels.length > 0 ? (
-                      availableModels.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name}
+              <React.Fragment key={assignmentKey(assignment)}>
+                <tr>
+                  <td className="py-1.5 px-2">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`w-2 h-2 rounded-full inline-block ${agentColor(assignment.agent)}`}
+                      ></span>
+                      <span>{assignment.agent}</span>
+                    </div>
+                  </td>
+                  <td className="py-1.5 px-2 text-[#64748b]">
+                    {assignment.purpose}
+                  </td>
+                  <td className="py-1.5 px-2">
+                    <select
+                      aria-label={`Model for ${assignment.agent}`}
+                      value={
+                        selectedModels[assignmentKey(assignment)] || assignment.model
+                      }
+                      onChange={(e) =>
+                        handleModelChange(assignmentKey(assignment), e.target.value)
+                      }
+                      disabled={disabled}
+                      className="w-full p-1 border border-[#e2e8f0] rounded text-xs bg-white text-[#0f172a] focus:outline-none focus:ring-1 focus:ring-[#3b82f6]"
+                    >
+                      {availableModels.length > 0 ? (
+                        availableModels.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name}
+                          </option>
+                        ))
+                      ) : unavailableModels.length > 0 ? (
+                        unavailableModels.map((m) => (
+                          <option key={m.id} value={m.id} disabled>
+                            {m.name} (Unavailable)
+                          </option>
+                        ))
+                      ) : (
+                        <option value={assignment.model}>
+                          {assignment.model}
                         </option>
-                      ))
-                    ) : unavailableModels.length > 0 ? (
-                      unavailableModels.map((m) => (
-                        <option key={m.id} value={m.id} disabled>
-                          {m.name} (Unavailable)
-                        </option>
-                      ))
-                    ) : (
-                      <option value={assignment.model}>
-                        {assignment.model}
-                      </option>
-                    )}
-                  </select>
-                </td>
-              </tr>
+                      )}
+                    </select>
+                  </td>
+                </tr>
+                <tr>
+                  <td colSpan={3} className="pt-0 pb-3 px-2 border-b border-[#f1f5f9]">
+                    <div className="bg-[#f8fafc] p-2 rounded border border-[#e2e8f0] text-[#64748b]">
+                      <span className="font-semibold text-[#475569] mr-1">Rationale:</span>
+                      {assignment.rationale}
+                    </div>
+                  </td>
+                </tr>
+              </React.Fragment>
             ))}
           </tbody>
         </table>
       </div>
 
       {/* Action Buttons */}
-      <div className="flex justify-center gap-3 mt-3">
+      <div className="flex flex-col items-center justify-center gap-2 mt-3">
         <button
           onClick={handleOk}
           disabled={disabled}
@@ -142,6 +180,11 @@ export function ModelAssignmentReview({
         >
           OK
         </button>
+        {disabledReason && disabled && (
+          <p className="text-xs text-red-500 font-medium">
+            {disabledReason}
+          </p>
+        )}
       </div>
     </div>
   );

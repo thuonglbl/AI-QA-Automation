@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { ReviewContent } from "./ReviewContent";
 import { ProcessingIndicator } from "./ProcessingIndicator";
 import { ErrorFeedback } from "./ErrorFeedback";
+import { MessageTime } from "./MessageTime";
 
 export interface ChatMessageProps {
   message: AgentMessage;
@@ -57,21 +58,6 @@ export function ChatMessage({
     return "text-blue-100";
   };
 
-  const getTimestampStyle = () => {
-    if (isSystem) return "text-slate-400";
-    if (isAgent) return "text-slate-400";
-    return "text-blue-200";
-  };
-
-  // Safe date parsing with validation
-  const formatTimestamp = (timestamp: string): string => {
-    if (!timestamp) return "";
-    const d = new Date(timestamp);
-    return !isNaN(d.getTime())
-      ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      : "";
-  };
-
   return (
     <div
       className={cn(
@@ -112,9 +98,7 @@ export function ChatMessage({
                   ? "System"
                   : "User"}
             </span>
-            <span className={cn("text-[10px]", getTimestampStyle())}>
-              {formatTimestamp(message.timestamp)}
-            </span>
+            <MessageTime timestamp={message.timestamp} fallbackToNow />
           </div>
 
           <div className="text-sm pt-1">
@@ -122,6 +106,7 @@ export function ChatMessage({
               <ProcessingIndicator
                 message={processingMessage || message.content}
                 isActive={true}
+                agentName={isAgent ? message.agentName || "Agent" : "System"}
               />
             ) : isError ? (
               errorInfo && onRetry ? (

@@ -2,7 +2,7 @@
 
 ## Hand-off Brief
 
-1. **What happened.** (A) The "Alice's thought" model-list boxes clamp to `max-h-24` (96px ≈ 3 rows) with a native auto-hiding scrollbar, so with 36 models the user can't see/scroll the full list. (B) Per-agent model selection is driven by a stale keyword heuristic (`_bootstrap_alice_model`) + an LLM self-assignment, both biased toward proprietary names that don't exist on the on-prem pool — falling through to `deepseek-v3` (matches `inference-deepseek-v32`) and yielding suboptimal picks vs. the best open models actually available (GLM, Qwen3, Llama4, gpt-oss-120b).
+1. **What happened.** (A) The "Alice's thought" model-list boxes clamp to `max-h-24` (96px ≈ 3 rows) with a native auto-hiding scrollbar, so with 36 models the user can't see/scroll the full list. (B) Per-agent model selection is driven by a stale keyword heuristic (`_bootstrap_alice_model`) + an LLM self-assignment, both biased toward proprietary names that don't exist on the CORP on-prem pool — falling through to `deepseek-v3` (matches `inference-deepseek-v32`) and yielding suboptimal picks vs. the best open models actually available (GLM, Qwen3, Llama4, gpt-oss-120b).
 2. **Where the case stands.** Both root causes **Confirmed** by `path:line`; live pool (38 models, GLM-5.1 present) and 2026 benchmarks gathered. Approach chosen: deterministic benchmark-ranking table. Proposed per-agent mapping drafted (see Conclusion).
 3. **What's needed next.** Confirm the load-vs-quality routing decision (Alice+Mary on GLM-5.1 vs GPT-OSS-120B), then implement A (CSS) + B (table + filter + tests) in `alice.py` and `ThinkingBubble.tsx`.
 
@@ -15,7 +15,7 @@
 | Ticket           | N/A                                                                                                |
 | Date opened      | 2026-06-18                                                                                          |
 | Status           | Concluded — both fixes implemented & verified 2026-06-18                                            |
-| System           | React 19 + TS frontend (Tailwind v4), FastAPI backend; provider = on-prem inference gateway   |
+| System           | React 19 + TS frontend (Tailwind v4), FastAPI backend; provider = CORP on-prem inference gateway   |
 | Evidence sources | `frontend/src/components/ThinkingBubble.tsx`, `src/ai_qa/agents/alice.py`, user screenshot, web (pending) |
 
 ---
@@ -40,7 +40,7 @@ Both claims are treated as hypotheses and verified independently below.
 | `src/ai_qa/agents/alice.py:1384-1561` | Available | `_assign_models_via_llm` — LLM-driven per-agent assignment + keyword fallback |
 | `src/ai_qa/agents/alice.py:1062-1095` | Available | `unsupported_keywords` candidate filter (leaks bge/emb/reranker/ocr) |
 | User screenshot | Available | Available Models (36), Unavailable (2); Alice=deepseek-v32, Bob=qwen3-vl-235b, Mary=granite-33-8b, Sarah=deepseek-v32, Jack=mistral-v03-7b |
-| Live `/v1/models` (on-prem `https://[IP_ADDRESS]/api`) | Available | 38 total models; 36 available after whisper filter. **`inference-glm-51-754b` (GLM-5.1, alias `claude-g5`) is present.** |
+| Live `/v1/models` (on-prem `https://ai.svc.corp.ch/api`) | Available | 38 total models; 36 available after whisper filter. **`inference-glm-51-754b` (GLM-5.1, alias `claude-g5`) is present.** |
 | Web: current per-capability model benchmarks (2026) | Available | llm-stats.com, kilo.ai, BenchLM, artificialanalysis, morphllm — see Web Research section |
 | `_bmad-output/.../story-9-4-all-models-unavailable-investigation.md` | Available | Prior related case (error-path assignment rendering) — context only |
 
@@ -98,7 +98,7 @@ Non-generative models excluded (bge/emb/reranker/ocr/asr/miner/whisper). Generat
 | -------- | -------------- |
 | `inference-glm-51-754b` (alias `claude-g5`) | **GLM-5.1, 754B** — flagship; top open coding/agentic (SWE-Bench Pro ~58, 200K ctx) |
 | `inference-deepseek-v32` (+`-GRC`) | DeepSeek-V3.2 — strong reasoning (GPQA 82.4), now mid-pack |
-| `inference-gpt-oss-120b` (+aliases `claude-oss`, `on-premises-gpt-osslatest`) | GPT-OSS-120B — MMLU-Pro 90.0, excellent instruction-following |
+| `inference-gpt-oss-120b` (+aliases `claude-oss`, `on-premises-corp-gpt-osslatest`) | GPT-OSS-120B — MMLU-Pro 90.0, excellent instruction-following |
 | `inference-qwen3-vl-235b` (+`-GRC`) | Qwen3-VL-235B — **best vision** in pool (DocVQA 96.5, ScreenSpot 95.4) |
 | `inference-llama4-maverick` (+`-GRC`) | Llama 4 Maverick — multimodal, 1M ctx, cheaper #2 vision |
 | `inference-llama4-scout-17b` | Llama 4 Scout — multimodal, long-context, lighter |
@@ -204,7 +204,7 @@ Both root causes fixed and verified end-to-end. Changeset uncommitted on `main`.
 
 ### Residual / not in scope
 
-- The RAG/preset entries (`ask-your-confluence`, `ask-your-jira`, `chat-with-mcp`) and `-GRC` variants still appear in the available list; they never win selection (no ranking-keyword match / non-GRC preferred) so they are harmless, left as-is.
+- The RAG/preset entries (`ask-your-corp-confluence`, `ask-your-corp-jira`, `chat-with-corp-mcp`) and `-GRC` variants still appear in the available list; they never win selection (no ranking-keyword match / non-GRC preferred) so they are harmless, left as-is.
 - Ranking lists are intentionally forward-looking (e.g. `glm-6`, `deepseek-v4`); update the lists (not call sites) as benchmarks shift.
 
 ## Follow-up: 2026-06-18 #2 — Future-proofing the ranking (new/unknown models)

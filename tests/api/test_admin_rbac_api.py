@@ -15,7 +15,6 @@ from ai_qa.api.app import create_app
 from ai_qa.api.auth.local import get_db_session_dependency
 from ai_qa.api.auth.rbac import get_current_active_user, require_admin
 from ai_qa.api.auth.session import SessionManager
-from ai_qa.auth.password import hash_password
 from ai_qa.auth.service import ADMIN_ROLE, STANDARD_ROLE
 from ai_qa.db.base import Base
 from ai_qa.db.models import Project, ProjectMembership, User
@@ -62,7 +61,6 @@ def _create_user(client: TestClient, email: str, role: str, *, active: bool = Tr
         user = User(
             email=email,
             display_name=email.split("@")[0],
-            password_hash=hash_password("super-secret"),
             role=role,
             is_active=active,
         )
@@ -180,7 +178,6 @@ def test_admin_can_list_users_with_safe_project_memberships(admin_client: TestCl
     assert response.status_code == 200
     users = response.json()
     assert [user["email"] for user in users] == ["admin@example.com", "standard@example.com"]
-    assert all("password_hash" not in user for user in users)
     standard_user = next(user for user in users if user["email"] == "standard@example.com")
     assert standard_user["project_memberships"] == [
         {
@@ -193,7 +190,6 @@ def test_admin_can_list_users_with_safe_project_memberships(admin_client: TestCl
         }
     ]
     assert "user_id" not in standard_user["project_memberships"][0]
-    assert "password_hash" not in standard_user["project_memberships"][0]
     assert "ai_provider_config" not in standard_user["project_memberships"][0]
 
 
@@ -245,7 +241,6 @@ def test_admin_can_create_project_and_standard_user_cannot(admin_client: TestCli
     assert project["name"] == "Quality Workspace"
     assert project["description"] == "Core QA project"
     assert project["created_by_user_id"] == str(admin.id)
-    assert "password_hash" not in project
     assert denied.status_code == 403
     assert blank.status_code == 422
 
@@ -655,7 +650,7 @@ def test_standard_user_cannot_update_or_delete_project(admin_client: TestClient)
     assert deleted.status_code == 403
 
 
-def test_admin_can_create_user_with_approved_role_without_leaking_password_hash(
+def test_admin_can_create_user_with_approved_role_without_leaking_credentials(
     admin_client: TestClient,
 ) -> None:
     admin = _create_user(admin_client, "admin@example.com", ADMIN_ROLE)
@@ -675,7 +670,6 @@ def test_admin_can_create_user_with_approved_role_without_leaking_password_hash(
             "email": "  new.padmin@example.com  ",
             "display_name": "  New PAdmin  ",
             "role": "project_admin",
-            "initial_password": "initial-secret",
             "project_id": project_id,
         },
     )
@@ -687,7 +681,6 @@ def test_admin_can_create_user_with_approved_role_without_leaking_password_hash(
             "email": "another.admin@example.com",
             "display_name": "Another Admin",
             "role": ADMIN_ROLE,
-            "initial_password": "initial-secret",
         },
     )
     duplicate = admin_client.post(
@@ -697,19 +690,9 @@ def test_admin_can_create_user_with_approved_role_without_leaking_password_hash(
             "email": "new.padmin@example.com",
             "display_name": "Duplicate",
             "role": STANDARD_ROLE,
-            "initial_password": "initial-secret",
         },
     )
-    short_password = admin_client.post(
-        "/api/admin/users",
-        headers=_auth_headers(admin_client, admin),
-        json={
-            "email": "another@example.com",
-            "display_name": "Another",
-            "role": STANDARD_ROLE,
-            "initial_password": "short",
-        },
-    )
+
     invalid_role = admin_client.post(
         "/api/admin/users",
         headers=_auth_headers(admin_client, admin),
@@ -717,7 +700,6 @@ def test_admin_can_create_user_with_approved_role_without_leaking_password_hash(
             "email": "bad.role@example.com",
             "display_name": "Bad Role",
             "role": "superadmin",
-            "initial_password": "initial-secret",
         },
     )
 
@@ -731,11 +713,10 @@ def test_admin_can_create_user_with_approved_role_without_leaking_password_hash(
         m["role"] == "project_admin" and m["project_id"] == project_id
         for m in user["project_memberships"]
     )
-    assert "password_hash" not in user
     assert admin_rejected.status_code == 422  # admins cannot create another admin
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"] == "User already exists"
-    assert short_password.status_code == 422
+
     assert invalid_role.status_code == 422
 
 
@@ -800,7 +781,6 @@ def test_standard_user_cannot_create_or_delete_user(admin_client: TestClient) ->
             "email": "new@example.com",
             "display_name": "New User",
             "role": STANDARD_ROLE,
-            "initial_password": "initial-secret",
         },
     )
     deleted = admin_client.delete(

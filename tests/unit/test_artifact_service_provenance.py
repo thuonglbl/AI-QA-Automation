@@ -55,7 +55,6 @@ def _seed(db_session: Session) -> tuple[Project, User]:
     user = User(
         email="member@example.com",
         display_name="member",
-        password_hash="hash",
         role="standard",
         is_active=True,
     )

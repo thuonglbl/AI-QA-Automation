@@ -37,8 +37,12 @@ images.
 
 Observed symptoms (screenshots):
 
-- **Local:** "Tests failed (exit code 1)", output: `Error: http://127.0.0.1:8000/auth/status is already used, make sure that nothing is running on the port/url or set reuseExistingServer:true in config.webServer.` Plus a `[DEP0205] DeprecationWarning: module.register()` line under "Show errors".
-- **UAT:** "Tests failed (exit code -1)", error: `Frontend directory not found: /app/frontend`.
+- **Local (`localhost:5173`):** "Tests failed (exit code 1)" — output: `Error:
+  http://127.0.0.1:8000/auth/status is already used, make sure that nothing is running
+  on the port/url or set reuseExistingServer:true in config.webServer.` Plus a
+  `[DEP0205] DeprecationWarning: module.register()` line under "Show errors".
+- **UAT (`https://ai-qa.ai-uat.corpdev.local`):** "Tests failed (exit code -1)" —
+  error: `Frontend directory not found: /app/frontend`.
 
 The premise (feature fails in both) is **Confirmed** and the two failures are
 **distinct root causes**, not the same bug surfacing twice.
@@ -272,7 +276,8 @@ HTTPS), with `ignoreHTTPSErrors`. Everything env-driven via one switch, `E2E_SER
 ### Residual risks / operator notes
 
 - The backend container must resolve `BASE_URL`'s hostname; if not, uncomment
-  `extra_hosts`. (Hypothesized — depends on the UAT network.)
+  `extra_hosts: ai-qa.ai-uat.corpdev.local:host-gateway`. (Hypothesized — depends on the
+  UAT network.)
 - E2E on UAT runs against the real Postgres but only creates/deletes **synthetic**
   `@example.com|test` users and `S<n>`/`Story <n>` projects (teardown never touches admin
   or real data). (Confirmed via `global-teardown.ts:32-35,70-73`.)

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Generator
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sqlalchemy import Table, create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -44,7 +48,6 @@ def test_pipeline_artifact_adapter_saves_and_loads_project_artifacts(tmp_path) -
         user = User(
             email="member@example.com",
             display_name="member",
-            password_hash="hash",
             role="standard",
             is_active=True,
         )
@@ -137,7 +140,6 @@ def test_adapter_save_text_schedules_broadcast_via_create_task(tmp_path) -> None
         user = User(
             email="agent@example.com",
             display_name="agent",
-            password_hash="hash",
             role="standard",
             is_active=True,
         )
@@ -213,7 +215,6 @@ def test_adapter_schedule_change_event_silent_when_no_running_loop(tmp_path) -> 
         user = User(
             email="agent2@example.com",
             display_name="agent2",
-            password_hash="hash",
             role="standard",
             is_active=True,
         )
@@ -280,7 +281,6 @@ def test_save_requirement_forwards_provenance_to_save_artifact(tmp_path) -> None
         user = User(
             email="prov@example.com",
             display_name="prov",
-            password_hash="hash",
             role="standard",
             is_active=True,
         )
@@ -361,7 +361,6 @@ def test_to_pipeline_artifact_exposes_warnings_from_artifact(tmp_path) -> None:
         user = User(
             email="warn@example.com",
             display_name="warn",
-            password_hash="hash",
             role="standard",
             is_active=True,
         )
@@ -447,7 +446,6 @@ def _make_test_db_session(tmp_path):
     user = User(
         email="tc@example.com",
         display_name="tc-user",
-        password_hash="hash",
         role="standard",
         is_active=True,
     )
@@ -667,7 +665,6 @@ def test_load_approved_test_cases_thread_prioritization(tmp_path) -> None:
         user = User(
             email="thread@example.com",
             display_name="thread-user",
-            password_hash="hash",
             role="standard",
             is_active=True,
         )
@@ -716,6 +713,40 @@ def test_load_approved_test_cases_thread_prioritization(tmp_path) -> None:
         assert results[0].name == "tc-current.json", "Current-thread artifact must be first"
         other_names = {r.name for r in results[1:]}
         assert other_names == {"tc-other-1.json", "tc-other-2.json"}
+    finally:
+        session.close()
+    engine.dispose()
+
+
+def test_load_approved_test_cases_orders_by_recency(tmp_path) -> None:
+    """Within a group, most-recently-updated test cases come first so that skipping
+    Mary (blank id at Bob) surfaces the freshest reusable work at the top of Sarah's
+    selection panel."""
+    from datetime import UTC, datetime, timedelta
+
+    session, engine, service, adapter, _other_adapter, project = _make_test_db_session(tmp_path)
+    try:
+        adapter.save_test_case("tc-old.json", '{"title": "Old"}')
+        adapter.save_test_case("tc-mid.json", '{"title": "Mid"}')
+        adapter.save_test_case("tc-new.json", '{"title": "New"}')
+
+        # Stamp distinct update times (saves can share a sub-second timestamp). Setting
+        # the attribute explicitly puts it in the UPDATE SET clause, so the column's
+        # onupdate default does not override it.
+        base = datetime(2026, 6, 1, tzinfo=UTC)
+        stamps = {
+            "tc-old.json": base,
+            "tc-mid.json": base + timedelta(days=1),
+            "tc-new.json": base + timedelta(days=2),
+        }
+        for art in service.list_artifacts(project_id=project.id, kind="testcase"):
+            art.updated_at = stamps[art.name]
+        session.commit()
+
+        results = adapter.load_approved_test_cases()
+        assert [r.name for r in results] == ["tc-new.json", "tc-mid.json", "tc-old.json"]
+        # DTO propagates updated_at (tz-aware in production; SQLite drops tzinfo on read).
+        assert results[0].updated_at is not None
     finally:
         session.close()
     engine.dispose()
@@ -872,7 +903,6 @@ def test_load_approved_scripts_thread_prioritization(tmp_path) -> None:
         user = User(
             email="scripts@example.com",
             display_name="scripts-user",
-            password_hash="hash",
             role="standard",
             is_active=True,
         )
@@ -1030,3 +1060,104 @@ def test_persist_run_outputs_uniqueness_and_overwrite(tmp_path) -> None:
         session.close()
         shutil.rmtree(short_root, ignore_errors=True)
     engine.dispose()
+
+
+@pytest.fixture
+def adapter_env(tmp_path: Path) -> Generator[tuple[PipelineArtifactAdapter, Path]]:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(
+        engine,
+        tables=cast(
+            "list[Table]",
+            [
+                User.__table__,
+                Project.__table__,
+                Thread.__table__,
+                AgentRun.__table__,
+                Artifact.__table__,
+                ArtifactVersion.__table__,
+            ],
+        ),
+    )
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    try:
+        user = User(
+            email="member@example.com",
+            display_name="member",
+            role="standard",
+            is_active=True,
+        )
+        project = Project(name="Scoped", created_by_user=user)
+        session.add_all([user, project])
+        session.commit()
+        thread = Thread(project_id=project.id, user_id=user.id)
+        session.add(thread)
+        session.flush()
+        run = AgentRun(thread_id=thread.id, status="running")
+        session.add(run)
+        session.commit()
+        service = ArtifactService(session, LocalArtifactStorage(root=tmp_path))
+        adapter = PipelineArtifactAdapter(
+            PipelineContext(
+                project_id=project.id,
+                user_id=user.id,
+                user_email=user.email,
+                artifact_service=service,
+                agent_run_id=run.id,
+            )
+        )
+        yield adapter, tmp_path
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_load_requirement_markdown_skips_artifact_with_missing_blob(
+    adapter_env: tuple[PipelineArtifactAdapter, Path],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A requirement whose backing object is gone is skipped, not fatal (Bob resume bug)."""
+    adapter, root = adapter_env
+    adapter.save_requirement_page("page-keep.md", "# Keep")
+    gone = adapter.save_requirement_page("page-gone.md", "# Gone")
+    (root / gone.storage_path).unlink()  # delete the backing object, keep the DB row
+
+    with caplog.at_level(logging.WARNING):
+        loaded = adapter.load_requirement_markdown()
+
+    assert {a.name for a in loaded} == {"page-keep.md"}
+    assert any("missing storage object" in r.getMessage() for r in caplog.records)
+
+
+def test_load_raw_html_returns_none_when_blob_missing(
+    adapter_env: tuple[PipelineArtifactAdapter, Path],
+) -> None:
+    """load_raw_html tolerates a deleted blob by returning None instead of raising."""
+    adapter, root = adapter_env
+    art = adapter.save_raw_html("777/raw.html", "<html></html>")
+    (root / art.storage_path).unlink()
+
+    assert adapter.load_raw_html("777") is None
+
+
+def test_load_all_metadata_skips_config_with_missing_blob(
+    adapter_env: tuple[PipelineArtifactAdapter, Path],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Bob's resume reads configuration sidecars via load_all_metadata; a missing
+    config blob must be skipped, not fatal."""
+    adapter, root = adapter_env
+    keep = adapter.save_metadata("keep.metadata.json", {"source_version": 1})
+    gone = adapter.save_metadata("gone.metadata.json", {"source_version": 2})
+    (root / gone.storage_path).unlink()  # delete the backing object, keep the DB row
+
+    with caplog.at_level(logging.WARNING):
+        meta = adapter.load_all_metadata()
+
+    assert keep.name in meta
+    assert gone.name not in meta
+    assert any("missing storage object" in r.getMessage() for r in caplog.records)

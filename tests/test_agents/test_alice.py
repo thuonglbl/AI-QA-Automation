@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ai_qa.agents.alice import AliceAgent
+from ai_qa.agents.alice import _AGENT_RATIONALE, AliceAgent
 from ai_qa.agents.base import AgentState
 from ai_qa.ai_connection.providers import ConnectionResult
 from ai_qa.db.models import User
@@ -412,11 +412,20 @@ class TestBootstrapAndAssignment:
             {"id": "inference-mistral-v03-7b", "name": "Mistral"},
         ]
         mappings, reasoning = alice._assign_models("inference-glm-51-754b", available)
-        assert mappings["sarah"] == "inference-glm-51-754b"  # coding flagship
+        assert mappings["sarah"] == "inference-glm-51-754b"  # coding flagship (script-gen)
         assert mappings["mary"] == "inference-glm-51-754b"  # instruction flagship
         assert mappings["bob"] == "inference-qwen3-vl-235b"  # best vision model
+        # Sarah's SECOND model (browser explore) is the vision model, same as Bob — NOT the
+        # coding flagship; a text-only model (deepseek/glm) must never win the vision role.
+        assert mappings["sarah_explore"] == "inference-qwen3-vl-235b"
         assert mappings["jack"] == "inference-glm45-air-110b"  # fast tier
-        assert {r["agent"] for r in reasoning} == {"bob", "mary", "sarah", "jack"}
+        assert {r["agent"] for r in reasoning} == {
+            "bob",
+            "mary",
+            "sarah",
+            "sarah_explore",
+            "jack",
+        }
         assert all(r["rationale"] for r in reasoning)
 
     def test_assign_models_bob_requires_vision_model(self, alice: AliceAgent) -> None:
@@ -527,6 +536,45 @@ class TestModelRankingHeuristic:
             [{"id": "inference-glm-7-820b"}, {"id": "inference-newvendor-vl-99b"}],
         )
         assert pick is not None and "vl" in pick["model"]
+
+    def test_has_vision_signal_detects_glm_v_variants_by_name(self) -> None:
+        from ai_qa.agents.alice import _has_vision_signal
+
+        # GLM vision variants append "v" to the version (in _VISION_RANK). Name-only
+        # detection (no supports_vision flag, e.g. resolving from a stored id) must catch them.
+        assert _has_vision_signal({"id": "inference-glm-5.1v-754b"})
+        assert _has_vision_signal({"id": "glm-5v"})
+        assert _has_vision_signal({"id": "glm-4.6v"})
+        # Text-only GLM (no trailing-v version) is NOT a vision model.
+        assert not _has_vision_signal({"id": "inference-glm-51-754b"})
+        assert not _has_vision_signal({"id": "glm-5.1"})
+
+    def test_has_vision_signal_rejects_text_only_flagships_even_when_flagged(self) -> None:
+        from ai_qa.agents.alice import _has_vision_signal
+
+        # The on-prem gateway false-flags these text-only models as vision; reject anyway.
+        assert not _has_vision_signal({"id": "inference-deepseek-v32", "supports_vision": True})
+        assert not _has_vision_signal({"id": "inference-gpt-oss-120b", "supports_vision": True})
+        # A hosted vision model with the flag (no name signal) is still trusted.
+        assert _has_vision_signal({"id": "claude-sonnet-4-6", "supports_vision": True})
+        # A real vision name beats the denylist (a genuine multimodal deepseek-vl would count).
+        assert _has_vision_signal({"id": "inference-deepseek-vl-7b"})
+
+    def test_bob_never_selects_text_only_model_for_vision(self) -> None:
+        from ai_qa.agents.alice import _select_model_for
+
+        # deepseek has a HIGHER (false) vision score AND the gateway flag, but is text-only;
+        # Bob must still pick the real vision model despite its lower score.
+        pool = [
+            {"id": "inference-deepseek-v32", "supports_vision": True},
+            {"id": "inference-qwen3-vl-235b", "supports_vision": False},
+        ]
+        pick = _select_model_for(
+            "bob",
+            pool,
+            {"inference-deepseek-v32": 28.7, "inference-qwen3-vl-235b": 17.9},
+        )
+        assert pick is not None and pick["model"] == "inference-qwen3-vl-235b"
 
     def test_admin_score_overrides_all_tiers(self, alice: AliceAgent) -> None:
         from ai_qa.agents.alice import _select_model_for
@@ -834,7 +882,7 @@ class TestHandleStartAndApprove:
 
         with patch("ai_qa.userconfig.service.get_provider_config", return_value=None):
             await alice.handle_start({"force_reconfigure": True})
-        # Should bypass existing and show greeting
+        # Should bypass existing config and stay in START for provider selection
         assert alice.state == AgentState.START
 
     @pytest.mark.asyncio
@@ -1235,10 +1283,55 @@ class TestModelAssignmentsDisplay:
         assert len(display) == 1
         assert display[0]["rationale"] == "Best for reasoning."
 
-    def test_display_empty_rationale_when_no_reasoning(
+    def test_display_includes_alice_rationale(
         self, alice: AliceAgent, mock_thread, mock_db
     ) -> None:
-        """When _model_reasoning is empty, rationale should be empty string."""
+        """Alice's own row in the confirm/review table must carry a rationale even
+        though _assign_models never emits an 'alice' entry — it falls back to the
+        canonical alice template so it matches the bootstrap card (the user-reported
+        'rationale empty in confirm step' bug)."""
+        alice._configuration = AliceConfiguration(
+            provider=ProviderConfig(
+                provider="on-premises",
+                provider_name="On-Premises",
+                endpoint="",
+                credential_reference="",
+                tested_at="",
+                test_result="success",
+            ),
+            agents=AgentsConfig(
+                updated_at="",
+                agents={
+                    "alice": AgentModelConfig(
+                        model="inference-glm-51-754b",
+                        temperature=0,
+                        prompt_template="p",
+                        tools=[],
+                    ),
+                    "bob": AgentModelConfig(
+                        model="claude-sonnet", temperature=0, prompt_template="p", tools=[]
+                    ),
+                },
+            ),
+        )
+        # Mirror _assign_models output: no 'alice' entry.
+        alice._model_reasoning = [
+            {"agent": "bob", "model": "claude-sonnet", "rationale": "Best for vision."}
+        ]
+
+        display = alice._get_model_assignments_display()
+        alice_row = next(r for r in display if r["key"] == "alice")
+        assert alice_row["rationale"] == _AGENT_RATIONALE["alice"].format(
+            model="inference-glm-51-754b"
+        )
+        assert alice_row["rationale"] != ""
+
+    def test_falls_back_to_template_when_no_reasoning(
+        self, alice: AliceAgent, mock_thread, mock_db
+    ) -> None:
+        """When _model_reasoning is empty, rationale falls back to the canonical
+        per-agent template (formatted with the chosen model) so the confirm/review
+        table is never blank — matching what the bootstrap card shows."""
         alice._configuration = AliceConfiguration(
             provider=ProviderConfig(
                 provider="claude",
@@ -1260,7 +1353,8 @@ class TestModelAssignmentsDisplay:
         alice._model_reasoning = []
 
         display = alice._get_model_assignments_display()
-        assert display[0]["rationale"] == ""
+        assert display[0]["rationale"] == _AGENT_RATIONALE["bob"].format(model="claude-sonnet")
+        assert display[0]["rationale"] != ""
 
     def test_format_review_content_includes_rationale(
         self, alice: AliceAgent, mock_thread, mock_db

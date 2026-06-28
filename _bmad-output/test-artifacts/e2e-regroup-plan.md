@@ -32,8 +32,11 @@ inputDocuments:
 
 ## Decisions (confirmed with Thuong)
 
-1. **Replace:** delete all 23 story specs; rebuild as 7 grouped specs.
-2. **On-prem groups run the REAL full pipeline** (slow, real keys, skip-when-missing).
+1. **`PT` / `PTP` are real DB projects** (not pipeline depth):
+   - `PT Tool` — id `b36c53d7-2e2e-4895-9825-fad59dd524b9`; providers `['on-premises','claude-sso']`; Confluence `…/CORPHRSOL/…/PT+Business+requirements`; Jira `CORP_PT_TOOL`.
+   - `PTP Personal Travel Plan` — id `24c60499-36f1-4abc-9161-75d9845a5735`; providers `[browser-use-cloud, claude, gemini, openai, on-premises, claude-sso]`; Confluence `…/EXPERTGROUP/…/PTP+-+Personal+Travel+Plan`; no Jira.
+2. **Replace:** delete all 23 story specs; rebuild as 7 grouped specs.
+3. **On-prem groups (4 & 5) run the REAL full pipeline** (slow, real keys, skip-when-missing).
 
 ## Architecture
 
@@ -100,7 +103,7 @@ inputDocuments:
 - `runSarahToScriptApproval`: leaves Chrome/CDP blank (LLM-only fallback), handles the optional test-case selection panel, approves ONE script and asserts the "Approved …" caption registers.
 - Bob keeps the proven epic-11 flow (no clarify handling — those projects extracted clean).
 
-**Not yet live-validated.** Groups 4 & 5 need VPN to on-prem LLM and run ~20–40 min each; groups 6 & 7 need the SSO mock-IdP creds. Run command: `cd frontend && npx playwright test e2e/group-1 e2e/group-2 e2e/group-3` (fast) or a single group, e.g. `npx playwright test e2e/group-5-one-project-pt-on-prem.spec.ts`.
+**Not yet live-validated.** Groups 4 & 5 need VPN to `confluence.svc.corp.ch` + on-prem LLM and run ~20–40 min each; groups 6 & 7 need the SSO mock-IdP creds. Run command: `cd frontend && npx playwright test e2e/group-1 e2e/group-2 e2e/group-3` (fast) or a single group, e.g. `npx playwright test e2e/group-5-one-project-pt-on-prem.spec.ts`.
 
 **Known residual risks:** multi-project thread selection relies on `data-testid=thread-<id>` after the browser bootstraps starter threads (polled via API first); Mary/Sarah selectors had no prior E2E coverage, so the first live run is the real validation.
 

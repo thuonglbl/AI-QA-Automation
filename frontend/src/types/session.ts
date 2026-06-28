@@ -23,23 +23,36 @@ export interface SessionStatus {
 export interface SessionMatrix {
   environments: ProjectEnvironment[];
   app_roles: string[];
-  /** "SSO" (manual debug-browser capture) or "PASSWORD" (backend auto-login). */
-  login_type: string;
   captured: SessionStatus[];
 }
 
-/** Capture from a user-launched debug browser over CDP (SSO / manual). */
-export interface CaptureSessionRequest {
+/**
+ * Upload a client-captured Playwright `storageState` blob (UAT path). The tester captures
+ * the blob on their own machine and uploads it over authenticated HTTPS, because the remote
+ * backend cannot reach the laptop's browser over CDP.
+ */
+export interface ImportSessionRequest {
   environment: string;
   role: string;
   auth_method?: string;
-  cdp_url?: string;
+  storage_state: Record<string, unknown>;
 }
 
-/** Backend-driven login for a PASSWORD project's (environment, role). */
-export interface AutoCaptureSessionRequest {
-  environment: string;
-  role: string;
-  chrome_path: string;
-  headless?: boolean;
+/**
+ * A short-lived signed token that authorizes a single client-side session upload to the
+ * token-auth import endpoint. Minted per (project, environment, role); the auto-upload helper
+ * carries it as a bearer credential. Not a user secret — a one-shot, time-boxed convenience.
+ */
+export interface ImportTokenResponse {
+  token: string;
+  expires_in: number;
+}
+
+/** Reachability of one configured project environment (no request body; server reads its own envs). */
+export interface EnvConnectionStatus {
+  name: string;
+  url: string;
+  reachable: boolean;
+  status_code: number | null;
+  detail: string;
 }

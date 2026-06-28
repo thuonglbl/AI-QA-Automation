@@ -234,7 +234,11 @@ class TestJackAgentConfirmInputs:
         with (
             patch("ai_qa.agents.jack.PipelineArtifactAdapter") as mock_adapter_class,
             patch(
-                "ai_qa.agents.jack.resolve_storage_state", return_value={"cookies": []}
+                "ai_qa.sessions.auto_login.resolve_or_generate_storage_state",
+                new_callable=AsyncMock,
+                side_effect=lambda db, user_id, project_id, environment, role, chrome_path, llm, timeout: {
+                    "cookies": [role]
+                },
             ) as mock_session,
         ):
             self.mock_adapter = MagicMock()
@@ -265,7 +269,7 @@ class TestJackAgentConfirmInputs:
         runner.assert_called_once()
         assert runner.call_args.kwargs["base_url"] == "https://app.example.com"
         # AC3 (14.4): the resolved session blob is passed to the runner.
-        assert runner.call_args.kwargs["storage_state"] == {"cookies": []}
+        assert runner.call_args.kwargs["storage_state"] == {"cookies": ["Admin"]}
         self.mock_session.assert_called_once()
         assert self.mock_session.call_args.kwargs["environment"] == "Production"
         assert self.mock_session.call_args.kwargs["role"] == "Admin"
@@ -326,6 +330,7 @@ class TestJackAgentConfirmInputs:
         """14.4 AC3: no captured session for (env, role) → hard-block, runner NOT called."""
         a = _make_script("test_a.py", None)
         self.mock_adapter.load_approved_scripts.return_value = [a]
+        self.mock_session.side_effect = None
         self.mock_session.return_value = None  # no session captured
 
         agent = JackAgent(workspace_dir=tmp_path)
@@ -339,7 +344,7 @@ class TestJackAgentConfirmInputs:
         assert agent.state != AgentState.PROCESSING
         assert agent.confirmed_scripts == []
         messages = [c[0][0].content for c in mock_broadcast.call_args_list]
-        assert any("captured session" in m for m in messages)
+        assert any("test account" in m for m in messages)
 
     @pytest.mark.asyncio
     async def test_confirm_without_url_blocks_no_subprocess(
@@ -511,7 +516,11 @@ class TestJackRoleGroupedRuns:
     def setup_mocks(self):
         with (
             patch("ai_qa.agents.jack.PipelineArtifactAdapter") as mock_adapter_class,
-            patch("ai_qa.agents.jack.resolve_storage_state") as mock_session,
+            patch(
+                "ai_qa.sessions.auto_login.resolve_or_generate_storage_state",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_session,
         ):
             self.mock_adapter = MagicMock()
             mock_adapter_class.return_value = self.mock_adapter
@@ -520,10 +529,10 @@ class TestJackRoleGroupedRuns:
 
     @staticmethod
     def _meta_for(name: str):
-        """Side-car role keyed by the script's <role>/ folder prefix (Slice 5 layout)."""
-        if name.startswith("Admin/"):
+        """Side-car role mapping for flat scripts."""
+        if "test_a" in name:
             return {"role": "Admin"}
-        if name.startswith("User/"):
+        if "test_b" in name:
             return {"role": "User"}
         return None
 
@@ -562,8 +571,8 @@ class TestJackRoleGroupedRuns:
     async def test_runs_each_role_with_its_own_session(
         self, tmp_path: Path, mock_broadcast: AsyncMock, mock_project_context
     ) -> None:
-        a = _make_script("Admin/test_a.py", None)
-        b = _make_script("User/test_b.py", None)
+        a = _make_script("test_a.py", None)
+        b = _make_script("test_b.py", None)
         self.mock_adapter.load_approved_scripts.return_value = [a, b]
         self.mock_adapter.load_metadata.side_effect = self._meta_for
         # Each role has its own captured session blob (tagged so we can verify routing).
@@ -588,7 +597,7 @@ class TestJackRoleGroupedRuns:
         # One run_scripts invocation per role group, each with ONLY its role's scripts + session.
         assert len(runner_calls) == 2
         routed = {c["storage_state"]["role"]: [s.name for s in c["scripts"]] for c in runner_calls}
-        assert routed == {"Admin": ["Admin/test_a.py"], "User": ["User/test_b.py"]}
+        assert routed == {"Admin": ["test_a.py"], "User": ["test_b.py"]}
         assert {c.kwargs["role"] for c in self.mock_session.call_args_list} == {"Admin", "User"}
 
         # Persisted rows carry the per-script role.
@@ -610,8 +619,8 @@ class TestJackRoleGroupedRuns:
     async def test_blocks_when_one_role_has_no_session(
         self, tmp_path: Path, mock_broadcast: AsyncMock, mock_project_context
     ) -> None:
-        a = _make_script("Admin/test_a.py", None)
-        b = _make_script("User/test_b.py", None)
+        a = _make_script("test_a.py", None)
+        b = _make_script("test_b.py", None)
         self.mock_adapter.load_approved_scripts.return_value = [a, b]
         self.mock_adapter.load_metadata.side_effect = self._meta_for
         # Admin has a session; User does not → the whole run must be blocked.
@@ -633,7 +642,7 @@ class TestJackRoleGroupedRuns:
         assert agent.confirmed_scripts == []
         messages = [c[0][0].content for c in mock_broadcast.call_args_list]
         # The block names the missing role (User), not the one that has a session.
-        assert any("captured session" in m and "User" in m for m in messages)
+        assert any("test account" in m and "User" in m for m in messages)
 
     @pytest.mark.asyncio
     async def test_roleless_scripts_stay_single_group(
@@ -727,7 +736,6 @@ class TestJackPersistenceRealDB:
             user = User(
                 email="jack@example.com",
                 display_name="jack-user",
-                password_hash="hash",
                 role="standard",
                 is_active=True,
             )

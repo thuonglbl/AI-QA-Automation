@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
 ARG PYTHON_VERSION=3.14.6
-ARG UV_VERSION=0.11.20
-ARG NODE_VERSION=26.3.0
+ARG UV_VERSION=0.11.24
+ARG NODE_VERSION=26.4.0
 
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
@@ -39,12 +39,15 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
 
 # Install the frontend's JS deps (the e2e devDependencies live here, so a full
 # `npm ci` is required — `--omit=dev` would drop @playwright/test). Skip the
-# automatic browser download; only Chromium is installed explicitly below.
+# automatic browser download; the needed engines are installed explicitly below.
 COPY frontend/package.json frontend/package-lock.json ./frontend/
-RUN cd frontend && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci
+RUN cd frontend && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --legacy-peer-deps
 
-# Install Chromium + its system libraries into PLAYWRIGHT_BROWSERS_PATH.
-RUN cd frontend && npx playwright install --with-deps chromium \
+# Install Chromium, Firefox, and WebKit + their system libraries into
+# PLAYWRIGHT_BROWSERS_PATH (shared by the Python backend runner — Jack/Sarah/login —
+# and the node e2e runner). Chrome/Edge are Chromium channels, so headless Chromium
+# already covers them; they are intentionally NOT installed.
+RUN cd frontend && npx playwright install --with-deps chromium firefox webkit \
     && rm -rf /var/lib/apt/lists/*
 
 # The Playwright config + the e2e specs/support helpers (frontend/src is NOT

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import mimetypes
+import re as _re
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -79,6 +81,7 @@ class ArtifactResponse(BaseModel):
     warnings: list[dict[str, Any]] | None = None
     title: str | None = None
     parent_source_id: str | None = None
+    ancestor_source_ids: list[str] | None = None
 
 
 class ArtifactTreeEntry(ArtifactResponse):
@@ -264,6 +267,7 @@ async def get_artifact_tree(
                     warnings=e["warnings"],
                     title=e["title"],
                     parent_source_id=e["parent_source_id"],
+                    ancestor_source_ids=e["ancestor_source_ids"],
                 )
                 for e in f["entries"]
             ],
@@ -373,6 +377,44 @@ async def read_artifact_content(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _content_response(artifact, content)
+
+
+@router.get("/{artifact_id}/download")
+async def download_artifact(
+    project_id: UUID,
+    artifact_id: UUID,
+    project: Project = ProjectAccessDependency,
+    storage: ArtifactStorage = ArtifactStorageDependency,
+    db: Session = DbSessionDependency,
+) -> Response:
+    """Stream an artifact's raw bytes as a file download.
+
+    Unlike ``/content`` (UTF-8/base64 JSON, 1 MB cap), this serves the binary as-is with a
+    download disposition — required for large/binary report artifacts (Playwright trace.zip,
+    video .webm, screenshots) that QA opens locally (e.g. ``npx playwright show-trace``).
+    """
+    if project.id != project_id:
+        raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND_DETAIL)
+    service = ArtifactService(db, storage)
+    artifact = service.get_artifact(project_id=project.id, artifact_id=artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND_DETAIL)
+    try:
+        content = service.read_current_content(artifact)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND_DETAIL) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=CONTENT_UNAVAILABLE_DETAIL) from exc
+
+    # Safe download filename: basename only, conservative charset (no header injection).
+    raw_name = artifact.name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] or "artifact"
+    safe_name = _re.sub(r"[^A-Za-z0-9._-]", "_", raw_name)
+    media_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
 
 
 @router.delete("/{artifact_id}", status_code=204)

@@ -58,6 +58,8 @@ export interface Artifact {
   title?: string | null;
   /** Source id of the parent page, for rendering a Confluence-like requirements tree. */
   parent_source_id?: string | null;
+  /** Full ancestor chain from Confluence (root to immediate parent). */
+  ancestor_source_ids?: string[] | null;
 }
 
 /** Last path segment of an artifact name (e.g. "1234/requirement.md" -> "requirement.md"). */
@@ -82,7 +84,7 @@ function pageIdOf(a: Artifact): string {
  * sibling instead of rendering as a second orphan row.
  */
 function treeKey(a: Artifact): string {
-  return pageIdOf(a).replace(/\.md$/i, "");
+  return pageIdOf(a).replace(/\.[^.]+$/, "");
 }
 
 /**
@@ -128,7 +130,7 @@ function preferResult(candidate: Artifact, current: Artifact): boolean {
  * de-duplicated (the approved/titled one wins). Cycle- and orphan-safe (any
  * unvisited result is appended as a root). Stable order by friendly label.
  */
-export function buildResultTree(results: Artifact[]): TreeRow[] {
+export function buildResultTree(results: Artifact[], allEntries: Artifact[] = []): TreeRow[] {
   // De-duplicate by normalized page id so a leftover "{id}.md" draft never shows
   // as a second row next to its approved "{id}/requirement.md".
   const byKey = new Map<string, Artifact>();
@@ -139,14 +141,68 @@ export function buildResultTree(results: Artifact[]): TreeRow[] {
   }
   const deduped = [...byKey.values()];
 
+  // Build a map of all entries to resolve missing ancestors
+  const allByKey = new Map<string, Artifact>();
+  for (const a of allEntries) {
+    const key = treeKey(a);
+    const cur = allByKey.get(key);
+    if (!cur) {
+      allByKey.set(key, a);
+    } else {
+      const candIsMd = isMarkdown(a);
+      const curIsMd = isMarkdown(cur);
+      if (candIsMd !== curIsMd) {
+        if (candIsMd) allByKey.set(key, a);
+      } else {
+        if (preferResult(a, cur)) allByKey.set(key, a);
+      }
+    }
+  }
+
+  const treeNodes = new Map<string, Artifact>();
+  for (const a of deduped) {
+    treeNodes.set(treeKey(a), a);
+    if (a.ancestor_source_ids) {
+      for (const anc of a.ancestor_source_ids) {
+        const cleanAnc = anc.trim();
+        if (!treeNodes.has(cleanAnc)) {
+          const ancArtifact = allByKey.get(cleanAnc);
+          if (ancArtifact) {
+            treeNodes.set(cleanAnc, ancArtifact);
+          }
+        }
+      }
+    }
+  }
+  const nodesList = [...treeNodes.values()];
+
   const childrenByParent = new Map<string, Artifact[]>();
   const roots: Artifact[] = [];
-  for (const a of deduped) {
-    const parent = a.parent_source_id?.trim() || "";
-    if (parent && byKey.has(parent) && parent !== treeKey(a)) {
-      const arr = childrenByParent.get(parent) ?? [];
+  for (const a of nodesList) {
+    // Find the closest known ancestor in the tree. Walk the ancestor chain backwards.
+    let bestParent = "";
+    if (a.ancestor_source_ids && a.ancestor_source_ids.length > 0) {
+      for (let i = a.ancestor_source_ids.length - 1; i >= 0; i--) {
+        const anc = a.ancestor_source_ids[i]?.trim();
+        if (anc && treeNodes.has(anc) && anc !== treeKey(a)) {
+          bestParent = anc;
+          break;
+        }
+      }
+    }
+
+    // Fall back to immediate parent_source_id if ancestor search yielded nothing
+    if (!bestParent) {
+      const parent = a.parent_source_id?.trim() || "";
+      if (parent && treeNodes.has(parent) && parent !== treeKey(a)) {
+        bestParent = parent;
+      }
+    }
+
+    if (bestParent) {
+      const arr = childrenByParent.get(bestParent) ?? [];
       arr.push(a);
-      childrenByParent.set(parent, arr);
+      childrenByParent.set(bestParent, arr);
     } else {
       roots.push(a);
     }
@@ -164,7 +220,7 @@ export function buildResultTree(results: Artifact[]): TreeRow[] {
     }
   };
   for (const root of roots.slice().sort(byLabel)) walk(root, 0);
-  for (const a of deduped) {
+  for (const a of nodesList) {
     if (!visited.has(treeKey(a))) rows.push({ artifact: a, depth: 0 });
   }
   return rows;
@@ -174,7 +230,7 @@ interface ProjectSidebarProps {
   currentThreadId: string | null;
   /** Project bound to the active thread, resolved by App (available on cold load). */
   activeProjectId?: string | null;
-  onSelectThread: (threadId: string) => void;
+  onSelectThread: (threadId: string, projectId?: string) => void;
   onNewConversationInProject: (projectId: string) => void;
   artifactRefreshTrigger?: number;
   onSelectArtifact?: (artifact: Artifact | null) => void;
@@ -185,12 +241,12 @@ interface ProjectSidebarProps {
 // The old keys were: requirements, testcase, testscript, report.
 type SubFolderType = "conversations" | "requirements" | "test_cases" | "test_scripts" | "reports";
 
-const FOLDER_CONFIG: Record<SubFolderType, { label: string; icon: React.ElementType }> = {
-  conversations: { label: "Conversations", icon: MessageSquare },
-  requirements: { label: "Requirements", icon: FileText },
-  test_cases: { label: "Test Cases", icon: CheckSquare },
-  test_scripts: { label: "Scripts", icon: Code },
-  reports: { label: "Reports", icon: BarChart2 },
+const FOLDER_CONFIG: Record<SubFolderType, { label: string; icon: React.ElementType; emptyMessage: string }> = {
+  conversations: { label: "Conversations", icon: MessageSquare, emptyMessage: "Start a new thread to get started." },
+  requirements: { label: "Requirements", icon: FileText, emptyMessage: "Talk to Bob to extract requirements." },
+  test_cases: { label: "Test Cases", icon: CheckSquare, emptyMessage: "Talk to Mary to generate test cases." },
+  test_scripts: { label: "Scripts", icon: Code, emptyMessage: "Talk to Sarah to write test scripts." },
+  reports: { label: "Reports", icon: BarChart2, emptyMessage: "Talk to Jack to generate execution reports." },
 };
 
 function SubFolder<T>({
@@ -206,7 +262,7 @@ function SubFolder<T>({
   renderItem: (item: T) => React.ReactNode;
   isOpen: boolean;
   onToggle: () => void;
-  action?: { icon: React.ElementType; title: string; onClick: (e: React.MouseEvent) => void };
+  action?: { icon: React.ElementType; title: string; onClick: (e: React.MouseEvent) => void; testid?: string };
 }) {
   const [page, setPage] = useState(1);
   const itemsPerPage = 5;
@@ -220,8 +276,7 @@ function SubFolder<T>({
     const start = (page - 1) * itemsPerPage;
     return items.slice(start, start + itemsPerPage);
   }, [items, page]);
-
-  const { label, icon: Icon } = FOLDER_CONFIG[type];
+  const { label, icon: Icon, emptyMessage } = FOLDER_CONFIG[type];
 
   return (
     <div className="mb-1">
@@ -242,6 +297,7 @@ function SubFolder<T>({
             type="button"
             className="opacity-0 group-hover/folder:opacity-100 p-1 hover:bg-[#4b5563] rounded-md transition-all text-[#9ca3af] hover:text-white"
             title={action.title}
+            data-testid={action.testid}
             onClick={action.onClick}
           >
             <action.icon size={14} />
@@ -252,7 +308,7 @@ function SubFolder<T>({
       {isOpen && (
         <div className="pl-6 pr-2 py-1 space-y-1">
           {items.length === 0 ? (
-            <div className="text-[11px] text-[#6b7280] py-1 italic">Empty</div>
+            <div className="text-[11px] text-[#9ca3af] py-1 italic leading-relaxed">{emptyMessage}</div>
           ) : (
             <>
               {displayedItems.map(renderItem)}
@@ -703,8 +759,8 @@ export function ProjectSidebar({
   const renderRequirementsFolder = (folder: ArtifactTreeFolder) => {
     const results = folder.entries.filter(isMarkdown);
     const isOpen = openFolders.requirements;
-    const { label, icon: Icon } = FOLDER_CONFIG.requirements;
-    const treeRows = buildResultTree(results);
+    const { label, icon: Icon, emptyMessage } = FOLDER_CONFIG.requirements;
+    const treeRows = buildResultTree(results, folder.entries);
 
     // Walk the pre-order rows, marking parents (next row is deeper) and hiding the
     // subtree of any collapsed node. (buildResultTree is already cycle-safe.)
@@ -740,7 +796,7 @@ export function ProjectSidebar({
         {isOpen && (
           <div className="pl-6 pr-2 py-1 space-y-1">
             {results.length === 0 ? (
-              <div className="text-[11px] text-[#6b7280] py-1 italic">Empty</div>
+              <div className="text-[11px] text-[#9ca3af] py-1 italic leading-relaxed">{emptyMessage}</div>
             ) : (
               visibleRows.map(renderTreeNode)
             )}
@@ -756,9 +812,9 @@ export function ProjectSidebar({
     if (folder.name === "requirements") return renderRequirementsFolder(folder);
 
     // Reports is reserved for genuine report artifacts (Bob's domain). Internal
-    // "configuration" sidecars — test-case metadata, mary_selected_id.json,
-    // chrome_path.json — are routed here by the storage catch-all but must never
-    // surface in the UI, so filter them out (count badge follows the filtered set).
+    // "configuration" sidecars — test-case metadata, mary_selected_id.json — are
+    // routed here by the storage catch-all but must never surface in the UI, so
+    // filter them out (count badge follows the filtered set).
     const items =
       folder.name === "reports"
         ? folder.entries.filter((e) => e.kind !== "configuration")
@@ -817,6 +873,7 @@ export function ProjectSidebar({
                         action={{
                           icon: Plus,
                           title: "New Conversation",
+                          testid: `new-thread-${project.id}`,
                           onClick: () => onNewConversationInProject(project.id),
                         }}
                         renderItem={(thread) => (
@@ -824,7 +881,7 @@ export function ProjectSidebar({
                             key={thread.id}
                             thread={thread}
                             isActive={thread.id === currentThreadId}
-                            onSelect={() => onSelectThread(thread.id)}
+                            onSelect={() => onSelectThread(thread.id, project.id)}
                             onArchive={() => handleArchiveThread(thread.id)}
                             onRename={(title) => handleRenameThread(thread.id, title)}
                           />

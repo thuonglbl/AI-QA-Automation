@@ -6,6 +6,8 @@ baseline_commit: 2a1f170
 
 Status: done
 
+> **Note (2026-06-25):** The "captured session" model discussed in this story has been superseded by the Epic 25 "Test Account Auto-Login" model. The core principles of isolating sessions and reusing `storageState` still apply, but the source of the session is now an automated login rather than a human session capture.
+
 <!-- markdownlint-disable MD033 MD041 -->
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

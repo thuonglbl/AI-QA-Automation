@@ -43,6 +43,8 @@ describe("ModelAssignmentReview", () => {
 
     expect(screen.getByText(/Connected successfully to/)).toBeInTheDocument();
     expect(screen.getByText("Claude (Anthropic)")).toBeInTheDocument();
+    // Endpoint should NOT be rendered in the view for security.
+    expect(screen.queryByText("https://api.anthropic.com")).not.toBeInTheDocument();
   });
 
   it("renders model assignment table with all agents", () => {
@@ -73,6 +75,43 @@ describe("ModelAssignmentReview", () => {
     expect(screen.getByText("Test case generation")).toBeInTheDocument();
     expect(screen.getByText("Script generation")).toBeInTheDocument();
     expect(screen.getByText("Test execution")).toBeInTheDocument();
+
+    // Check rationales are rendered
+    expect(screen.getByText("Chosen for vision capability and strong reasoning.")).toBeInTheDocument();
+    expect(screen.getByText("Chosen for fast, cost-effective summarization.")).toBeInTheDocument();
+  });
+
+  it("renders the benchmark score when provided", () => {
+    render(
+      <ModelAssignmentReview
+        provider="Claude (Anthropic)"
+        endpoint="https://api.anthropic.com"
+        assignments={mockAssignments}
+        onApprove={vi.fn()}
+        benchmark={{ accuracy_percent: 85.5, note: "Top Tier" }}
+      />,
+    );
+
+    expect(screen.getByText(/Global Benchmark Score:/)).toBeInTheDocument();
+    expect(screen.getByText("85.5%")).toBeInTheDocument();
+    expect(screen.getByText("(Top Tier)")).toBeInTheDocument();
+  });
+
+  it("disables the OK button and shows disabledReason", () => {
+    render(
+      <ModelAssignmentReview
+        provider="Claude (Anthropic)"
+        endpoint="https://api.anthropic.com"
+        assignments={mockAssignments}
+        onApprove={vi.fn()}
+        disabled={true}
+        disabledReason="Waiting for connection..."
+      />,
+    );
+
+    const okButton = screen.getByRole("button", { name: "OK" });
+    expect(okButton).toBeDisabled();
+    expect(screen.getByText("Waiting for connection...")).toBeInTheDocument();
   });
 
   it("calls onApprove when ok button clicked", () => {
@@ -210,6 +249,53 @@ describe("ModelAssignmentReview", () => {
     );
 
     expect(screen.queryByText(/Discovered/)).not.toBeInTheDocument();
+  });
+
+  it("overrides the two Sarah rows independently by key (script-gen vs browser-explore)", () => {
+    const onApprove = vi.fn();
+    const twoSarah: ModelAssignment[] = [
+      {
+        key: "sarah",
+        agent: "Sarah · Script gen",
+        model: "inference-glm-51-754b",
+        purpose: "Script generation (coding)",
+        rationale: "coding flagship",
+      },
+      {
+        key: "sarah_explore",
+        agent: "Sarah · Browser explore",
+        model: "inference-qwen3-vl-235b",
+        purpose: "Browser exploration (vision)",
+        rationale: "best vision model",
+      },
+    ];
+    render(
+      <ModelAssignmentReview
+        provider="On-Premises"
+        endpoint="https://ai.local"
+        assignments={twoSarah}
+        availableModels={[
+          { id: "inference-glm-51-754b", name: "GLM 5.1" },
+          { id: "inference-qwen3-vl-235b", name: "Qwen3 VL" },
+          { id: "inference-gemma4-31b", name: "Gemma" },
+        ]}
+        onApprove={onApprove}
+      />,
+    );
+
+    // Both Sarah rows shown distinctly.
+    expect(screen.getByText("Sarah · Script gen")).toBeInTheDocument();
+    expect(screen.getByText("Sarah · Browser explore")).toBeInTheDocument();
+
+    // Override ONLY the explore row; the two rows must not collide on key.
+    fireEvent.change(screen.getByLabelText("Model for Sarah · Browser explore"), {
+      target: { value: "inference-gemma4-31b" },
+    });
+    fireEvent.click(screen.getByText(/OK/));
+
+    const sent = onApprove.mock.calls[0]![0] as Record<string, string>;
+    expect(sent.sarah).toBe("inference-glm-51-754b"); // script-gen unchanged
+    expect(sent.sarah_explore).toBe("inference-gemma4-31b"); // explore overridden by key
   });
 
   // Rationale column and Reject button removed from UI
