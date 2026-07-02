@@ -34,6 +34,7 @@ import {
   downloadE2EReport,
   listDiscoveredModels,
   syncModelsAndBenchmarks,
+  getAdminConfig,
 } from "@/lib/projects";
 import { getSafeApiErrorMessage, API_BASE_PATH } from "@/lib/api";
 import { BROWSER_TIMEZONE, TIMEZONE_OPTIONS } from "@/lib/timezone";
@@ -45,6 +46,7 @@ import type {
   E2ETestRunResult,
   DiscoveredModel,
   ModelSyncResult,
+  AdminConfig,
   ProjectEnvironment,
   UpdateAdminUserRequest,
 } from "@/types/project";
@@ -235,20 +237,19 @@ const ROLE_RANK: Record<string, number> = {
 
 // Synced-models table: rows sort by these capability scores in priority order
 // (highest first); chips within a row render in this fixed order for easy column scan.
-const SCORE_SORT_ORDER = ["global", "reasoning", "coding", "vision"] as const;
-const CAPABILITY_DISPLAY_ORDER = [
-  "global",
-  "reasoning",
-  "coding",
-  "vision",
-  "instruction",
-  "fast",
-];
+const SCORE_SORT_ORDER = ["global", "reasoning", "instruction", "coding", "vision", "fast"] as const;
 
-function capabilityRank(capability: string): number {
-  const i = CAPABILITY_DISPLAY_ORDER.indexOf(capability);
-  return i < 0 ? CAPABILITY_DISPLAY_ORDER.length : i;
-}
+const PROVIDER_LABELS: Record<string, string> = {
+  "on-premises": "on premises",
+  claude: "claude",
+  gemini: "gemini",
+  openai: "openAI",
+  "browser-use-cloud": "browser use",
+};
+const getProviderLabel = (provider: string | null) => {
+  if (!provider) return "Unknown";
+  return PROVIDER_LABELS[provider] || provider;
+};
 
 /** How often to poll the E2E run status while a background run is in progress. */
 const E2E_POLL_INTERVAL_MS = 3000;
@@ -362,22 +363,34 @@ export function AdminDashboard({
   const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<ModelSyncResult | null>(null);
+  const [adminConfig, setAdminConfig] = useState<AdminConfig | null>(null);
 
-  // Sort by global → reasoning → coding → vision (desc); models without a given
+  const [selectedProvider, setSelectedProvider] = useState<string | "all">("all");
+  const [sortCapability, setSortCapability] = useState<string | null>(null);
+
+  // Sort by selected capability, fallback to global → reasoning → coding → vision (desc); models without a given
   // score sink (treated as -1), so benchmarked models float to the top.
   const sortedModels = useMemo(() => {
+    let filtered = discoveredModels;
+    if (selectedProvider !== "all") {
+      filtered = filtered.filter((m) => getProviderLabel(m.provider) === selectedProvider);
+    }
     const scoreFor = (m: DiscoveredModel, capability: string): number => {
       const found = m.scores.find((s) => s.capability === capability);
       return found ? found.score : -1;
     };
-    return [...discoveredModels].sort((a, b) => {
+    return [...filtered].sort((a, b) => {
+      if (sortCapability) {
+        const diff = scoreFor(b, sortCapability) - scoreFor(a, sortCapability);
+        if (diff !== 0) return diff;
+      }
       for (const capability of SCORE_SORT_ORDER) {
         const diff = scoreFor(b, capability) - scoreFor(a, capability);
         if (diff !== 0) return diff;
       }
       return a.model_id.localeCompare(b.model_id);
     });
-  }, [discoveredModels]);
+  }, [discoveredModels, selectedProvider, sortCapability]);
 
   const loadDiscoveredModels = async () => {
     try {
@@ -390,7 +403,10 @@ export function AdminDashboard({
 
   useEffect(() => {
     setIsLoadingModels(true);
-    loadDiscoveredModels().finally(() => setIsLoadingModels(false));
+    Promise.all([
+      loadDiscoveredModels(),
+      getAdminConfig().then(setAdminConfig).catch(console.error),
+    ]).finally(() => setIsLoadingModels(false));
   }, []);
 
   const handleSyncModels = async () => {
@@ -1001,34 +1017,36 @@ export function AdminDashboard({
                                   className="mt-1.5"
                                 />
                               </div>
-                              <div>
-                                <Label
-                                  htmlFor={`edit-user-role-${u.id}`}
-                                  className="text-slate-700 block"
-                                >
-                                  Role
-                                </Label>
-                                <select
-                                  id={`edit-user-role-${u.id}`}
-                                  aria-label={`Role for ${u.display_name}`}
-                                  value={editUserRole}
-                                  onChange={(e) => {
-                                    const nextRole = e.target.value as
-                                      | "standard"
-                                      | "project_admin";
-                                    setEditUserRole(nextRole);
-                                    // Demoting to standard clears the administered set.
-                                    if (nextRole === "standard")
-                                      setEditUserProjectIds([]);
-                                  }}
-                                  className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                                >
-                                  <option value="standard">Standard</option>
-                                  <option value="project_admin">
-                                    Project Admin
-                                  </option>
-                                </select>
-                              </div>
+                              {!isAdminUser && (
+                                <div>
+                                  <Label
+                                    htmlFor={`edit-user-role-${u.id}`}
+                                    className="text-slate-700 block"
+                                  >
+                                    Role
+                                  </Label>
+                                  <select
+                                    id={`edit-user-role-${u.id}`}
+                                    aria-label={`Role for ${u.display_name}`}
+                                    value={editUserRole}
+                                    onChange={(e) => {
+                                      const nextRole = e.target.value as
+                                        | "standard"
+                                        | "project_admin";
+                                      setEditUserRole(nextRole);
+                                      // Demoting to standard clears the administered set.
+                                      if (nextRole === "standard")
+                                        setEditUserProjectIds([]);
+                                    }}
+                                    className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                                  >
+                                    <option value="standard">Standard</option>
+                                    <option value="project_admin">
+                                      Project Admin
+                                    </option>
+                                  </select>
+                                </div>
+                              )}
                               {editUserRole === "project_admin" && (
                                 <div>
                                   <Label className="text-slate-700 block">
@@ -1128,17 +1146,19 @@ export function AdminDashboard({
                                   ))}
                                 </select>
                               </div>
-                              <label className="flex items-center gap-2 text-sm text-slate-700">
-                                <input
-                                  type="checkbox"
-                                  checked={editUserIsActive}
-                                  onChange={(e) =>
-                                    setEditUserIsActive(e.target.checked)
-                                  }
-                                  aria-label={`Active for ${u.display_name}`}
-                                />
-                                Active
-                              </label>
+                              {!isAdminUser && (
+                                <label className="flex items-center gap-2 text-sm text-slate-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={editUserIsActive}
+                                    onChange={(e) =>
+                                      setEditUserIsActive(e.target.checked)
+                                    }
+                                    aria-label={`Active for ${u.display_name}`}
+                                  />
+                                  Active
+                                </label>
+                              )}
                               <div className="flex gap-2">
                                 <Button
                                   type="submit"
@@ -1171,18 +1191,18 @@ export function AdminDashboard({
                                 <div className="font-semibold text-slate-900">
                                   {u.display_name}
                                 </div>
-                                {!isAdminUser && (
-                                  <div className="flex gap-2">
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => startEditingUser(u)}
-                                      disabled={isBusy}
-                                      className="h-7 text-xs"
-                                      aria-label={`Edit user ${u.display_name}`}
-                                    >
-                                      Edit
-                                    </Button>
+                                <div className="flex gap-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => startEditingUser(u)}
+                                    disabled={isBusy}
+                                    className="h-7 text-xs"
+                                    aria-label={`Edit user ${u.display_name}`}
+                                  >
+                                    Edit
+                                  </Button>
+                                  {!isAdminUser && (
                                     <Button
                                       variant="destructive"
                                       size="sm"
@@ -1193,8 +1213,8 @@ export function AdminDashboard({
                                     >
                                       Delete
                                     </Button>
-                                  </div>
-                                )}
+                                  )}
+                                </div>
                               </div>
                               <div className="text-sm text-slate-600 mb-2">
                                 {u.email}
@@ -1531,22 +1551,24 @@ export function AdminDashboard({
               Alice&apos;s model selection.
             </p>
 
-            <div className="mb-4 flex flex-wrap items-center gap-3">
-              <Button
-                id="sync-models-button"
-                type="button"
-                onClick={handleSyncModels}
-                disabled={isSyncing}
-                className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2"
-              >
-                <RefreshCw
-                  className={`w-4 h-4 ${isSyncing ? "animate-spin" : ""}`}
-                />
-                {isSyncing
-                  ? "Syncing models & benchmarks…"
-                  : "Sync models and benchmarks"}
-              </Button>
-            </div>
+            {adminConfig?.enable_model_benchmark_sync && (
+              <div className="mb-4 flex flex-wrap items-center gap-3">
+                <Button
+                  id="sync-models-button"
+                  type="button"
+                  onClick={handleSyncModels}
+                  disabled={isSyncing}
+                  className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2"
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 ${isSyncing ? "animate-spin" : ""}`}
+                  />
+                  {isSyncing
+                    ? "Syncing models & benchmarks…"
+                    : "Sync models and benchmarks"}
+                </Button>
+              </div>
+            )}
 
             {isSyncing && (
               <div className="mb-4 flex items-center gap-2 text-sm text-slate-600 animate-pulse">
@@ -1615,12 +1637,36 @@ export function AdminDashboard({
               </p>
             ) : (
               <div className="overflow-x-auto">
+                <div className="mb-4 flex items-center space-x-2">
+                  <Label className="text-sm font-medium text-slate-700">Filter Provider:</Label>
+                  <select
+                    value={selectedProvider}
+                    onChange={(e) => setSelectedProvider(e.target.value)}
+                    className="h-8 rounded-md border border-slate-300 bg-white px-3 py-1 text-sm text-slate-700 shadow-sm"
+                  >
+                    <option value="all">All</option>
+                    <option value="on premises">on premises</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="openAI">openAI</option>
+                    <option value="browser use">browser use</option>
+                  </select>
+                </div>
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
                       <th className="py-2 pr-3">Model</th>
+                      <th className="py-2 pr-3">Provider</th>
                       <th className="py-2 pr-3">Source</th>
-                      <th className="py-2 pr-3">Benchmark scores</th>
+                      {SCORE_SORT_ORDER.map((cap) => (
+                        <th
+                          key={cap}
+                          className="py-2 pr-3 cursor-pointer hover:text-slate-600 select-none"
+                          onClick={() => setSortCapability(sortCapability === cap ? null : cap)}
+                        >
+                          {cap} {sortCapability === cap && "↓"}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
@@ -1640,6 +1686,11 @@ export function AdminDashboard({
                           )}
                         </td>
                         <td className="py-3 pr-3">
+                          <span className="text-xs text-slate-600">
+                            {getProviderLabel(m.provider)}
+                          </span>
+                        </td>
+                        <td className="py-3 pr-3">
                           <span
                             className={`rounded-full px-2 py-0.5 text-[10px] ${
                               m.tier_source === "admin"
@@ -1657,28 +1708,20 @@ export function AdminDashboard({
                             </span>
                           )}
                         </td>
-                        <td className="py-3 pr-3">
-                          {m.scores.length === 0 ? (
-                            <span className="text-xs text-slate-400">—</span>
-                          ) : (
-                            <div className="flex flex-wrap gap-x-3 gap-y-1">
-                              {[...m.scores]
-                                .sort(
-                                  (a, b) =>
-                                    capabilityRank(a.capability) -
-                                    capabilityRank(b.capability),
-                                )
-                                .map((s) => (
-                                  <span
-                                    key={s.id}
-                                    className="text-xs text-slate-600"
-                                  >
-                                    {s.capability}: <b>{s.score}</b>
-                                  </span>
-                                ))}
-                            </div>
-                          )}
-                        </td>
+                        {SCORE_SORT_ORDER.map((cap) => {
+                          const s = m.scores.find((score) => score.capability === cap);
+                          return (
+                            <td key={cap} className="py-3 pr-3">
+                              {s ? (
+                                <span className="text-xs text-slate-600">
+                                  <b>{s.score}</b>
+                                </span>
+                              ) : (
+                                <span className="text-xs text-slate-400">—</span>
+                              )}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))}
                   </tbody>

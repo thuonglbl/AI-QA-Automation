@@ -41,8 +41,18 @@ class TestAdminProjectCreate:
         assert response.status_code == 200
         envs = response.json()["environments"]
         assert envs == [
-            {"name": "Test 1", "url": "https://test1.app"},
-            {"name": "Production", "url": "https://app.example.com"},
+            {
+                "name": "Test 1",
+                "url": "https://test1.app",
+                "login_type": "standard",
+                "login_hint": "",
+            },
+            {
+                "name": "Production",
+                "url": "https://app.example.com",
+                "login_type": "standard",
+                "login_hint": "",
+            },
         ]
 
     def test_create_project_duplicate_environment_name_fails(

@@ -38,7 +38,7 @@ optimized_for_llm: true
 
 - **Local variables:** `lowercase_snake_case` inside functions (e.g., `session_local` not `SessionLocal`)
 - **Import order (E402):** All `import` statements at TOP of file, before any code/constants/classes/fixtures
-- **Alias naming (N817/N813):** Don't import CamelCase classes as lowercase (e.g., no `import TestClient as TC`)
+- **Alias naming (N817/N813):** Don't import __SKIP_WORD_0_Camcorpse__ classes as lowercase (e.g., no `import TestClient as TC`)
 - **JSON column iteration:** Use `.items()` with empty dict fallback: `(obj.configs or {}).items()` — NEVER iterate as list of ORM objects
 - **Forward refs:** `TYPE_CHECKING` imports MUST be added for string forward references to prevent Mypy errors
 - **Protocol fakes in tests:** A test double/fake passed to a function expecting a `Protocol` type MUST implement **every** method declared in the Protocol — including rarely-called ones like `delete_prefix`. Missing any method causes Pyrefly `bad-argument-type`. When adding a new method to a Protocol, grep tests for all fake/stub classes and add matching stubs immediately.
@@ -105,6 +105,7 @@ optimized_for_llm: true
 - **No bare exceptions:** `pytest.raises(Exception)` PROHIBITED — use specific type + `match="..."`
 - **Canonical fixture:** Copy scaffold from `tests/api/test_admin_rbac_api.py`, adapt auth context only
 - **DB state leaks:** 404/[] unexpected → forgot `session.add()` + `session.commit()` before request
+- **TestClient app state:** In Starlette >= 0.21.0, `client.app` may wrap the ASGI app (`_WrapASGI2`). To access the raw FastAPI app state (e.g., `settings`) on the test client, use `client.fastapi_app.state` instead of `client.app.state`. The raw app is attached as `fastapi_app` in `conftest.py`.
 
 **Frontend (Playwright / Vitest):**
 

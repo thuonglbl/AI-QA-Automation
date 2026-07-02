@@ -190,10 +190,18 @@ class RequirementFormatter:
         confluence_host = page_parsed.netloc if page_parsed else ""
 
         resolved: dict[str, tuple[str, str]] = {}  # src -> (abs_url, label)
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as http_client:
-            for alt, src in matches:
-                if src in resolved:
-                    continue
+
+        unique_matches = {}
+        for alt, src in matches:
+            if src not in unique_matches:
+                unique_matches[src] = alt
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def process_image(
+            src: str, alt: str, http_client: httpx.AsyncClient
+        ) -> tuple[str, str, str]:
+            async with semaphore:
                 abs_url = src
                 if not src.startswith("http"):
                     abs_url = urljoin(f"{site_root}/", src.lstrip("/")) if site_root else src
@@ -238,6 +246,12 @@ class RequirementFormatter:
                 # Label priority: vision caption → source alt text → filename-derived
                 # label (descriptive Confluence filenames are a useful last resort).
                 label = caption.strip() or alt.strip() or _label_from_image_url(abs_url)
+                return src, abs_url, label
+
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as http_client:
+            tasks = [process_image(src, alt, http_client) for src, alt in unique_matches.items()]
+            results = await asyncio.gather(*tasks)
+            for src, abs_url, label in results:
                 resolved[src] = (abs_url, label)
 
         def _replace(m: re.Match[str]) -> str:

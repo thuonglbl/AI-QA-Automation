@@ -70,6 +70,7 @@ def client(_session_factory: sessionmaker[Session]) -> Generator[TestClient]:
     app = create_app()
     app.dependency_overrides[get_db_session_dependency] = override_get_db_session
     with TestClient(app) as test_client:
+        test_client.fastapi_app = app  # type: ignore[attr-defined]
         yield test_client
     app.dependency_overrides.clear()
 

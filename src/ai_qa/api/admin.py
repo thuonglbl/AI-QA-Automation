@@ -335,6 +335,12 @@ class AdminProjectResponse(BaseModel):
     updated_at: datetime
 
 
+class AdminConfigResponse(BaseModel):
+    """Admin dashboard configuration and feature flags."""
+
+    enable_model_benchmark_sync: bool
+
+
 class MembershipCreateRequest(BaseModel):
     """Admin project membership assignment request."""
 
@@ -399,6 +405,18 @@ async def list_users(
         .unique()
     )
     return [_to_admin_user_response(user) for user in users]
+
+
+@router.get("/config", response_model=AdminConfigResponse)
+async def get_admin_config(
+    request: Request,
+    _admin: User = AdminDependency,
+) -> AdminConfigResponse:
+    """Return configuration and feature flags for the admin dashboard."""
+    settings = getattr(request.app.state, "settings", None) or AppSettings()
+    return AdminConfigResponse(
+        enable_model_benchmark_sync=settings.enable_model_benchmark_sync,
+    )
 
 
 @router.post("/users", response_model=AdminUserResponse)
@@ -513,13 +531,18 @@ async def update_user(
     if target is None:
         raise HTTPException(status_code=404, detail="Resource not found")
     if target.role == ADMIN_ROLE:
-        raise HTTPException(
-            status_code=403, detail="The platform admin account cannot be modified."
-        )
+        if not request.is_active and target.is_active:
+            raise HTTPException(
+                status_code=403, detail="The platform admin account cannot be deactivated."
+            )
+        old_role = target.role
+        new_role = target.role
+    else:
+        old_role = target.role
+        new_role = request.role
+
     if target.id == admin.id and not request.is_active:
         raise HTTPException(status_code=403, detail="You cannot deactivate your own account.")
-
-    old_role, new_role = target.role, request.role
     if new_role == PROJECT_ADMIN_ROLE:
         # Multi-project assignment (Epic 23, story 23.5): set the administered-project
         # set to 1..n. project_ids replaces the set; project_id is the legacy single.
@@ -1081,8 +1104,8 @@ async def download_e2e_report(
 # Model benchmark overrides — operator Tier-0 scores for Alice model selection
 # ---------------------------------------------------------------------------
 
-ModelCapability = Literal["global", "reasoning", "vision", "instruction", "coding", "fast"]
-_DEFAULT_CAPABILITY: ModelCapability = "global"
+__SKIP_WORD_2_Modcorppability__ = Literal["global", "reasoning", "vision", "instruction", "coding", "fast"]
+_DEFAULT_CAPABILITY: __SKIP_WORD_2_Modcorppability__ = "global"
 
 
 class ModelScoreResponse(BaseModel):
@@ -1105,7 +1128,7 @@ class ModelScoreUpsertRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_id: str = Field(min_length=1, max_length=255)
-    capability: ModelCapability = _DEFAULT_CAPABILITY
+    capability: __SKIP_WORD_2_Modcorppability__ = _DEFAULT_CAPABILITY
     score: float = Field(ge=0, le=100)
     note: str | None = Field(default=None, max_length=2000)
 
@@ -1116,7 +1139,7 @@ class ModelScoreDeleteRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_id: str = Field(min_length=1, max_length=255)
-    capability: ModelCapability = _DEFAULT_CAPABILITY
+    capability: __SKIP_WORD_2_Modcorppability__ = _DEFAULT_CAPABILITY
 
 
 class DiscoveredModelResponse(BaseModel):
@@ -1126,6 +1149,7 @@ class DiscoveredModelResponse(BaseModel):
 
     model_id: str
     display_name: str | None
+    provider: str | None
     supports_vision: bool | None
     last_seen_at: datetime
     tier_source: str  # admin | curated | parsed
@@ -1175,6 +1199,7 @@ async def list_discovered_models(
             DiscoveredModelResponse(
                 model_id=snap.model_id,
                 display_name=snap.display_name,
+                provider=snap.provider,
                 supports_vision=snap.supports_vision,
                 last_seen_at=snap.last_seen_at,
                 tier_source=source,
@@ -1288,4 +1313,9 @@ async def sync_models(
     + totals summary. Never leaks the server keys.
     """
     settings = getattr(request.app.state, "settings", None) or AppSettings()
+    if not settings.enable_model_benchmark_sync:
+        raise HTTPException(
+            status_code=403,
+            detail="Model and benchmark sync is disabled in this environment.",
+        )
     return await sync_models_and_benchmarks(db, settings, triggered_by_user_id=_admin.id)

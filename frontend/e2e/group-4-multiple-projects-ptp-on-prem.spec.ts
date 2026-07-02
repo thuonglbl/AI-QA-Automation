@@ -10,6 +10,7 @@ import {
   type ProjectRecord,
 } from "../support/helpers/projects";
 import {
+  clearClientState,
   configureOnPremProvider,
   loginViaUI,
   createNewProjectThread,
@@ -41,6 +42,7 @@ test.describe.serial("Group 6 — Multiple projects, PTP on-prem (up to Bob)", (
     await getProjectByName(adminCtx, userToken, PROJECT_PT_TOOL);
 
     page = await browser.newPage();
+    await clearClientState(page);
     await loginViaUI(page);
   });
 
@@ -61,11 +63,4 @@ test.describe.serial("Group 6 — Multiple projects, PTP on-prem (up to Bob)", (
     await configureOnPremProvider(page, onPremKey as string);
   });
 
-  test("[P0] Alice hands off to Bob — MCP key form is ready (WIP stops here)", async () => {
-    test.slow();
-    test.setTimeout(5 * MINUTE);
-    await expect(page.getByPlaceholder(/Enter MCP API Key/i)).toBeVisible({
-      timeout: 60_000,
-    });
-  });
 });

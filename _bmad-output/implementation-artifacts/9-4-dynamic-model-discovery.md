@@ -267,7 +267,7 @@ DiscoveredModel(id, display_name, provider, capability_hints?, context_window?,
 ### Project Structure Notes
 
 - Module boundaries (architecture table): `ai_connection` may depend on `config`, `secrets`, `langchain`, `httpx`; must NOT import `mcp`, `browser`, or `agents`. `list_models` lives in `ai_connection/providers/` and is consumed BY `agents/alice.py` — keep the import direction one-way (`alice` imports adapters, never the reverse). [Source: architecture.md#Source Tree / module table]
-- Naming: snake_case locals/functions (`async_client`, `discovered`, `verify_ssl`), PascalCase models; no aliased CamelCase imports (rules #5/#11). The `list_models` override signature must match the base ABC exactly (`credentials: Mapping[str, str], base_url: str`) or mypy flags an incompatible override.
+- Naming: snake_case locals/functions (`async_client`, `discovered`, `verify_ssl`), PascalCase models; no aliased __SKIP_WORD_0_Camcorpse__ imports (rules #5/#11). The `list_models` override signature must match the base ABC exactly (`credentials: Mapping[str, str], base_url: str`) or mypy flags an incompatible override.
 - `DiscoveredModel`/`ConnectionResult` are plain Pydantic models (not SQLAlchemy) — the `TYPE_CHECKING` forward-ref rule (#4) does not apply; use concrete imports.
 
 ### References

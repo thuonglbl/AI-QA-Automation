@@ -38,6 +38,7 @@ from ai_qa.agents.base import AgentState, BaseAgent
 from ai_qa.artifacts.storage import role_to_folder
 from ai_qa.config import AppSettings
 from ai_qa.db.models import TestExecutionResult
+from ai_qa.exceptions import BrowserError, ConfigError
 from ai_qa.models import StageResult
 from ai_qa.pipelines.artifact_adapter import PipelineArtifact, PipelineArtifactAdapter
 from ai_qa.pipelines.execution_report import attachment_key, compose_execution_report
@@ -523,12 +524,30 @@ class JackAgent(BaseAgent):
         # missing (no unauthenticated fallback). resolve_storage_state is the only blob reader.
         sessions: dict[str, dict[str, Any]] = {}
         missing: list[str] = []
+        errors: list[str] = []
         for grp_role in groups:
-            blob = await self._resolve_session(environment, grp_role)
-            if blob is None:
-                missing.append(grp_role)
-            else:
-                sessions[grp_role] = blob
+            try:
+                blob = await self._resolve_session(environment, grp_role)
+                if blob is None:
+                    missing.append(grp_role)
+                else:
+                    sessions[grp_role] = blob
+            except BrowserError as exc:
+                errors.append(f"{grp_role}: {exc}")
+
+        if errors:
+            err_list = "\n".join(f"  - {e}" for e in errors)
+            await self.send_message(
+                content=(
+                    f"**What happened:** Jack cannot run due to browser login failures.\n\n"
+                    f"**Why:** The automated login failed for the following roles on {environment}:\n{err_list}\n\n"
+                    f"**What to do:** Check the server logs for more details, verify the environment URL is reachable, "
+                    f"or try the 'Test Login' feature in the Project Admin dashboard."
+                ),
+                message_type="error",
+            )
+            return  # Stay REVIEW_REQUEST
+
         if missing:
             await self.send_message(
                 content=self._format_missing_sessions_message(environment, missing),
@@ -572,7 +591,12 @@ class JackAgent(BaseAgent):
                 # but if he needs to auto-login, he might need it. We'll pass None for now.
                 llm=None,
                 timeout=60,
+                raise_on_failure=True,
             )
+        except ConfigError:
+            return None
+        except BrowserError as exc:
+            raise exc
         except Exception as exc:
             logger.warning("Auto-login failed during _resolve_session: %s", exc)
             return None

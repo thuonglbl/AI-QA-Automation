@@ -8,7 +8,8 @@ request review, and receive user feedback.
 import asyncio
 import json
 import logging
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager
 from typing import Any, cast
 from uuid import UUID
 
@@ -248,6 +249,7 @@ def _db_session_from_websocket(websocket: WebSocket) -> Session:
     return session_factory()
 
 
+@asynccontextmanager
 async def _context_from_websocket(
     message: dict[str, Any],
     user: UserSession | None,
@@ -256,7 +258,7 @@ async def _context_from_websocket(
     query_thread_id: UUID | None,
     *,
     create_run: bool = False,
-) -> PipelineContext | None:
+) -> AsyncGenerator[PipelineContext | None]:
     from ai_qa.api.artifacts import get_artifact_storage
     from ai_qa.api.routes import _build_pipeline_context
 
@@ -275,7 +277,7 @@ async def _context_from_websocket(
     session = _db_session_from_websocket(websocket)
     try:
         storage = get_artifact_storage()
-        return await _build_pipeline_context(
+        context = await _build_pipeline_context(
             project_id=project_id,
             thread_id=thread_id,
             http_request=websocket,  # type: ignore[arg-type]
@@ -283,6 +285,7 @@ async def _context_from_websocket(
             storage=storage,
             create_run=create_run,
         )
+        yield context
     finally:
         session.close()
 
@@ -312,6 +315,19 @@ async def _dispatch_action(
             logger.debug("Could not deliver action error to client (socket closed)")
 
 
+async def _handle_ping(
+    message: dict[str, Any],
+    user: UserSession | None,
+    websocket: WebSocket,
+    query_project_id: UUID | None,
+    query_thread_id: UUID | None,
+) -> None:
+    """Handle ping messages to keep the connection alive."""
+    async with _context_from_websocket(message, user, websocket, query_project_id, query_thread_id):
+        pass
+    await websocket.send_json({"type": "pong", "timestamp": message.get("timestamp")})
+
+
 async def _handle_action(
     message: dict[str, Any],
     user: UserSession | None,
@@ -333,58 +349,58 @@ async def _handle_action(
     # Lazy import to avoid circular imports
     from ai_qa.api.routes import _agent_for_context
 
-    context = await _context_from_websocket(
+    async with _context_from_websocket(
         message,
         user,
         websocket,
         query_project_id,
         query_thread_id,
         create_run=msg_type == "start",
-    )
-    user_email = user.email if user else None
+    ) as context:
+        user_email = user.email if user else None
 
-    # Serialize all actions targeting the SAME agent instance (keyed exactly like the
-    # agent registry). Actions run as background tasks, so without this two messages
-    # for one agent (e.g. a slow clarify answer and the next one) could interleave on
-    # its shared in-memory state. Context binding happens INSIDE the lock via
-    # _agent_for_context, so a queued action can't rebind context under a running one.
-    lock_key = (
-        str(getattr(context, "user_id", None) or ""),
-        str(getattr(context, "project_id", None) or ""),
-        step,
-    )
-    lock = _agent_action_locks.get(lock_key)
-    if lock is None:
-        lock = _agent_action_locks[lock_key] = asyncio.Lock()
+        # Serialize all actions targeting the SAME agent instance (keyed exactly like the
+        # agent registry). Actions run as background tasks, so without this two messages
+        # for one agent (e.g. a slow clarify answer and the next one) could interleave on
+        # its shared in-memory state. Context binding happens INSIDE the lock via
+        # _agent_for_context, so a queued action can't rebind context under a running one.
+        lock_key = (
+            str(getattr(context, "user_id", None) or ""),
+            str(getattr(context, "project_id", None) or ""),
+            step,
+        )
+        lock = _agent_action_locks.get(lock_key)
+        if lock is None:
+            lock = _agent_action_locks[lock_key] = asyncio.Lock()
 
-    async with lock:
-        agent = _agent_for_context(step, context, user_email)
+        async with lock:
+            agent = _agent_for_context(step, context, user_email)
 
-        if agent is None:
-            logger.warning("No agent registered for step %d", step)
-            return
+            if agent is None:
+                logger.warning("No agent registered for step %d", step)
+                return
 
-        try:
-            if msg_type == "start":
-                input_data = message.get("inputData", {})
-                await agent.handle_start(input_data)
-            elif msg_type == "approve":
-                data = message.get("data", {})
-                await agent.handle_approve(data)
-            elif msg_type == "reject":
-                feedback = message.get("feedback", "")
-                data = message.get("data", {})
-                await agent.handle_reject(feedback, data)
-        except Exception as e:
-            logger.error("Error handling %s for step %d: %s", msg_type, step, e, exc_info=True)
-            error_msg = AgentMessage(
-                sender="system",
-                agentName=None,
-                content=f"An unexpected error occurred: {str(e)}",
-                messageType="error",
-            )
-            await broadcast_message(error_msg)
-            # Don't raise — keep the connection open so the user can see the error and retry.
+            try:
+                if msg_type == "start":
+                    input_data = message.get("inputData", {})
+                    await agent.handle_start(input_data)
+                elif msg_type == "approve":
+                    data = message.get("data", {})
+                    await agent.handle_approve(data)
+                elif msg_type == "reject":
+                    feedback = message.get("feedback", "")
+                    data = message.get("data", {})
+                    await agent.handle_reject(feedback, data)
+            except Exception as e:
+                logger.error("Error handling %s for step %d: %s", msg_type, step, e, exc_info=True)
+                error_msg = AgentMessage(
+                    sender="system",
+                    agentName=None,
+                    content=f"An unexpected error occurred: {str(e)}",
+                    messageType="error",
+                )
+                await broadcast_message(error_msg)
+                # Don't raise — keep the connection open so the user can see the error and retry.
 
 
 async def _handle_navigate(
@@ -401,7 +417,8 @@ async def _handle_navigate(
     step = message.get("step")
     direction = message.get("direction", "next")
 
-    await _context_from_websocket(message, user, websocket, query_project_id, query_thread_id)
+    async with _context_from_websocket(message, user, websocket, query_project_id, query_thread_id):
+        pass
 
     if not isinstance(step, int):
         logger.warning("Invalid step value for navigate: %s", step)

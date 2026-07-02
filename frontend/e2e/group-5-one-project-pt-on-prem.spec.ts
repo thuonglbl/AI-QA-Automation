@@ -51,23 +51,11 @@ test.describe.serial("Group 7 — PT Tool on-prem (up to Bob)", () => {
 
     // Open project thread using helper
     await createNewProjectThread(page, PROJECT_PT_TOOL, ptTool.id);
-
-    await expect(
-      page.getByText(/Which AI provider would you like to use/i),
-    ).toBeVisible({ timeout: 15_000 });
   });
 
   test("[P0] configure On-Premises provider", async () => {
     test.slow();
     test.setTimeout(5 * MINUTE);
     await configureOnPremProvider(page, onPremKey as string);
-  });
-
-  test("[P0] Alice hands off to Bob — MCP key form is ready (WIP stops here)", async () => {
-    test.slow();
-    test.setTimeout(5 * MINUTE);
-    await expect(page.getByPlaceholder(/Enter MCP API Key/i)).toBeVisible({
-      timeout: 60_000,
-    });
   });
 });

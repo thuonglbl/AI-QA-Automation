@@ -743,7 +743,6 @@ def test_tree_groups_artifacts_by_kind(browsing_client: TestClient) -> None:
     _add_membership(browsing_client, project, member)
 
     for kind, name in [
-        ("raw_html", "page.html"),
         ("testcase", "tc.json"),
         ("playwright_script", "pw.ts"),
         ("report", "rep.md"),
@@ -763,7 +762,7 @@ def test_tree_groups_artifacts_by_kind(browsing_client: TestClient) -> None:
     assert response.status_code == 200
     folders = {f["name"]: f for f in response.json()["folders"]}
 
-    assert {e["name"] for e in folders["requirements"]["entries"]} == {"page.html", "img.png"}
+    assert {e["name"] for e in folders["requirements"]["entries"]} == {"img.png"}
     assert {e["name"] for e in folders["test_cases"]["entries"]} == {"tc.json"}
     assert {e["name"] for e in folders["test_scripts"]["entries"]} == {"pw.ts"}
     assert {e["name"] for e in folders["reports"]["entries"]} == {"rep.md"}

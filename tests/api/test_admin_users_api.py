@@ -295,16 +295,35 @@ class TestAdminUserUpdate:
         )
         assert response.status_code == 422
 
-    def test_cannot_edit_platform_admin(self, client: TestClient, admin_token: str) -> None:
+    def test_can_edit_platform_admin_fields(self, client: TestClient, admin_token: str) -> None:
         admin_id = self._admin_id(client, admin_token)
         response = client.put(
             f"/api/admin/users/{admin_id}",
             json={
-                "display_name": "Hacked Admin",
-                "role": "standard",
-                "timezone": "UTC",
-                "conversation_language": "en",
+                "display_name": "Updated Admin Name",
+                "role": "standard",  # Should be ignored
+                "timezone": "Europe/London",
+                "conversation_language": "fr",
                 "is_active": True,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["display_name"] == "Updated Admin Name"
+        assert data["timezone"] == "Europe/London"
+        assert data["conversation_language"] == "fr"
+        assert data["role"] == "admin"  # Unchanged
+
+        # Test deactivation is rejected
+        response = client.put(
+            f"/api/admin/users/{admin_id}",
+            json={
+                "display_name": "Updated Admin Name",
+                "role": "standard",
+                "timezone": "Europe/London",
+                "conversation_language": "fr",
+                "is_active": False,
             },
             headers={"Authorization": f"Bearer {admin_token}"},
         )

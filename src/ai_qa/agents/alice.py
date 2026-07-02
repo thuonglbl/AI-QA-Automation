@@ -405,7 +405,7 @@ _VISION_FAMILY_HINTS = ("gemma",)
 # AFTER the positive vision-name signals, so a genuine multimodal variant (e.g. a "deepseek-vl")
 # still counts. Substring match against the lowercased id. Mirrors project-context's
 # "keep GLM-5.1 / DeepSeek / GPT-OSS out of vision" rule — a capability FACT, not a score.
-_TEXT_ONLY_VISION_DENY = ("deepseek", "gpt-oss")
+_TEXT_ONLY_VISION_DENY = ("deepseek", "gpt-oss", "glm45-air")
 
 
 def _version_from_token(token: str) -> tuple[int, ...] | None:

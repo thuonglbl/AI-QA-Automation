@@ -419,21 +419,20 @@ def test_artifact_service_delete_artifact_is_project_scoped(
 # Canonical kind -> logical folder. Generic kinds live under "artifacts".
 _EXPECTED_FOLDERS = {
     "requirements": "requirements",
-    "raw_html": "requirements/mcp/confluence",
     "testcase": "test_cases",
     "testscript": "test_scripts",
     "playwright_script": "test_scripts",
-    "configuration": "artifacts",
-    "image": "artifacts",
-    "markdown": "artifacts",
-    "mermaid": "artifacts",
-    "report": "artifacts",
-    "screenshot": "artifacts",
-    # Story 14.3 execution kinds — storage catch-all is "artifacts/".
-    "trace": "artifacts",
-    "log": "artifacts",
-    "execution_screenshot": "artifacts",
-    "video": "artifacts",
+    "configuration": "reports",
+    "image": "requirements",
+    "markdown": "reports",
+    "mermaid": "reports",
+    "report": "reports",
+    "screenshot": "requirements",
+    # Story 14.3 execution kinds — storage catch-all is "reports".
+    "trace": "reports",
+    "log": "reports",
+    "execution_screenshot": "reports",
+    "video": "reports",
 }
 
 
@@ -633,7 +632,6 @@ def test_folder_for_kind_covers_every_artifact_kind() -> None:
 def test_folder_for_kind_named_kind_mapping() -> None:
     """Spot-check the canonical named-kind → browse-folder assignments."""
     assert folder_for_kind("requirements") == "requirements"
-    assert folder_for_kind("raw_html") == "requirements"
     # Page images/screenshots are raw companions of a requirement → requirements folder.
     assert folder_for_kind("image") == "requirements"
     assert folder_for_kind("screenshot") == "requirements"
@@ -674,13 +672,10 @@ def test_folder_for_kind_unknown_kind_returns_reports() -> None:
 
 def test_folder_for_kind_agrees_with_build_artifact_key_on_named_kinds() -> None:
     """Task 1.2 agreement check: browse folder name must appear in the storage key
-    for the 5 named kinds (requirements, raw_html, testcase, testscript, playwright_script).
-    This verifies Task 1.2 — they diverge intentionally on the catch-all,
-    so only check the named ones.
+    for the 4 named kinds (requirements, testcase, testscript, playwright_script).
     """
     named_agreement = {
         "requirements": "requirements",
-        "raw_html": "requirements",
         "testcase": "test_cases",
         "testscript": "test_scripts",
         "playwright_script": "test_scripts",
@@ -749,7 +744,7 @@ def test_list_artifact_tree_groups_artifacts_correctly(db_session: Session, tmp_
         project_id=project.id, owner_user_id=None, kind="requirements", name="req.md", content="r"
     )
     service.save_artifact(
-        project_id=project.id, owner_user_id=None, kind="raw_html", name="page.html", content="<h>"
+        project_id=project.id, owner_user_id=None, kind="image", name="page.png", content=b"img"
     )
     # test_cases bucket
     service.save_artifact(
@@ -776,7 +771,7 @@ def test_list_artifact_tree_groups_artifacts_correctly(db_session: Session, tmp_
     folder_map = {f["name"]: f for f in folders}
 
     req_names = {e["name"] for e in folder_map["requirements"]["entries"]}
-    assert req_names == {"req.md", "page.html", "img.png"}
+    assert req_names == {"req.md", "page.png", "img.png"}
 
     tc_names = {e["name"] for e in folder_map["test_cases"]["entries"]}
     assert tc_names == {"tc.json"}

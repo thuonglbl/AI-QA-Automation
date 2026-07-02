@@ -1,6 +1,5 @@
 import { API_BASE_PATH, apiFetch } from "@/lib/api";
 import type {
-  EnvConnectionStatus,
   ImportTokenResponse,
   SessionMatrix,
 } from "@/types/session";
@@ -102,14 +101,3 @@ export async function buildConfiguredHelper(
   return new Blob([configured], { type: "text/plain" });
 }
 
-/**
- * Check reachability of the project's OWN configured environments. The server reads
- * `project.environments` itself (no user-controlled URLs in the request — removes the
- * SSRF surface of the old single-URL check). Returns one status entry per environment.
- */
-export function checkConnections(projectId: string): Promise<EnvConnectionStatus[]> {
-  return apiFetch<{ results: EnvConnectionStatus[] }>(
-    `/projects/${encodeURIComponent(projectId)}/environments/check-connections`,
-    { method: "POST" },
-  ).then((r) => r.results);
-}

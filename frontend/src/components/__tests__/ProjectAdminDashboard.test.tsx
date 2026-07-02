@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { AssignableUser, ProjectAdminProject } from "@/types/project";
-import type { EnvConnectionStatus } from "@/types/session";
 
 const project: ProjectAdminProject = {
   id: "p1",
@@ -54,7 +53,6 @@ const padminMember: AssignableUser = {
 const updateProjectConfig = vi.fn().mockResolvedValue(project);
 const addProjectMember = vi.fn().mockResolvedValue({});
 const removeProjectMember = vi.fn().mockResolvedValue(undefined);
-const checkConnections = vi.fn();
 
 vi.mock("@/lib/projectAdmin", () => ({
   listAdministeredProjects: () => Promise.resolve([project]),
@@ -62,10 +60,6 @@ vi.mock("@/lib/projectAdmin", () => ({
   updateProjectConfig: (...args: unknown[]) => updateProjectConfig(...args),
   addProjectMember: (...args: unknown[]) => addProjectMember(...args),
   removeProjectMember: (...args: unknown[]) => removeProjectMember(...args),
-}));
-
-vi.mock("@/lib/sessions", () => ({
-  checkConnections: (...args: unknown[]) => checkConnections(...args),
 }));
 
 vi.mock("@/hooks/useAuth", () => ({
@@ -82,21 +76,9 @@ vi.mock("@/hooks/useAuth", () => ({
 
 import { ProjectAdminDashboard } from "../admin/ProjectAdminDashboard";
 
-const CONN_RESULTS: EnvConnectionStatus[] = [
-  { name: "Test 1", url: "https://t1.app", reachable: true, status_code: 200, detail: "200 OK" },
-  {
-    name: "Prod",
-    url: "https://prod.app",
-    reachable: false,
-    status_code: null,
-    detail: "Connection failed",
-  },
-];
-
 describe("ProjectAdminDashboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    checkConnections.mockResolvedValue(CONN_RESULTS);
   });
 
   it("lists the administered project and populates its config (no login type / accounts)", async () => {
@@ -113,21 +95,6 @@ describe("ProjectAdminDashboard", () => {
     expect(screen.queryByText(/test-login accounts/i)).not.toBeInTheDocument();
   });
 
-  it("checks environment connectivity after a successful save and renders the results", async () => {
-    render(<ProjectAdminDashboard />);
-    await screen.findByRole("option", { name: "Alpha" });
-    await screen.findByDisplayValue("https://confluence.example.com");
-    fireEvent.click(screen.getByRole("button", { name: /Save configuration/i }));
-
-    await waitFor(() => expect(checkConnections).toHaveBeenCalledWith("p1"));
-    // Reachable env → "✓ Connected".
-    expect(await screen.findByText("✓ Connected")).toBeInTheDocument();
-    // Unreachable env → "✗ Failed" + firewall guidance.
-    expect(screen.getByText("✗ Failed")).toBeInTheDocument();
-    expect(
-      screen.getByText(/Please contact Administrator to open firewall/i),
-    ).toBeInTheDocument();
-  });
 
   it("saves configuration via the project-admin API", async () => {
     render(<ProjectAdminDashboard />);

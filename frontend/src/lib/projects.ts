@@ -8,6 +8,7 @@ import type {
   DiscoveredModel,
   E2ETestRunResult,
   ModelSyncResult,
+  AdminConfig,
   Project,
   UpdateAdminUserRequest,
 } from "@/types/project";
@@ -120,6 +121,10 @@ export async function syncModelsAndBenchmarks(): Promise<ModelSyncResult> {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+export function getAdminConfig(): Promise<AdminConfig> {
+  return apiFetch<AdminConfig>("/admin/config");
 }
 
 /**

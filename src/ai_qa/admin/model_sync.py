@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from pydantic import BaseModel
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from ai_qa.ai_connection.model_filter import is_non_generative_model
 from ai_qa.ai_connection.providers import (
@@ -140,6 +142,46 @@ async def sync_models_and_benchmarks(
     else:
         unbenchmarked = len(unique_models)
 
+    # --- Multi-Environment Sync Step ---
+    if settings.sync_target_databases:
+        from ai_qa.config import mask_database_url
+
+        for target in settings.sync_target_databases:
+            db_name = target.get("name", "unknown")
+            db_url = target.get("url")
+            if not db_url:
+                continue
+            try:
+                engine = create_engine(db_url, pool_pre_ping=True)
+                remote_session_factory = sessionmaker(bind=engine)
+                with remote_session_factory() as remote_db:
+                    # Sync discovered models
+                    for dm in unique_models.values():
+                        _upsert_discovered_model(remote_db, dm, now)
+                    remote_db.commit()
+
+                    # Sync benchmark scores
+                    if benchmark_available:
+                        for model_id, model in unique_models.items():
+                            scores = bench.scores_by_model.get(model_id)
+                            is_vision = _has_vision_signal(
+                                {"id": model_id, "supports_vision": model.supports_vision}
+                            )
+                            if scores and not is_vision:
+                                scores = {
+                                    cap: val for cap, val in scores.items() if cap != "vision"
+                                }
+                            _overwrite_scores(remote_db, model_id, scores, None, note)
+                        remote_db.commit()
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"Failed to sync remote DB {db_name}: {type(exc).__name__}")
+                logger.error(
+                    "Failed to sync remote DB %s (%s): %s", db_name, mask_database_url(db_url), exc
+                )
+            finally:
+                if "engine" in locals():
+                    engine.dispose()
+
     return ModelSyncResult(
         providers=provider_results,
         models_discovered=len(unique_models),
@@ -213,6 +255,7 @@ async def _discover_provider(
 
     kept = [dm for dm in discovered if not is_non_generative_model(dm.id)]
     for dm in kept:
+        dm.provider = provider_id
         _upsert_discovered_model(db, dm, now)
         unique_models.setdefault(dm.id, dm)
 
@@ -233,18 +276,25 @@ def _upsert_discovered_model(db: Session, dm: DiscoveredModel, now: datetime) ->
         select(DiscoveredModelSnapshot).where(DiscoveredModelSnapshot.model_id == dm.id)
     ).scalar_one_or_none()
     display_name = dm.display_name or dm.id
+
+    # Hardcode override: GLM 4.5 Air does not support vision natively
+    if "glm45-air" in dm.id.lower():
+        dm.supports_vision = False
+
     if row is None:
         db.add(
             DiscoveredModelSnapshot(
                 model_id=dm.id,
                 display_name=display_name,
                 supports_vision=dm.supports_vision,
+                provider=dm.provider,
                 last_seen_at=now,
             )
         )
     else:
         row.display_name = display_name
         row.supports_vision = dm.supports_vision
+        row.provider = dm.provider
         row.last_seen_at = now
 
 

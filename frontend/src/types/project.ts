@@ -137,7 +137,7 @@ export interface E2ETestRunResult {
   stderr: string;
 }
 
-export type ModelCapability =
+export type __SKIP_WORD_2_Modcorppability__ =
   | "global"
   | "reasoning"
   | "vision"
@@ -158,6 +158,7 @@ export interface ModelBenchmarkScore {
 export interface DiscoveredModel {
   model_id: string;
   display_name: string | null;
+  provider: string | null;
   supports_vision: boolean | null;
   last_seen_at: string;
   tier_source: "admin" | "curated" | "parsed";
@@ -167,7 +168,7 @@ export interface DiscoveredModel {
 
 export interface ModelScoreUpsertRequest {
   model_id: string;
-  capability: ModelCapability;
+  capability: __SKIP_WORD_2_Modcorppability__;
   score: number;
   note?: string | null;
 }
@@ -191,3 +192,8 @@ export interface ModelSyncResult {
   benchmark_source_available: boolean;
   warnings: string[];
 }
+
+export interface AdminConfig {
+  enable_model_benchmark_sync: boolean;
+}
+

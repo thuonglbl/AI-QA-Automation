@@ -68,6 +68,7 @@ def _settings(**overrides: Any) -> SimpleNamespace:
         browser_use_cloud_url="https://browseruse.example",
         llm_stats_api_key="",
         llm_stats_api_base_url="https://api.llm-stats.com/stats/v1",
+        sync_target_databases=[],
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -255,3 +256,62 @@ async def test_sync_without_benchmark_source(
     assert result.models_unbenchmarked == 1
     assert result.benchmark_source_available is False
     assert any("Benchmark source unavailable" in w for w in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_sync_to_remote_databases(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    remote1_path = tmp_path / "remote1.db"
+    remote_engine_1 = create_engine(f"sqlite+pysqlite:///{remote1_path}")
+    Base.metadata.create_all(remote_engine_1)
+
+    remote2_path = tmp_path / "remote2.db"
+    remote_engine_2 = create_engine(f"sqlite+pysqlite:///{remote2_path}")
+    Base.metadata.create_all(remote_engine_2)
+
+    def fake_create_engine(url: str, **kwargs: Any) -> Any:
+        if "remote1" in url:
+            return create_engine(f"sqlite+pysqlite:///{remote1_path}", **kwargs)
+        elif "remote2" in url:
+            return create_engine(f"sqlite+pysqlite:///{remote2_path}", **kwargs)
+        # A failing engine to test fault tolerance
+        raise ValueError("Simulated connection failure")
+
+    monkeypatch.setattr(model_sync, "create_engine", fake_create_engine)
+
+    settings = _settings(
+        test_on_premises_key="op-key",
+        sync_target_databases=[
+            {"name": "remote1", "url": "sqlite+pysqlite:///remote1"},
+            {"name": "failing_remote", "url": "sqlite+pysqlite:///failing"},
+            {"name": "remote2", "url": "sqlite+pysqlite:///remote2"},
+        ],
+    )
+
+    adapters = {"on-premises": _FakeAdapter(models=[_model("glm-6")])}
+    bench = BenchmarkResult(source_available=True, scores_by_model={"glm-6": {"global": 80.0}})
+    _patch(monkeypatch, adapters, bench)
+
+    result = await sync_models_and_benchmarks(db_session, settings, triggered_by_user_id=None)  # type: ignore[arg-type]
+
+    # Verify primary DB got updated
+    assert result.models_discovered == 1
+
+    # Check that warning was recorded for failing_remote
+    assert any("failing_remote" in w for w in result.warnings)
+
+    # Verify remote DBs
+    remote_session_1 = sessionmaker(bind=remote_engine_1)
+    with remote_session_1() as rs1:
+        remote1_models = [m for m in rs1.execute(select(DiscoveredModelSnapshot)).scalars()]
+        assert len(remote1_models) == 1
+        remote1_scores = [s for s in rs1.execute(select(ModelBenchmarkScore)).scalars()]
+        assert len(remote1_scores) == 1
+
+    remote_session_2 = sessionmaker(bind=remote_engine_2)
+    with remote_session_2() as rs2:
+        remote2_models = [m for m in rs2.execute(select(DiscoveredModelSnapshot)).scalars()]
+        assert len(remote2_models) == 1
+        remote2_scores = [s for s in rs2.execute(select(ModelBenchmarkScore)).scalars()]
+        assert len(remote2_scores) == 1

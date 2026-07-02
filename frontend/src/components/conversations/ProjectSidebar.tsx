@@ -11,14 +11,13 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
-  File,
   MessageCircle,
   Archive,
   Pencil,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { updateThread } from "@/lib/threads";
-import { fetchArtifactTree } from "@/lib/artifacts";
+import { fetchArtifactTree, deleteArtifact } from "@/lib/artifacts";
 import type { ArtifactTreeFolder } from "@/lib/artifacts";
 
 export interface Project {
@@ -295,7 +294,7 @@ function SubFolder<T>({
         {action && (
           <button
             type="button"
-            className="opacity-0 group-hover/folder:opacity-100 p-1 hover:bg-[#4b5563] rounded-md transition-all text-[#9ca3af] hover:text-white"
+            className="p-1 hover:bg-[#4b5563] rounded-md transition-all text-[#9ca3af] hover:text-white"
             title={action.title}
             data-testid={action.testid}
             onClick={action.onClick}
@@ -361,7 +360,6 @@ function ThreadRow({
   onArchive: () => void;
   onRename: (title: string) => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(thread.title ?? "");
 
@@ -375,23 +373,8 @@ function ThreadRow({
 
   const label = thread.title ?? `Step ${thread.current_step} - ${thread.status}`;
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = () => setMenuOpen(false);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenuOpen(false);
-    };
-    document.addEventListener("click", close);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("click", close);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [menuOpen]);
-
   const startRename = () => {
     setEditValue(thread.title ?? "");
-    setMenuOpen(false);
     setIsEditing(true);
   };
 
@@ -427,13 +410,8 @@ function ThreadRow({
       <button
         data-testid={`thread-${thread.id}`}
         onClick={onSelect}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setMenuOpen(true);
-        }}
-        className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-[11px] transition-colors ${
-          isActive ? "bg-[#374151] text-white" : "text-[#d1d5db] hover:bg-[#374151] hover:text-white"
-        }`}
+        className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-[11px] transition-colors ${isActive ? "bg-[#374151] text-white" : "text-[#d1d5db] hover:bg-[#374151] hover:text-white"
+          }`}
         title={label}
       >
         <div className="flex items-center gap-1.5 overflow-hidden">
@@ -445,33 +423,31 @@ function ThreadRow({
         </span>
       </button>
 
-      <button
-        type="button"
-        aria-label="Archive Conversation"
-        title="Archive Conversation"
-        onClick={(e) => {
-          e.stopPropagation();
-          onArchive();
-        }}
-        className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover/thread:opacity-100 p-1 rounded hover:bg-[#4b5563] text-[#9ca3af] hover:text-white transition-all"
-      >
-        <Archive size={12} />
-      </button>
-
-      {menuOpen && (
-        <div
-          className="absolute right-2 top-full z-50 mt-0.5 min-w-[130px] rounded-md bg-[#1f2937] border border-[#374151] py-1 shadow-lg"
-          onClick={(e) => e.stopPropagation()}
+      <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover/thread:opacity-100 transition-opacity">
+        <button
+          type="button"
+          title="Rename Conversation"
+          onClick={(e) => {
+            e.stopPropagation();
+            startRename();
+          }}
+          className="p-1 rounded hover:bg-[#4b5563] text-[#9ca3af] hover:text-white transition-all"
         >
-          <button
-            type="button"
-            onClick={startRename}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-[11px] text-[#d1d5db] hover:bg-[#374151] hover:text-white text-left"
-          >
-            <Pencil size={12} /> Rename
-          </button>
-        </div>
-      )}
+          <Pencil size={12} />
+        </button>
+        <button
+          type="button"
+          aria-label="Archive Conversation"
+          title="Archive Conversation"
+          onClick={(e) => {
+            e.stopPropagation();
+            onArchive();
+          }}
+          className="p-1 rounded hover:bg-[#4b5563] text-[#9ca3af] hover:text-white transition-all"
+        >
+          <Archive size={12} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -501,6 +477,8 @@ export function ProjectSidebar({
   });
 
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [selectedArtifacts, setSelectedArtifacts] = useState<Set<string>>(new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Per-node collapse state for the Confluence-like requirements tree (by artifact id).
   // Empty = all expanded (default), matching how Confluence shows an opened parent.
@@ -619,6 +597,23 @@ export function ProjectSidebar({
     }
   };
 
+  const handleDeleteSelected = async () => {
+    if (!openProjectId || selectedArtifacts.size === 0) return;
+    setIsDeleting(true);
+    try {
+      await Promise.all(
+        Array.from(selectedArtifacts).map((id) => deleteArtifact(openProjectId, id))
+      );
+      setSelectedArtifacts(new Set());
+      const treeData = await fetchArtifactTree(openProjectId);
+      setArtifactFolders(treeData.folders);
+    } catch (err) {
+      console.error("Failed to delete artifacts", err);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const handleArchiveThread = async (threadId: string) => {
     try {
       await updateThread(threadId, { is_archived: true });
@@ -666,11 +661,10 @@ export function ProjectSidebar({
     return (
       <div
         key={artifact.id}
-        className={`w-full flex items-start justify-between px-2 py-1.5 rounded-md text-[11px] transition-colors cursor-pointer ${
-          selectedArtifactId === artifact.id
+        className={`w-full flex items-start justify-between px-2 py-1.5 rounded-md text-[11px] transition-colors cursor-pointer ${selectedArtifactId === artifact.id
             ? "bg-[#3b82f6] text-white"
             : "text-[#d1d5db] hover:bg-[#374151] hover:text-white"
-        }`}
+          }`}
         style={depth > 0 ? { marginLeft: depth * 12 } : undefined}
         title={artifact.name}
         onClick={() => {
@@ -679,7 +673,18 @@ export function ProjectSidebar({
         }}
       >
         <div className="flex items-start gap-1.5 overflow-hidden flex-1">
-          <File size={12} className="flex-shrink-0 mt-0.5" />
+          <input
+            type="checkbox"
+            className="flex-shrink-0 mt-[2px] w-3 h-3 cursor-pointer"
+            checked={selectedArtifacts.has(artifact.id)}
+            onChange={(e) => {
+              const newSet = new Set(selectedArtifacts);
+              if (e.target.checked) newSet.add(artifact.id);
+              else newSet.delete(artifact.id);
+              setSelectedArtifacts(newSet);
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
           <div className="flex flex-col overflow-hidden">
             {/* Friendly title (or name basename) — standalone text node for 10-7/10-8 getByText. */}
             <span className="truncate">{displayLabel(artifact)}</span>
@@ -710,11 +715,10 @@ export function ProjectSidebar({
     return (
       <div
         key={artifact.id}
-        className={`w-full flex items-start gap-1 px-2 py-1.5 rounded-md text-[11px] transition-colors cursor-pointer ${
-          selectedArtifactId === artifact.id
+        className={`w-full flex items-start gap-1 px-2 py-1.5 rounded-md text-[11px] transition-colors cursor-pointer ${selectedArtifactId === artifact.id
             ? "bg-[#3b82f6] text-white"
             : "text-[#d1d5db] hover:bg-[#374151] hover:text-white"
-        }`}
+          }`}
         style={depth > 0 ? { marginLeft: depth * 12 } : undefined}
         title={artifact.name}
         onClick={() => {
@@ -844,9 +848,8 @@ export function ProjectSidebar({
           return (
             <div key={project.id} className="flex flex-col">
               <div
-                className={`group flex items-center justify-between px-2 py-1.5 mx-2 rounded-md cursor-pointer transition-colors ${
-                  isOpen ? "bg-[#1f2937] text-white" : "text-[#d1d5db] hover:bg-[#374151] hover:text-white"
-                }`}
+                className={`group flex items-center justify-between px-2 py-1.5 mx-2 rounded-md cursor-pointer transition-colors ${isOpen ? "bg-[#1f2937] text-white" : "text-[#d1d5db] hover:bg-[#374151] hover:text-white"
+                  }`}
                 onClick={() => handleProjectClick(project.id)}
               >
                 <div className="flex items-center gap-2 overflow-hidden">
@@ -891,6 +894,20 @@ export function ProjectSidebar({
                       {/* Task 4.3/4.2: Render all tree folders from API response.
                           Reports always rendered (even empty) to preserve shipped behavior. */}
                       {artifactFolders.map(renderArtifactFolder)}
+
+                      {selectedArtifacts.size > 0 && (
+                        <div className="mt-2 sticky bottom-0 bg-[#1f2937] p-2 border-t border-[#374151] flex justify-between items-center shadow-md -mx-2 px-4 z-10">
+                          <span className="text-[11px] text-[#9ca3af]">{selectedArtifacts.size} selected</span>
+                          <button
+                            type="button"
+                            className="px-2 py-1 bg-red-500/20 text-red-400 rounded text-[11px] hover:bg-red-500/30 transition-colors disabled:opacity-50"
+                            onClick={handleDeleteSelected}
+                            disabled={isDeleting}
+                          >
+                            {isDeleting ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

@@ -121,12 +121,14 @@ export function useWebSocket(params: {
       const ws = new WebSocketCtor(buildWsUrl({ projectId, threadId }));
       wsRef.current = ws;
       ws.onopen = () => {
+        if (wsRef.current && wsRef.current !== ws) return;
         setIsConnected(true);
         setError(null);
         reconnectAttemptsRef.current = 0;
       };
 
       ws.onmessage = (event) => {
+        if (wsRef.current && wsRef.current !== ws) return;
         try {
           const data = JSON.parse(event.data);
           const messageProjectId =
@@ -194,11 +196,13 @@ export function useWebSocket(params: {
       };
 
       ws.onerror = () => {
+        if (wsRef.current && wsRef.current !== ws) return;
         console.error("WebSocket error");
         setError("WebSocket connection error");
       };
 
       ws.onclose = (event) => {
+        if (wsRef.current && wsRef.current !== ws) return;
         console.log("WebSocket closed, code:", event.code);
         setIsConnected(false);
         wsRef.current = null;
@@ -264,7 +268,14 @@ export function useWebSocket(params: {
         ws.send(JSON.stringify(payload));
         return true;
       } else {
-        console.warn("WebSocket not connected");
+        console.warn(
+          "WebSocket not connected.",
+          "ws present:", !!ws,
+          "readyState:", ws?.readyState,
+          "expected OPEN:", getWebSocketCtor().OPEN,
+          "projectId:", projectId,
+          "threadId:", threadId
+        );
         return false;
       }
     },

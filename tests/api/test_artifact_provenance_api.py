@@ -80,15 +80,16 @@ def prov_client(tmp_path: Path) -> Generator[TestClient]:
     app.dependency_overrides[get_db_session_dependency] = override_get_db_session
     app.dependency_overrides[get_artifact_storage] = lambda: storage
     with TestClient(app) as client:
+        client.fastapi_app = app  # type: ignore[attr-defined]
         # Attach session_factory for helper usage
-        client.app.state.test_session_factory = session_factory  # type: ignore[attr-defined]
+        client.fastapi_app.state.test_session_factory = session_factory  # type: ignore[attr-defined]
         yield client
     app.dependency_overrides.clear()
     engine.dispose()
 
 
 def _session(client: TestClient) -> Session:
-    return client.app.state.test_session_factory()  # type: ignore[attr-defined]
+    return client.fastapi_app.state.test_session_factory()  # type: ignore[attr-defined]
 
 
 def _create_user_and_project(client: TestClient) -> tuple[User, Project]:

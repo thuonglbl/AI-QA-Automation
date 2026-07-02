@@ -2,12 +2,13 @@ import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { X, KeyRound, Save } from "lucide-react";
-import { getSafeApiErrorMessage } from "@/lib/api";
+import { X, KeyRound, Save, Play } from "lucide-react";
+import { getSafeApiErrorMessage, ApiError } from "@/lib/api";
 import {
   listTestCredentials,
   upsertTestCredential,
   deleteTestCredential,
+  testLogin,
   TestAccountCredentialResponse,
 } from "@/lib/testCredentials";
 import { listSessions } from "@/lib/sessions";
@@ -76,8 +77,7 @@ export function TestCredentialsEditor({
     setError(null);
   };
 
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveOnly = async () => {
     if (!activeCell || !username.trim() || !password.trim()) return;
 
     setBusy(true);
@@ -90,6 +90,32 @@ export function TestCredentialsEditor({
         password: password.trim(),
         totp_secret: totp.trim() || null,
       });
+      await load();
+      setActiveCell(null);
+    } catch (err) {
+      setError(getSafeApiErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSaveAndTest = async () => {
+    if (!activeCell || !username.trim() || !password.trim()) return;
+
+    setBusy(true);
+    setError(null);
+    try {
+      await upsertTestCredential(projectId, {
+        environment: activeCell.env,
+        role: activeCell.role,
+        username: username.trim(),
+        password: password.trim(),
+        totp_secret: totp.trim() || null,
+      });
+      const result = await testLogin(projectId, activeCell.env, activeCell.role);
+      if (!result.success) {
+        throw new ApiError("server", result.error || "Login test failed.");
+      }
       await load();
       setActiveCell(null);
     } catch (err) {
@@ -254,7 +280,7 @@ export function TestCredentialsEditor({
               Set credentials for <span className="font-semibold">{activeCell.role}</span> in <span className="font-semibold">{activeCell.env}</span>.
             </p>
 
-            <form onSubmit={handleSave} className="space-y-4">
+            <div className="space-y-4">
               <div>
                 <Label htmlFor="cred-username" className="text-slate-700 block mb-1.5">Username</Label>
                 <Input
@@ -302,12 +328,27 @@ export function TestCredentialsEditor({
                 >
                   Cancel
                 </Button>
-                <Button type="submit" disabled={busy || !username || !password} className="gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy || !username || !password}
+                  onClick={handleSaveOnly}
+                  className="gap-2"
+                >
                   <Save className="w-4 h-4" />
-                  Save Credentials
+                  Save Only
+                </Button>
+                <Button
+                  type="button"
+                  disabled={busy || !username || !password}
+                  onClick={handleSaveAndTest}
+                  className="gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
+                >
+                  <Play className="w-4 h-4" />
+                  Save & Test Login
                 </Button>
               </div>
-            </form>
+            </div>
           </div>
         </div>
       )}

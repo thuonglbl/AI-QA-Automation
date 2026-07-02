@@ -209,23 +209,6 @@ def test_local_artifact_storage_requirements_path(tmp_path: Path) -> None:
     assert "artifacts/" not in storage_path
 
 
-def test_local_artifact_storage_raw_html_path(tmp_path: Path) -> None:
-    """LocalArtifactStorage uses special path for 'raw_html' kind."""
-    storage = LocalArtifactStorage(root=tmp_path)
-    project_id = uuid4()
-
-    storage_path = storage.write(
-        project_id=project_id,
-        artifact_id=uuid4(),
-        version=1,
-        kind="raw_html",
-        name="page.html",
-        content="<html></html>",
-    )
-
-    assert "requirements/mcp/confluence/" in storage_path
-
-
 # --- Name Sanitization ---
 
 

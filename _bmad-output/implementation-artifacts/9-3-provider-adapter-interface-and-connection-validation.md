@@ -154,7 +154,7 @@ resolve_base_url(settings, provider_id) -> str   # reads AppSettings only
 ### Project Structure Notes
 
 - Module boundaries (architecture module table): `ai_connection` may depend on `config`, `secrets`, `langchain` and must NOT depend on `mcp`, `browser`, or `agents`. The new `providers/` package therefore imports only `config` (for the base-URL resolver type) + `httpx` + pydantic — and is consumed BY `agents/alice.py`, not the reverse. Keep the import direction clean: `alice.py` imports from `ai_connection.providers`, never the other way.
-- Naming: snake_case locals/functions, PascalCase models/classes; local httpx client variables like `async_client`, not aliased CamelCase (rule #5/#11). SSL flag `verify_ssl` (snake_case).
+- Naming: snake_case locals/functions, PascalCase models/classes; local httpx client variables like `async_client`, not aliased __SKIP_WORD_0_Camcorpse__ (rule #5/#11). SSL flag `verify_ssl` (snake_case).
 - Forward refs: if `ConnectionResult`/`DiscoveredModel` reference each other or `AppSettings`, prefer concrete imports here (no cross-module ORM cycle risk — these are plain Pydantic models, not SQLAlchemy). Rule #4 (TYPE_CHECKING) applies only to SQLAlchemy string forward refs, which this story has none of.
 
 ### References

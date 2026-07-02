@@ -36,7 +36,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-29T00:14:09.493182
-last_updated: 2026-06-26T10:55:00.000000Z
+last_updated: 2026-07-01T08:15:00.000000Z
 project: ai qa automation
 project_key: NOKEY
 tracking_system: file-system
@@ -136,6 +136,7 @@ development_status:
   9-5-agent-model-assignment-review: done
   9-6-runtime-secret-resolution-for-agent-runs: done
   9-7-saved-provider-configuration-and-rotation-behavior: done
+  9-8-dynamic-multi-environment-model-sync-configuration: done
   epic-9-retrospective: done
   epic-10: done
   10-1-project-artifact-storage-foundation: done
@@ -645,3 +646,8 @@ development_status:
   25-6-external-app-authentication-userpass-and-third-party-oauth: done
   25-7-docs-fr-nfr-reconciliation-and-live-validation: done
   epic-25-retrospective: done
+
+  epic-26: backlog
+  26-1-setup-and-configure-medusa-security-scanner: backlog
+  26-2-triaging-and-fixing-security-vulnerabilities: backlog
+  epic-26-retrospective: optional

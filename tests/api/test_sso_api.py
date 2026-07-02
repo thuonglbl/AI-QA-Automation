@@ -30,7 +30,7 @@ from ai_qa.db.models import Project, ProjectMembership, User
 @pytest.fixture(autouse=True)
 def _force_mock_idp(client: TestClient) -> None:
     """Ensure the SSO router runs in mock-IdP mode for these tests."""
-    settings = client.app.state.settings  # type: ignore[attr-defined]
+    settings = client.fastapi_app.state.settings  # type: ignore[attr-defined]
     settings.azure_sso_tenant_id = ""
     settings.azure_sso_client_id = ""
     settings.azure_sso_client_secret = ""
@@ -132,7 +132,7 @@ def test_callback_enforces_allowed_email_domain(
     client: TestClient, user_factory: Callable[..., User]
 ) -> None:
     # Tighten the allowed domain on the live settings instance.
-    client.app.state.settings.azure_sso_allowed_email_domain = "corp.vn"  # type: ignore[attr-defined]
+    client.fastapi_app.state.settings.azure_sso_allowed_email_domain = "corp.vn"  # type: ignore[attr-defined]
     user_factory("person@example.com", STANDARD_ROLE)
     state = _start_login(client)
     resp = client.post(
@@ -148,7 +148,7 @@ def test_callback_enforces_allowed_email_domain(
 
 
 def _enable_provisioning(client: TestClient, *, domain: str = "") -> None:
-    settings = client.app.state.settings  # type: ignore[attr-defined]
+    settings = client.fastapi_app.state.settings  # type: ignore[attr-defined]
     settings.azure_sso_enabled = True
     settings.azure_sso_auto_provision = True
     settings.azure_sso_allowed_email_domain = domain
@@ -165,7 +165,7 @@ def _mock_login(client: TestClient, email: str, roles: str = "") -> Response:
 def _session_roles(client: TestClient, response: Response) -> list[str]:
     token = response.cookies.get("aiqa_session")
     assert token
-    session = SessionManager(client.app.state.settings).decode_session(token)  # type: ignore[attr-defined]
+    session = SessionManager(client.fastapi_app.state.settings).decode_session(token)  # type: ignore[attr-defined]
     assert session is not None
     return session.roles
 
@@ -185,7 +185,7 @@ def test_provision_creates_identity_only_user(client: TestClient, db_session: Se
 
 def test_provision_off_rejects_and_creates_nothing(client: TestClient, db_session: Session) -> None:
     # enabled but auto_provision off => no provisioning.
-    client.app.state.settings.azure_sso_enabled = True  # type: ignore[attr-defined]
+    client.fastapi_app.state.settings.azure_sso_enabled = True  # type: ignore[attr-defined]
     resp = _mock_login(client, "blocked@example.com")
     assert resp.headers["location"] == "/?sso_error=not_provisioned"
     assert get_user_by_email(db_session, "blocked@example.com") is None

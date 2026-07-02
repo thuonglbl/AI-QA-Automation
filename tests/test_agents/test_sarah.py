@@ -158,7 +158,9 @@ class TestSarahProjectEnvironments:
                 {"url": "https://nope.app"},  # missing name → dropped
             ],
         )
-        assert agent._project_environments() == [{"name": "Test 1", "url": "https://t1.app"}]
+        assert agent._project_environments() == [
+            {"name": "Test 1", "url": "https://t1.app", "login_type": "standard"}
+        ]
 
     def test_project_environments_empty_when_none(self, mock_project_context) -> None:
         """A project with no environments column (mock returns no list) yields []."""
@@ -287,7 +289,16 @@ class TestSarahResolveRoleSessions:
         admin_blob = {"cookies": [{"name": "sid", "value": "admin"}]}
 
         async def fake_resolve(
-            db, *, user_id, project_id, environment, role, chrome_path, llm, timeout
+            db,
+            *,
+            user_id,
+            project_id,
+            environment,
+            role,
+            chrome_path,
+            llm,
+            timeout,
+            raise_on_failure=False,
         ):
             assert environment == "Test 1"  # the submitted env NAME, used directly
             return admin_blob if role == "Admin" else None  # User has no captured session

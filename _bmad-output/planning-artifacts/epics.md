@@ -773,6 +773,29 @@ So that setup is convenient without rewriting conversation history.
 **Then** future runs use the rotated value
 **And** existing thread messages, conversation history, and previous run metadata remain unchanged
 
+### Story 9.8: Dynamic Multi-Environment Model Sync Configuration
+
+As a system administrator,
+I want to enable or disable the Model Sync feature and dynamically configure multiple remote target databases via environment variables,
+So that I can disable it on restricted environments (UAT) while syncing all environments simultaneously from my local machine with one click.
+
+**Acceptance Criteria:**
+**Given** the application starts
+**When** the `ENABLE_MODEL_BENCHMARK_SYNC` environment variable is set to `false`
+**Then** the frontend hides the "Sync models" button or feature
+**And** the backend rejects requests to the sync endpoint with a 403 Forbidden
+
+**Given** the application starts
+**When** the `ENABLE_MODEL_BENCHMARK_SYNC` environment variable is set to `true`
+**Then** the frontend displays the "Sync models" button
+**And** the backend allows the sync operation
+
+**Given** the user clicks the "Sync models" button
+**When** `SYNC_TARGET_DATABASES` is configured with a valid JSON array of `{"name": "...", "url": "..."}` objects
+**Then** the backend syncs the model benchmark data to the primary database
+**And** iterates through the JSON array, dynamically creates a connection for each `url`, and syncs the data to those remote databases
+**And** handles errors gracefully if one remote DB fails, without crashing the whole process.
+
 ### Epic 10: Project Artifact Collaboration and Realtime Sync
 
 Project members can share, browse, edit, delete, and receive realtime updates for project-level artifacts stored in SeaweedFS and tracked in PostgreSQL.
@@ -1670,22 +1693,25 @@ So that I can scan users by role, status, timezone, and name.
 ### Story 15.5: User Edit and Delete with Platform-Admin Immutability
 
 As a platform admin,
-I want to edit and delete project_admin and standard users,
-So that I can manage the user directory while the platform admin account stays protected.
+I want to edit and delete project_admin and standard users, and edit basic info for platform admins,
+So that I can manage the user directory while the platform admin account's role and security stays protected.
 
 **Acceptance Criteria:**
 
 **Given** a project_admin or standard user
 **When** the admin edits it
-**Then** a new update-user endpoint updates display name, role (project_admin↔standard only), timezone, active status, and optional password reset, returning a secret-free response
+**Then** a new update-user endpoint updates display name, language, role (project_admin↔standard only), timezone, active status, and optional password reset, returning a secret-free response
 
 **Given** a role change between project_admin and standard
 **When** the update is applied
 **Then** standard→project_admin requires a project and creates the project_admin membership; project_admin→standard deletes the user's project_admin membership(s)
 
 **Given** the platform admin account (role=admin)
-**When** any actor attempts to edit or delete it
-**Then** the action is rejected (403); promoting any user to admin is also rejected
+**When** any actor attempts to edit it
+**Then** the endpoint allows updating non-security fields (`timezone`, `language`, `display name`)
+**And** any attempt to update `role`, `active status`, or `password` is rejected (403)
+**And** promoting any user to admin is also rejected
+**And** any attempt to delete the account is rejected
 
 **Given** the current admin
 **When** they attempt to deactivate or delete their own account
@@ -1697,7 +1723,8 @@ So that I can manage the user directory while the platform admin account stays p
 
 **Given** the Users Management list
 **When** rows render
-**Then** Edit and Delete controls appear for project_admin and standard users but NOT for the platform admin row, with distinct accessible labels
+**Then** Edit controls appear for all users, but Delete controls appear ONLY for project_admin and standard users (NOT for platform admin)
+**And** when editing a platform admin, the role, status, and password fields are hidden or disabled in the UI
 
 ### Epic 16: Conversational UX System and Accessibility
 
@@ -2538,3 +2565,21 @@ _Provisional — acceptance criteria TBD via PRD/design._
 As the team, I want FR12 / NFR10 / Story 13.4 / Story 14.4 reconciled to the new model, `project-context.md` updated, the `2026-06-20` design doc superseded, and a live validation on local + UAT against a real authenticated app, so that the change is complete, discoverable, and proven end-to-end.
 
 _Provisional — acceptance criteria TBD via PRD/design._
+
+### Epic 26: Security Scanning and Remediation with Medusa
+
+> **NEW 2026-07-02.** Integrated [Medusa](https://github.com/Pantheon-Security/medusa) security scanning tool for automated security checks.
+
+**Goal:** Integrate the Medusa security scanning tool to automatically scan the codebase and address identified vulnerabilities.
+
+### Story 26.1: Setup and Configure Medusa Security Scanner
+
+As a developer, I want to integrate the Medusa security scanning tool into the project workflow, so that the codebase is automatically scanned for vulnerabilities and security misconfigurations.
+
+_Provisional — acceptance criteria TBD._
+
+### Story 26.2: Triaging and Fixing Security Vulnerabilities
+
+As a developer, I want to review the initial Medusa scan results, triage the findings, and fix the identified security issues, so that the application maintains a strong security posture.
+
+_Provisional — acceptance criteria TBD._

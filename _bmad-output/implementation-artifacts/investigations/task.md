@@ -1,0 +1,3 @@
+- [x] Change `headless=True` to `headless=False` in `login.py`.
+- [x] Replace `page.click()` with `press("Enter")` for email and password steps.
+- [x] Add screenshot capture on 30s timeout.

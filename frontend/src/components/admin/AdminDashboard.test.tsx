@@ -135,7 +135,9 @@ describe("AdminDashboard", () => {
         if (url === "/auth/logout" && init?.method === "POST")
           return jsonResponse({ success: true });
         if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         if (url === "/api/admin/model-scores") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         return jsonResponse({}, 404);
       });
 
@@ -319,7 +321,9 @@ describe("AdminDashboard", () => {
           );
         if (url === "/api/admin/users") return jsonResponse([]);
         if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         if (url === "/api/admin/model-scores") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         return jsonResponse({}, 404);
       });
 
@@ -386,7 +390,9 @@ describe("AdminDashboard", () => {
           );
         if (url === "/api/admin/users") return jsonResponse([]);
         if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         if (url === "/api/admin/model-scores") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         return jsonResponse({}, 404);
       });
 
@@ -455,7 +461,9 @@ describe("AdminDashboard", () => {
       if (url === "/api/projects") return jsonResponse([]);
       if (url === "/api/admin/users") return jsonResponse([]);
       if (url === "/api/admin/discovered-models") return jsonResponse([]);
+      if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
       if (url === "/api/admin/model-scores") return jsonResponse([]);
+      if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
       return jsonResponse({}, 404);
     }
 
@@ -488,7 +496,9 @@ describe("AdminDashboard", () => {
         if (url === "/api/admin/tests/e2e" && init?.method === "POST")
           return e2ePromise;
         if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         if (url === "/api/admin/model-scores") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         return jsonResponse({}, 404);
       });
 
@@ -554,7 +564,9 @@ describe("AdminDashboard", () => {
           });
         if (url === "/api/admin/tests/e2e/status") return jsonResponse(e2eResult);
         if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         if (url === "/api/admin/model-scores") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         return jsonResponse({}, 404);
       });
 
@@ -599,7 +611,9 @@ describe("AdminDashboard", () => {
           });
         if (url === "/api/admin/tests/e2e/status") return jsonResponse(e2eResult);
         if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         if (url === "/api/admin/model-scores") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         return jsonResponse({}, 404);
       });
 
@@ -644,7 +658,9 @@ describe("AdminDashboard", () => {
           });
         if (url === "/api/admin/tests/e2e/status") return jsonResponse(e2eResult);
         if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         if (url === "/api/admin/model-scores") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         return jsonResponse({}, 404);
       });
 
@@ -690,7 +706,9 @@ describe("AdminDashboard", () => {
           });
         if (url === "/api/admin/tests/e2e/status") return jsonResponse(e2eResult);
         if (url === "/api/admin/discovered-models") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         if (url === "/api/admin/model-scores") return jsonResponse([]);
+        if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
         return jsonResponse({}, 404);
       });
 
@@ -737,7 +755,9 @@ function mockAdminFetch(projects: unknown[]) {
     if (url === "/api/projects") return jsonResponse(projects);
     if (url === "/api/admin/users") return jsonResponse([]);
     if (url === "/api/admin/discovered-models") return jsonResponse([]);
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     if (url === "/api/admin/model-scores") return jsonResponse([]);
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     return jsonResponse({}, 404);
   });
 }
@@ -818,7 +838,9 @@ test("AdminDashboard omits obsolete 'project admin' helper copy (Story 15.2)", a
     if (url === "/api/projects") return jsonResponse([project]);
     if (url === "/api/admin/users") return jsonResponse([user]);
     if (url === "/api/admin/discovered-models") return jsonResponse([]);
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     if (url === "/api/admin/model-scores") return jsonResponse([]);
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     return jsonResponse({}, 404);
   });
 
@@ -916,6 +938,7 @@ test("Models & Benchmarks section discovers + syncs scores via the Sync button (
       syncCalled = true;
       return jsonResponse(syncResult);
     }
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     return jsonResponse({}, 404);
   });
 
@@ -999,6 +1022,8 @@ test("Models table sorts by global → reasoning → coding → vision (desc)", 
     if (url === "/api/projects") return jsonResponse([]);
     if (url === "/api/admin/users") return jsonResponse([]);
     if (url === "/api/admin/discovered-models") return jsonResponse(models);
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     return jsonResponse({}, 404);
   });
 
@@ -1066,6 +1091,8 @@ test("vision tag follows the vision SCORE, not the gateway supports_vision flag"
     if (url === "/api/projects") return jsonResponse([]);
     if (url === "/api/admin/users") return jsonResponse([]);
     if (url === "/api/admin/discovered-models") return jsonResponse(models);
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     return jsonResponse({}, 404);
   });
 
@@ -1209,7 +1236,9 @@ test("Users Management sorts by role/status/name and shows admin projects (Story
     if (url === "/api/projects") return jsonResponse([]);
     if (url === "/api/admin/users") return jsonResponse(usersFixture);
     if (url === "/api/admin/discovered-models") return jsonResponse([]);
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     if (url === "/api/admin/model-scores") return jsonResponse([]);
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     return jsonResponse({}, 404);
   });
 
@@ -1245,7 +1274,7 @@ test("Users Management sorts by role/status/name and shows admin projects (Story
   expect(screen.getByText("Inactive")).toBeInTheDocument();
 });
 
-test("Users Management: edit/delete hidden for admin row, PUT/DELETE fire (Story 15.5)", async () => {
+test("Users Management: delete hidden for admin row, PUT/DELETE fire (Story 15.5)", async () => {
   const ts = "2026-01-01T00:00:00Z";
   const adminRow = {
     id: "u-admin",
@@ -1288,7 +1317,9 @@ test("Users Management: edit/delete hidden for admin row, PUT/DELETE fire (Story
       if (url === "/api/admin/users/u-std" && init?.method === "DELETE")
         return Promise.resolve(new Response(null, { status: 204 }));
       if (url === "/api/admin/discovered-models") return jsonResponse([]);
+      if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
       if (url === "/api/admin/model-scores") return jsonResponse([]);
+      if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
       return jsonResponse({}, 404);
     });
 
@@ -1302,10 +1333,10 @@ test("Users Management: edit/delete hidden for admin row, PUT/DELETE fire (Story
 
   await screen.findByText("Stan Dard");
 
-  // AC6: the platform admin row exposes NO edit/delete controls.
+  // Platform admin row exposes edit controls, but NO delete controls.
   expect(
     screen.queryByRole("button", { name: /edit user platform admin/i }),
-  ).not.toBeInTheDocument();
+  ).toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: /delete user platform admin/i }),
   ).not.toBeInTheDocument();
@@ -1382,7 +1413,9 @@ test("editing a project_admin shows a pre-checked multi-select and saves project
       if (url === "/api/admin/users/u-pa" && init?.method === "PUT")
         return jsonResponse(paUser);
       if (url === "/api/admin/discovered-models") return jsonResponse([]);
+      if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
       if (url === "/api/admin/model-scores") return jsonResponse([]);
+      if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
       return jsonResponse({}, 404);
     });
 
@@ -1449,7 +1482,9 @@ test("editing a standard user shows no project picker (Story 23.5)", async () =>
       return jsonResponse([{ ...project, id: "project-1", name: "Project One" }]);
     if (url === "/api/admin/users") return jsonResponse([stdUser]);
     if (url === "/api/admin/discovered-models") return jsonResponse([]);
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     if (url === "/api/admin/model-scores") return jsonResponse([]);
+    if (url === "/api/admin/config") return jsonResponse({ enable_model_benchmark_sync: true });
     return jsonResponse({}, 404);
   });
 

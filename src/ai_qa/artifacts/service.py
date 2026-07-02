@@ -23,7 +23,6 @@ ARTIFACT_KINDS = frozenset(
         "markdown",
         "mermaid",
         "playwright_script",
-        "raw_html",
         "report",
         "requirements",
         "screenshot",

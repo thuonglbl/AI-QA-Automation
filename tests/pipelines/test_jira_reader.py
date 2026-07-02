@@ -142,14 +142,14 @@ class TestReadIssueRequestPayload:
     """Pin the identifier key the live MCP ``jira_get_issue`` tool requires.
 
     Verified against the live MCP server (2026-06-17): the tool requires the
-    camelCase ``issueKey`` parameter. Both snake_case ``issue_key`` and the
+    __SKIP_WORD_0_camcorpse__ ``issueKey`` parameter. Both snake_case ``issue_key`` and the
     Atlassian-style ``issueIdOrKey`` are rejected by the server
     ("Required: issueKey"). These tests fail loudly if anyone reintroduces a
     wrong key in the request payload.
     """
 
     @pytest.mark.asyncio
-    async def test_call_tool_uses_camelcase_issue_key(
+    async def test_call_tool_uses___SKIP_WORD_0_camcorpse___issue_key(
         self, jira_reader: JiraReader, mock_mcp_client: MagicMock
     ) -> None:
         mock_mcp_client.call_tool.return_value = ToolResult.from_data(_REALISTIC_PAYLOAD)
@@ -159,7 +159,7 @@ class TestReadIssueRequestPayload:
         mock_mcp_client.call_tool.assert_called_once()
         tool_name, payload = mock_mcp_client.call_tool.call_args.args
         assert tool_name == "jira_get_issue"
-        # The correct camelCase key carries the parsed issue key value...
+        # The correct __SKIP_WORD_0_camcorpse__ key carries the parsed issue key value...
         assert payload["issueKey"] == "PROJ-123"
         # ...and the server-rejected variants must never be sent.
         assert "issue_key" not in payload

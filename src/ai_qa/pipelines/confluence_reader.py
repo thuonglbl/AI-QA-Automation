@@ -445,7 +445,7 @@ class ConfluenceReader:
             tool_result = await self._mcp_client.call_tool(
                 self._get_tool_name("confluence_get_page"),
                 {
-                    # The internal MCP server expects the camelCase "pageId" parameter;
+                    # The internal MCP server expects the __SKIP_WORD_0_camcorpse__ "pageId" parameter;
                     # snake_case "page_id" is rejected ("Unknown parameter: page_id").
                     "pageId": page_id,
                     "format": "view",
@@ -614,7 +614,7 @@ class ConfluenceReader:
             tool_result = await self._mcp_client.call_tool(
                 self._get_tool_name("confluence_get_page"),
                 {
-                    # The internal MCP server expects the camelCase "pageId" parameter;
+                    # The internal MCP server expects the __SKIP_WORD_0_camcorpse__ "pageId" parameter;
                     # snake_case "page_id" is rejected ("Unknown parameter: page_id").
                     "pageId": page_id,
                     "format": "view",
@@ -845,7 +845,7 @@ class ConfluenceReader:
                 success=True,
                 data=summaries,
                 errors=[],
-                warnings=[],
+                warnings=warnings,
                 confidence=1.0,
             )
 

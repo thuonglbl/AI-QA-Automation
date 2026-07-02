@@ -14,7 +14,6 @@ import {
   removeProjectMember,
   updateProjectConfig,
 } from "@/lib/projectAdmin";
-import { checkConnections } from "@/lib/sessions";
 import { AppRolesEditor, EnvironmentsEditor, cleanEnvironments } from "@/components/admin/AdminDashboard";
 import type {
   AssignableUser,
@@ -58,10 +57,6 @@ export function ProjectAdminDashboard({
   const [environments, setEnvironments] = useState<ProjectEnvironment[]>([]);
   const [appRoles, setAppRoles] = useState<string[]>([]);
   const [memberToAdd, setMemberToAdd] = useState("");
-
-  // Reachability probe results for the selected project's saved environments.
-  const [connChecks, setConnChecks] = useState<EnvConnectionStatus[] | null>(null);
-  const [checkingConns, setCheckingConns] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -113,7 +108,6 @@ export function ProjectAdminDashboard({
     setProviders(selected.enabled_providers ?? []);
     setEnvironments(selected.environments ?? []);
     setAppRoles(selected.app_roles ?? []);
-    setConnChecks(null);
   }, [selected]);
 
   const usersById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
@@ -132,6 +126,20 @@ export function ProjectAdminDashboard({
       setError("Enable at least one provider.");
       return;
     }
+    const cleanedEnvs = cleanEnvironments(environments);
+    for (const env of cleanedEnvs) {
+      try {
+        new URL(env.url);
+      } catch {
+        setError(`Invalid URL format in environment "${env.name}": ${env.url}`);
+        return;
+      }
+      if (!env.url.startsWith("http://") && !env.url.startsWith("https://")) {
+        setError(`URL in environment "${env.name}" must start with http:// or https://`);
+        return;
+      }
+    }
+
     setIsBusy(true);
     setError(null);
     setStatus(null);
@@ -140,22 +148,11 @@ export function ProjectAdminDashboard({
         confluence_base_url: confluence.trim() || null,
         jira_base_url: jira.trim() || null,
         enabled_providers: providers,
-        environments: cleanEnvironments(environments),
+        environments: cleanedEnvs,
         app_roles: appRoles,
       });
       setStatus("Project configuration saved.");
       await reload();
-      // On a successful save, automatically probe whether this app server can reach each
-      // saved environment so the admin learns immediately if a firewall is blocking it.
-      setConnChecks(null);
-      setCheckingConns(true);
-      try {
-        setConnChecks(await checkConnections(selected.id));
-      } catch {
-        // A failed probe is non-fatal — the configuration is already saved.
-      } finally {
-        setCheckingConns(false);
-      }
     } catch (err) {
       setError(getSafeApiErrorMessage(err));
     } finally {
@@ -390,45 +387,6 @@ export function ProjectAdminDashboard({
                     >
                       Save configuration
                     </Button>
-
-                    {/* Per-environment reachability, probed automatically after a save. */}
-                    {(checkingConns || connChecks) && (
-                      <div className="space-y-1.5" data-testid="env-connection-status">
-                        <Label className="text-slate-700 block">Environment connectivity</Label>
-                        {checkingConns ? (
-                          <p className="text-xs text-slate-500">Checking…</p>
-                        ) : (connChecks ?? []).length === 0 ? (
-                          <p className="text-xs italic text-slate-500">
-                            No saved environments to check.
-                          </p>
-                        ) : (
-                          (connChecks ?? []).map((c) => (
-                            <div
-                              key={c.name}
-                              className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-medium text-slate-700">
-                                  {c.name}
-                                  <span className="ml-2 font-normal text-slate-400">{c.url}</span>
-                                </span>
-                                {c.reachable ? (
-                                  <span className="font-medium text-green-700">✓ Connected</span>
-                                ) : (
-                                  <span className="font-medium text-red-600">✗ Failed</span>
-                                )}
-                              </div>
-                              {!c.reachable && (
-                                <p className="mt-1 text-red-600">
-                                  Please contact Administrator to open firewall from this app
-                                  server to your app
-                                </p>
-                              )}
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
                   </form>
                 </div>
 

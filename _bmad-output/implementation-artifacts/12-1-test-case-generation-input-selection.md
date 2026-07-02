@@ -36,7 +36,7 @@ Status: done
 > 6. **MCP fix.** `JiraReader.JIRA_TOOLS` trimmed to `["jira_get_issue"]` (the other two
 >    were never called and falsely blocked, like the Confluence get_page_by_title/get_space
 >    fix). The `jira_get_issue` param name (`issue_key`) is **flagged unverified** against
->    the live MCP — likely needs a camelCase fix (mirror confluence `pageId`).
+>    the live MCP — likely needs a __SKIP_WORD_0_camcorpse__ fix (mirror confluence `pageId`).
 >
 > Tests updated: per-page-review Bob tests rewritten to cover `_auto_save_requirements` +
 > `_handle_select_id`; E2E `epic-11.spec.ts` now drives confirm→extract→select-id→handoff.

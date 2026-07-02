@@ -33,19 +33,21 @@ def build_artifact_key(
     Collision-safe nested keys: every artifact and version gets its own path
     under a logical folder, so two distinct artifacts never share a key and each
     version's bytes are retained.  The logical folders
-    (``requirements``/``test_cases``/``test_scripts``) remain browsable by prefix
+    (``requirements``/``test_cases``/``test_scripts``/``reports``) remain browsable by prefix
     for empty-folder projection (Story 10.2).
     """
-    if kind == "raw_html":
-        folder = "requirements/mcp/confluence"
-    elif kind == "requirements":
+    if kind in ("requirements", "image", "screenshot"):
+        folder = "requirements"
+    elif kind == "configuration" and "requirement.metadata" in safe_name:
         folder = "requirements"
     elif kind == "testcase":
         folder = "test_cases"
     elif kind in ("testscript", "playwright_script"):
         folder = "test_scripts"
+    elif kind in ("report", "trace", "video", "log", "execution_screenshot", "configuration"):
+        folder = "reports"
     else:
-        folder = "artifacts"
+        folder = "reports"
     return f"projects/{project_id}/{folder}/{artifact_id}/v{version}/{safe_name}"
 
 
@@ -53,22 +55,13 @@ def folder_for_kind(kind: str, name: str = "") -> str:
     """Return the canonical browse-folder name for the given artifact kind.
 
     This is the **browse** classifier used by the UI to group artifacts into
-    logical folders.  It is intentionally distinct from ``build_artifact_key``
-    (the *storage* key builder) so that the catch-all label here is "reports"
-    while the storage catch-all prefix remains "artifacts/".  Do **not** wire
-    this function into ``build_artifact_key`` — their catch-alls diverge by design.
-
-    The optional ``name`` lets the classifier route by filename when the kind
-    alone is ambiguous (the requirement metadata sidecar is ``configuration`` but
-    belongs with its requirement, not in reports).
-
-    Returns one of: ``"requirements"``, ``"test_cases"``, ``"test_scripts"``, ``"reports"``.
+    logical folders. Returns one of: ``"requirements"``, ``"test_cases"``,
+    ``"test_scripts"``, ``"reports"``.
     """
     # Requirement-domain assets all browse under "requirements"; the frontend
-    # then tucks the non-`.md` ones into a "raw" subfolder. raw_html (page HTML +
-    # url sidecar) and the page images/screenshots are raw companions of the MD;
-    # the requirement metadata sidecar (kind=configuration) rides along by name.
-    if kind in ("requirements", "raw_html", "image", "screenshot"):
+    # then tucks the non-`.md` ones into a "raw" subfolder.
+    # The requirement metadata sidecar (kind=configuration) rides along by name.
+    if kind in ("requirements", "image", "screenshot"):
         return "requirements"
     if kind == "configuration" and "requirement.metadata" in name:
         return "requirements"
@@ -76,11 +69,8 @@ def folder_for_kind(kind: str, name: str = "") -> str:
         return "test_cases"
     if kind in ("testscript", "playwright_script"):
         return "test_scripts"
-    # Story 14.3: execution outputs browse under "reports" (explicit, though the
-    # catch-all below already returns it — keeps intent clear next to the others).
-    if kind in ("report", "trace", "video", "log", "execution_screenshot"):
+    if kind in ("report", "trace", "video", "log", "execution_screenshot", "configuration"):
         return "reports"
-    # catch-all: markdown, mermaid, other configuration (e.g. mary_selected_id.json)
     return "reports"
 
 

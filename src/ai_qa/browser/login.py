@@ -100,7 +100,8 @@ async def _login_with_browser_use(
     # Need to run browser in headless mode to capture state in background.
     # An empty chrome_path falls back to Playwright's bundled Chromium (passing
     # "" raises "Failed to launch: spawn . ENOENT"); None selects the bundle.
-    browser = Browser(executable_path=chrome_path or None, headless=True)
+    # We disable security to allow self-signed certificates on internal UAT/Dev domains.
+    browser = Browser(executable_path=chrome_path or None, headless=True, disable_security=True)
 
     try:
         agent: Any = Agent(task=prompt, llm=llm, browser=browser, use_vision=True)
@@ -209,7 +210,13 @@ async def _login_with_playwright(
             # Empty chrome_path falls back to Playwright's bundled Chromium;
             # passing "" raises "Failed to launch: spawn . ENOENT". None = bundle.
             browser = await p.chromium.launch(executable_path=chrome_path or None, headless=True)
-            context = await browser.new_context()
+            context = await browser.new_context(ignore_https_errors=True)
+
+            # Disable WebAuthn/Passkeys to force Microsoft Entra to ask for a Password
+            await context.add_init_script(
+                "Object.defineProperty(window, 'PublicKeyCredential', { get: () => undefined, configurable: true });"
+            )
+
             page = await context.new_page()
 
             await page.goto(login_url, timeout=timeout * 1000)
@@ -244,10 +251,8 @@ async def _login_with_playwright(
                 if await email_input.is_visible():
                     if not await email_input.input_value():
                         await email_input.fill(credential.username)
-                        await page.click(
-                            "input[type='submit'], button[type='submit'], button:has-text('Next')",
-                            timeout=5000,
-                        )
+                        await email_input.press("Enter")
+                        await page.wait_for_timeout(1000)
                     continue
 
                 # 2. Account picker (Microsoft caches sessions)
@@ -276,10 +281,8 @@ async def _login_with_playwright(
                 if await pass_input.is_visible():
                     if not await pass_input.input_value():
                         await pass_input.fill(credential.password)
-                        await page.click(
-                            "input[type='submit'], button[type='submit'], button:has-text('Sign in')",
-                            timeout=5000,
-                        )
+                        await pass_input.press("Enter")
+                        await page.wait_for_timeout(1000)
                     continue
 
                 # 5. Number-matching / push screen with no input box -> switch to a

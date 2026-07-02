@@ -137,6 +137,12 @@ class AppSettings(BaseSettings):
     on_premises_api_base_url: str = Field(default="", description="On-Premises API base URL")
 
     # --- Model sync (admin "Sync models and benchmarks") ---
+    enable_model_benchmark_sync: bool = Field(
+        default=True, description="Enable or disable the Model Sync feature"
+    )
+    sync_target_databases: list[dict[str, str]] = Field(
+        default_factory=list, description="List of remote target databases for model sync"
+    )
     # Server-side provider keys used ONLY by the admin model-discovery sync. They map
     # from the TEST_<PROVIDER>_KEY env vars (case-insensitive). Resolved at runtime,
     # never returned to the frontend or logged.

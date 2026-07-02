@@ -140,3 +140,39 @@ def test_appsettings_rejects_bad_execution_output_prefix(tmp_path, monkeypatch) 
     reload(cfg)
     with pytest.raises(ValidationError):
         cfg.AppSettings()
+
+
+# ---------------------------------------------------------------------------
+# Story 9.8: Model Sync Configuration
+# ---------------------------------------------------------------------------
+
+
+def test_appsettings_model_sync_defaults(tmp_path, monkeypatch):
+    """Model sync configuration defaults to enabled with empty targets."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("USER_SECRETS_ENCRYPTION_KEY", _VALID_FERNET_KEY)
+    from importlib import reload
+
+    import ai_qa.config as cfg
+
+    reload(cfg)
+    settings = cfg.AppSettings()
+    assert settings.enable_model_benchmark_sync is True
+    assert settings.sync_target_databases == []
+
+
+def test_appsettings_model_sync_env_overrides(tmp_path, monkeypatch):
+    """Model sync configuration can be overridden via env vars."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("USER_SECRETS_ENCRYPTION_KEY", _VALID_FERNET_KEY)
+    monkeypatch.setenv("ENABLE_MODEL_BENCHMARK_SYNC", "false")
+    monkeypatch.setenv("SYNC_TARGET_DATABASES", '[{"name": "test", "url": "sqlite:///test.db"}]')
+    from importlib import reload
+
+    import ai_qa.config as cfg
+
+    reload(cfg)
+    settings = cfg.AppSettings()
+    assert settings.enable_model_benchmark_sync is False
+    assert len(settings.sync_target_databases) == 1
+    assert settings.sync_target_databases[0] == {"name": "test", "url": "sqlite:///test.db"}

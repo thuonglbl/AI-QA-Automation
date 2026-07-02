@@ -1289,8 +1289,6 @@ class BobAgent(BaseAgent):
                     )
                     continue
 
-                adapter.save_raw_html(page.page_id, page.content)
-                adapter._save_text(kind="raw_html", name=f"{page.page_id}.txt", content=page.url)
                 if has_saved and prior_v is not None:
                     await self.send_message(
                         f"↻ Re-extracting '{page.title}' (changed: v{prior_v} → v{page.version})",

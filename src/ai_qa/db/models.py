@@ -375,6 +375,7 @@ class DiscoveredModelSnapshot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     model_id: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     supports_vision: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

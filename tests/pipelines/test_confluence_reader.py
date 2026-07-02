@@ -463,16 +463,16 @@ class TestConfluenceReaderEdgeCases:
 
 
 class TestConfluenceReaderParameterConsistency:
-    """Tests for parameter naming: confluence_get_page expects 'pageId' (camelCase).
+    """Tests for parameter naming: confluence_get_page expects 'pageId' (__SKIP_WORD_0_camcorpse__).
 
     The internal MCP server rejects snake_case 'page_id' ("Unknown parameter: page_id"),
-    so the reader must send the camelCase 'pageId' the server schema requires.
+    so the reader must send the __SKIP_WORD_0_camcorpse__ 'pageId' the server schema requires.
     """
 
     async def test_read_page_uses_pageid_camel_case(
         self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
     ) -> None:
-        """read_page() must call confluence_get_page with 'pageId' (camelCase)."""
+        """read_page() must call confluence_get_page with 'pageId' (__SKIP_WORD_0_camcorpse__)."""
         mock_mcp_client.call_tool.return_value = ToolResult.from_data(
             {
                 "id": "123456",
@@ -498,7 +498,7 @@ class TestConfluenceReaderParameterConsistency:
     async def test_read_page_by_id_uses_pageid_camel_case(
         self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
     ) -> None:
-        """read_page_by_id() must also use 'pageId' (camelCase)."""
+        """read_page_by_id() must also use 'pageId' (__SKIP_WORD_0_camcorpse__)."""
         mock_mcp_client.call_tool.return_value = ToolResult.from_data(
             {
                 "id": "789",
@@ -528,14 +528,20 @@ class TestConfluenceReaderChildrenAndSearch:
         self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
     ) -> None:
         """Test getting child pages successfully."""
-        mock_mcp_client.call_tool.return_value = ToolResult.from_data(
-            {
-                "results": [
-                    {"id": "111", "title": "Child 1", "url": "url1"},
-                    {"id": "222", "title": "Child 2"},
-                ]
-            }
-        )
+
+        def mock_call_tool(tool_name, params):
+            if params["cql"] == "type=page AND parent=123":
+                return ToolResult.from_data(
+                    {
+                        "results": [
+                            {"id": "111", "title": "Child 1", "url": "url1"},
+                            {"id": "222", "title": "Child 2"},
+                        ]
+                    }
+                )
+            return ToolResult.from_data({"results": []})
+
+        mock_mcp_client.call_tool.side_effect = mock_call_tool
         result = await confluence_reader.get_children_by_id("123", "SPACE")
         assert result.success is True
         assert result.data is not None
@@ -548,14 +554,20 @@ class TestConfluenceReaderChildrenAndSearch:
         self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock
     ) -> None:
         """Child version (Confluence revision) is surfaced on PageSummary for change detection."""
-        mock_mcp_client.call_tool.return_value = ToolResult.from_data(
-            {
-                "results": [
-                    {"id": "111", "title": "Child 1", "version": {"number": 7}},
-                    {"id": "222", "title": "Child 2"},  # no version → None
-                ]
-            }
-        )
+
+        def mock_call_tool(tool_name, params):
+            if params["cql"] == "type=page AND parent=123":
+                return ToolResult.from_data(
+                    {
+                        "results": [
+                            {"id": "111", "title": "Child 1", "version": {"number": 7}},
+                            {"id": "222", "title": "Child 2"},  # no version → None
+                        ]
+                    }
+                )
+            return ToolResult.from_data({"results": []})
+
+        mock_mcp_client.call_tool.side_effect = mock_call_tool
         result = await confluence_reader.get_children_by_id("123", "SPACE")
         assert result.success is True
         assert result.data is not None
@@ -568,8 +580,9 @@ class TestConfluenceReaderChildrenAndSearch:
         """Test getting child pages with error."""
         mock_mcp_client.call_tool.return_value = ToolResult.from_error("Search failed")
         result = await confluence_reader.get_children_by_id("123")
-        assert result.success is False
-        assert any("Search failed" in e for e in result.errors)
+        assert result.success is True
+        assert result.data == []
+        assert any("Search failed" in w for w in result.warnings)
 
     async def test_find_parent_pages_success(
         self, confluence_reader: ConfluenceReader, mock_mcp_client: MagicMock

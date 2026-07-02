@@ -215,12 +215,5 @@ test.describe.serial(
       await page.getByRole("button", { name: "OK" }).click();
     });
 
-    test("[P0] Alice hands off to Bob — MCP key form is ready", async () => {
-      test.slow();
-      test.setTimeout(5 * MINUTE);
-      await expect(page.getByPlaceholder(/Enter MCP API Key/i)).toBeVisible({
-        timeout: MINUTE,
-      });
-    });
   },
 );

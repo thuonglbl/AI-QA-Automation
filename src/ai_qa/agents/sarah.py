@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ai_qa.agents.base import AgentState, BaseAgent
 from ai_qa.browser.agent import BrowserAgent
 from ai_qa.config import AppSettings
+from ai_qa.exceptions import BrowserError, ConfigError
 from ai_qa.models import StageResult, TestCase, bound_stage_messages
 from ai_qa.pipelines.artifact_adapter import PipelineArtifact, PipelineArtifactAdapter
 from ai_qa.pipelines.script_generator import ScriptGenerator
@@ -462,10 +463,17 @@ class SarahAgent(BaseAgent):
                     # Pass the explore LLM to browser-use for login form navigation
                     llm=self._build_explore_llm(),
                     timeout=60,
+                    raise_on_failure=True,
                 )
+            except ConfigError as exc:
+                logger.info("Could not resolve captured session for role '%s': %s", role, exc)
+                continue
+            except BrowserError as exc:
+                logger.warning("Browser login failed for role '%s': %s", role, exc)
+                continue
             except Exception as exc:  # noqa: BLE001 — never let session lookup break generation
                 logger.warning(
-                    "Could not resolve captured session for role '%s' (%s)",
+                    "Unexpected error resolving session for role '%s' (%s)",
                     role,
                     type(exc).__name__,
                 )

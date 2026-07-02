@@ -125,7 +125,9 @@ services:
       TEST_OPENAI_KEY: ${TEST_OPENAI_KEY}
       TEST_ON_PREMISES_KEY: ${TEST_ON_PREMISES_KEY}
       LLM_STATS_API_KEY: ${LLM_STATS_API_KEY}
-      LLM_STATS_API_BASE_URL: ${LLM_STATS_API_BASE_URL}      
+      LLM_STATS_API_BASE_URL: ${LLM_STATS_API_BASE_URL}
+      ENABLE_MODEL_BENCHMARK_SYNC: ${ENABLE_MODEL_BENCHMARK_SYNC}
+      SYNC_TARGET_DATABASES: ${SYNC_TARGET_DATABASES}
     # Chromium needs more shared memory than the 64 MB Docker default.
     shm_size: "1gb"
     # If the backend container cannot resolve the public BASE_URL hostname,

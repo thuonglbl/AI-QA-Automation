@@ -47,8 +47,8 @@ export async function loginViaUI(page: Page, _user?: TestUser): Promise<void> {
   await page.context().addCookies(cookies);
 
   await page.goto("/");
-  // Wait to land back on our app
-  await page.waitForLoadState("networkidle");
+  // Wait to land back on our app and ensure the UI has rendered
+  await page.getByTitle("User menu").waitFor({ state: "visible", timeout: 30_000 });
 }
 
 export async function openProjectThread(
@@ -90,7 +90,18 @@ export async function createNewProjectThread(
   }
 
   // The button has opacity-0 until hovered, so evaluate a click to bypass hover states reliably
+  const oldThreadId = await page.locator("main#main-content").getAttribute("data-thread-id");
   await newThreadBtn.evaluate((btn) => (btn as HTMLElement).click());
+
+  // Wait for the App to switch to the newly created thread before interacting with it
+  if (oldThreadId) {
+    await expect(page.locator("main#main-content")).not.toHaveAttribute("data-thread-id", oldThreadId, { timeout: 15_000 });
+  } else {
+    await expect(page.locator("main#main-content")).not.toHaveAttribute("data-thread-id", "", { timeout: 15_000 });
+  }
+  
+  // Wait a moment for React to flush the isConnected=false state for the new thread
+  await page.waitForTimeout(1000);
 }
 
 /**
@@ -101,35 +112,57 @@ export async function configureOnPremProvider(
   page: Page,
   onPremKey: string,
 ): Promise<void> {
-  await expect(
-    page.getByText(/Which AI provider would you like to use/i),
-  ).toBeVisible({ timeout: 15_000 });
+  const newProviderPrompt = page.getByText(/Which AI provider would you like to use/i);
+  const useSavedBtn = page.getByTestId("use-saved-config-btn");
 
-  const card = page.getByTestId("provider-card-on-premises");
-  await expect(card).toBeVisible();
-  // Cards stay disabled (opacity-50) until the WebSocket reports ready.
-  await expect(card).not.toHaveClass(/opacity-50/, { timeout: 30_000 });
-  await card.click();
+  const promptResult = await Promise.race([
+    newProviderPrompt.waitFor({ state: "visible", timeout: 15_000 }).then(() => "new"),
+    useSavedBtn.waitFor({ state: "visible", timeout: 15_000 }).then(() => "saved"),
+  ]).catch(() => "timeout");
 
-  // If the key is already on file from a previous test, it might auto-connect.
-  // Wait to see if either the key input appears or the success toast appears.
-  const keyInput = page.getByTestId("credential-input-api_key");
-  const successToast = page.getByText(/Connected successfully to/i).first();
-
-  const result = await Promise.race([
-    keyInput.waitFor({ state: "visible", timeout: 15_000 }).then(() => "form"),
-    successToast.waitFor({ state: "visible", timeout: 30_000 }).then(() => "success"),
-  ]);
-
-  if (result === "form") {
-    await expect(keyInput).toBeEnabled();
-    await keyInput.fill(onPremKey);
-    await page.getByRole("button", { name: "Start" }).click();
-    await expect(successToast).toBeVisible({ timeout: 30_000 });
+  if (promptResult === "timeout") {
+    throw new Error("Alice did not ask for provider or offer saved config within 15s");
   }
 
-  // Alice presents model assignments and waits for confirmation before Bob.
-  await page.getByRole("button", { name: "OK" }).click();
+  if (promptResult === "saved") {
+    await useSavedBtn.click();
+    // When using a saved config, Alice doesn't re-test connection so no toast appears.
+    // Skip checking for the key/toast and proceed straight to model confirmation.
+  } else {
+    const card = page.getByTestId("provider-card-on-premises");
+    await expect(card).toBeVisible();
+    // Cards stay disabled (opacity-50) until the WebSocket reports ready.
+    await expect(card).not.toHaveClass(/opacity-50/, { timeout: 30_000 });
+    await card.click();
+
+    // If the key is already on file from a previous test, it might auto-connect.
+    // Wait to see if either the key input appears or the success toast appears.
+    const keyInput = page.getByTestId("credential-input-api_key");
+    const successToast = page.getByText(/Connected successfully to/i).first();
+
+    const result = await Promise.race([
+      keyInput.waitFor({ state: "visible", timeout: 30_000 }).then(() => "form").catch(() => "timeout"),
+      successToast.waitFor({ state: "visible", timeout: 30_000 }).then(() => "success").catch(() => "timeout"),
+    ]);
+
+    if (result === "timeout") {
+      throw new Error("Neither key input nor success toast appeared within 30s");
+    }
+
+    if (result === "form") {
+      await expect(keyInput).toBeEnabled();
+      await keyInput.fill(onPremKey);
+      await page.getByRole("button", { name: "Start" }).click();
+      await expect(successToast).toBeVisible({ timeout: 30_000 });
+    }
+  }
+
+  // Alice presents model assignments and waits for confirmation before Bob,
+  // BUT only if we are configuring a new provider. If we used a saved config,
+  // it skips straight to Bob.
+  if (promptResult !== "saved") {
+    await page.getByRole("button", { name: "OK" }).click();
+  }
 }
 
 /**
@@ -321,9 +354,23 @@ export async function runSarahToScriptApproval(
  * SSO ships.
  */
 export async function verifyClaudeSsoLoginButton(page: Page): Promise<void> {
-  await expect(
-    page.getByText(/Which AI provider would you like to use/i),
-  ).toBeVisible({ timeout: 15_000 });
+  const newProviderPrompt = page.getByText(/Which AI provider would you like to use/i);
+  const useSavedBtn = page.getByTestId("use-saved-config-btn");
+  const chooseDifferentBtn = page.getByTestId("choose-different-provider-btn");
+
+  const promptResult = await Promise.race([
+    newProviderPrompt.waitFor({ state: "visible", timeout: 15_000 }).then(() => "new"),
+    useSavedBtn.waitFor({ state: "visible", timeout: 15_000 }).then(() => "saved"),
+  ]).catch(() => "timeout");
+
+  if (promptResult === "timeout") {
+    throw new Error("Alice did not ask for provider or offer saved config within 15s");
+  }
+
+  if (promptResult === "saved") {
+    await chooseDifferentBtn.click();
+    await expect(newProviderPrompt).toBeVisible({ timeout: 15_000 });
+  }
 
   const ssoCard = page.getByTestId("provider-card-claude-sso");
   await expect(ssoCard).toBeVisible();

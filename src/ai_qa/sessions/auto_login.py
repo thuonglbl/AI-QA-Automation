@@ -63,6 +63,7 @@ async def resolve_or_generate_storage_state(
     credential = db.execute(
         select(TestAccountCredential).where(
             TestAccountCredential.project_id == project_id,
+            TestAccountCredential.user_id == user_id,
             TestAccountCredential.environment == environment,
             TestAccountCredential.role == role,
         )

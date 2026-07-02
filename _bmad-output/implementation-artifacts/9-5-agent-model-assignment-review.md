@@ -183,7 +183,7 @@ frontend/src/components/__tests__/ModelAssignmentReview.test.tsx  # UPDATE: add 
 
 - Module boundaries (architecture table): `agents` may depend on `threads`, `secrets`, `models`, `pipelines`, `audit`; must NOT import `api` internals. The reject method lives in `alice.py` and is called by the API layer — keep the import direction one-way (`api` imports `agents`, never the reverse).
 - Frontend: `ModelAssignmentReview` is a presentational component — reject logic lives in `App.tsx` (container), matching the existing approve pattern.
-- Naming: snake_case locals/functions (`reject_configuration`, `rationale`), PascalCase models; no aliased CamelCase imports (rules #5/#11).
+- Naming: snake_case locals/functions (`reject_configuration`, `rationale`), PascalCase models; no aliased __SKIP_WORD_0_Camcorpse__ imports (rules #5/#11).
 
 ### Testing standards summary
 

@@ -287,28 +287,32 @@ class ContentParser:
             return image_paths
 
         async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-            for i, url in enumerate(img_urls):
+
+            async def fetch_and_save(i: int, url: str) -> str | None:
                 filename = url.split("/")[-1]
                 if "?" in filename:
                     filename = filename.split("?")[0]
                 if not filename:
                     filename = f"image_{i}.png"
-
-                # Use adapter to save image
                 try:
                     resp = await client.get(url)
                     resp.raise_for_status()
-
-                    # Dedup filename across artifacts could be done by adapter if necessary,
-                    # but here we just prepend slug to the artifact name
                     artifact_name = f"{slug}/images/{filename}"
                     self.adapter.save_image(artifact_name, resp.content)
-
-                    image_paths.append(artifact_name)
+                    return artifact_name
                 except httpx.HTTPError as e:
                     warnings.append(f"HTTPError fetching image {filename}: {e}")
                 except Exception as e:
                     warnings.append(f"Error saving image {filename}: {e}")
+                return None
+
+            import asyncio
+
+            tasks = [fetch_and_save(i, url) for i, url in enumerate(img_urls)]
+            results = await asyncio.gather(*tasks)
+            for res in results:
+                if res:
+                    image_paths.append(res)
 
         return image_paths
 

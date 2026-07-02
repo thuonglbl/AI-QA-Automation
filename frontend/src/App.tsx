@@ -155,11 +155,11 @@ const DEFAULT_PROVIDER_OPTIONS: ProviderOption[] = [
 /**
  * Normalize a provider option coming from the backend WebSocket into the UI
  * model. The backend emits snake_case keys (`quality_rank`, `security_level`,
- * `credential_fields`); the UI model is camelCase. Without this mapping the
+ * `credential_fields`); the UI model is __SKIP_WORD_0_camcorpse__. Without this mapping the
  * cast-only ingestion left `qualityRank`/`credentialFields` undefined, so the
  * selector rendered no icons/labels and — critically — no credential inputs,
  * making it impossible to enter an API key once backend options replaced the
- * camelCase defaults. Tolerant of either casing.
+ * __SKIP_WORD_0_camcorpse__ defaults. Tolerant of either casing.
  */
 const VALID_PROVIDER_IDS = new Set<string>([
   "browser-use-cloud",
@@ -387,7 +387,10 @@ function App() {
         // Pick a sensible default active thread: keep the persisted thread if it
         // is still accessible, else the most recently updated accessible thread.
         setThreadId((current) => {
-          const stored = current ?? localStorage.getItem("ai-qa-thread-id");
+          // If React state already has a thread (e.g. user created one while we fetched), KEEP IT.
+          if (current) return current;
+
+          const stored = localStorage.getItem("ai-qa-thread-id");
           if (stored && allThreads.some((t) => t.id === stored)) {
             return stored;
           }
@@ -1903,7 +1906,7 @@ function App() {
       )}
 
       {/* Main Content Area */}
-      <main id="main-content" className="flex-1 flex flex-col min-w-0 bg-white text-[#0f172a]">
+      <main id="main-content" data-thread-id={threadId || ""} className="flex-1 flex flex-col min-w-0 bg-white text-[#0f172a]">
         {/* Top Navigation */}
         <nav className="h-14 border-b border-[#e2e8f0] px-6 flex items-center gap-3 bg-white shadow-sm flex-shrink-0">
           <button

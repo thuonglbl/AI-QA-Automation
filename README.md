@@ -166,7 +166,14 @@ OpenAPI documentation is available at:
 
 - Python 3.14.6
 - Node.js 26.4.0
-- Docker (prefer Rancher Desktop 1.22.2)
+- Docker (prefer Rancher Desktop 1.22.2). **Note for Windows users**: Ensure the `docker-buildx` plugin is installed to avoid legacy builder deprecation warnings and speed up builds. You can install the latest version automatically by running the following in PowerShell:
+  ```powershell
+  $plugin_dir = "$env:USERPROFILE\.docker\cli-plugins"
+  New-Item -ItemType Directory -Force -Path $plugin_dir | Out-Null
+  $latest = (Invoke-RestMethod "https://api.github.com/repos/docker/buildx/releases/latest").tag_name
+  Invoke-WebRequest "https://github.com/docker/buildx/releases/download/$latest/buildx-$latest.windows-amd64.exe" -OutFile "$plugin_dir\docker-buildx.exe"
+  docker buildx version
+  ```
 - `uv` 0.11.24
 - PostgreSQL 18.4 with pgAdmin 4 9.15
 
@@ -281,6 +288,8 @@ npx playwright test e2e/story-7-1-auth.spec.ts --headed --workers=1 --debug
 
 `PLAYWRIGHT_SLOW_MO` is configured in `frontend/playwright.config.ts` and slows browser actions in milliseconds.
 
+E2E report is at the link: <domain>/api/admin/tests/e2e/report/view/index.html
+
 Backend tests:
 
 ```powershell
@@ -306,23 +315,23 @@ The production deployment uses separate images, all grouped under the
 
 | Component | Image path |
 | --- | --- |
-| Backend | ai-qa-automation/backend:0.6.1 |
-| Frontend | ai-qa-automation/frontend:0.6.1 |
+| Backend | ai-qa-automation/backend:0.7.0 |
+| Frontend | ai-qa-automation/frontend:0.7.0 |
 | Database | ai-qa-automation/database:18.4 |
 | Storage Server | ai-qa-automation/file-storage:4.36 |
 
 ### Build images locally
 
-Need to input the newest version number from your local development environment in .env file e.g 0.6.1
+Need to input the newest version number from your local development environment in .env file e.g 0.7.0
 
 ```powershell
-.\scripts\build-docker-images.ps1 -Version 0.6.1
+.\scripts\build-docker-images.ps1 -Version 0.7.0
 ```
 
 Confirm image files exist
 
 ```powershell
-docker images | findstr ai-qa
+docker images
 ```
 
 DB and SeaweedFS images (update only when version change)
@@ -340,10 +349,10 @@ docker push <docker-image-prefix>/ai-qa-automation/file-storage:4.36
 
 ### Push images to Artifactory
 
-Automation login using ARTIFACTORY_USERNAME and ARTIFACTORY_PASSWORD in `.env` file:
+Automation login using ARTIFACTORY_USERNAME and ARTIFACTORY_PASSWORD (Identity Tokens) in `.env` file:
 
 ```powershell
-.\scripts\build-docker-images.ps1 -Version 0.6.1 -Login -Push
+.\scripts\build-docker-images.ps1 -Version 0.7.0 -Push
 ```
 
 ### Deploy on UAT web server
@@ -382,7 +391,7 @@ nano .env
 nano docker-compose.yml
 ```
 
-Use the pushed images with the newest version e.g 0.6.0 and keep the services on the same Docker Compose network.
+Use the pushed images with the newest version e.g 0.7.0 and keep the services on the same Docker Compose network.
 
 Pull and recreate the containers:
 
@@ -401,6 +410,20 @@ docker compose -f docker-compose.yml exec backend alembic upgrade head
 
 The frontend image serves the Vite build through Nginx and proxies `/api`, `/auth`, and `/ws` to the backend service named `ai-qa-backend` inside the Docker Compose network.
 
+### Sync Models to UAT (Offline DB)
+
+Because the UAT server may not have internet access to fetch live benchmark scores, you can synchronize discovered models and benchmark scores from your Local database directly to the UAT PostgreSQL database using an SSH tunnel.
+
+1. Create an SSH tunnel to expose the UAT PostgreSQL port (5432) to your Local machine (e.g., port 5433):
+   ```bash
+   ssh -L 5433:localhost:5432 <user>@<uat_server>
+   ```
+2. In your Local `.env` file, configure `SYNC_TARGET_DATABASES` with the tunneled connection string:
+   ```env
+   SYNC_TARGET_DATABASES='{"UAT": "postgresql://localhost:5433/aiqa"}'
+   ```
+3. Open the Local Admin Dashboard, go to Models & Benchmarks, and click **Sync models and benchmarks**. The backend will discover models from configured providers, fetch scores from llm-stats.com, save them to the local database, and then automatically push the exact same data to the UAT database over the tunnel.
+
 ### Run E2E tests from the deployed server
 
 The admin "Run E2E Tests" button triggers an in-process Playwright run inside the backend container. The backend image therefore bundles a Playwright runner (Node.js, Chromium, and the `frontend/e2e` specs) on top of the Python runtime — this makes the backend image noticeably larger than a pure API image.
@@ -413,6 +436,8 @@ To make the button work on the server, set these in the deployment `.env` (the c
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD` — the admin account E2E uses to seed and clean up synthetic test data.
 
 The compose example sets `shm_size: "1gb"` for the backend (Chromium needs more shared memory than the 64 MB default). If the backend container cannot resolve the public `BASE_URL` hostname, uncomment the `extra_hosts` mapping in `docker-compose-server.yml.example`.
+
+E2E report is at the link: <domain>/api/admin/tests/e2e/report/view/index.html
 
 > Local development is unchanged: the button runs headed with slow motion against the running uvicorn + Vite servers, reusing them instead of starting its own.
 

@@ -45,7 +45,7 @@ Claude Sonnet 4.6 (Thinking)
 
 ### Debug Log References
 
-- AC1: `read_page()` in `ConfluenceReader` was calling `confluence_get_page` with camelCase `pageId` but `read_page_by_id()` used snake_case `page_id`. Fixed to use `page_id` consistently.
+- AC1: `read_page()` in `ConfluenceReader` was calling `confluence_get_page` with __SKIP_WORD_0_camcorpse__ `pageId` but `read_page_by_id()` used snake_case `page_id`. Fixed to use `page_id` consistently.
 - AC2: `BobAgent._extract_descendants()` already creates a single dedicated MCPClient for the extraction phase. Verified single instantiation via test.
 - AC3: `MCPClient.disconnect()` properly calls `MCPConnection.disconnect()` which exits session and transport contexts via `__aexit__()` — this sends graceful close signals to the MCP server. Both `process()` and `_extract_descendants()` call `disconnect()` in their `finally` blocks. Verified via tests.
 - Pyrefly type error fixed in tests: added `assert bob_agent.project_context is not None` before accessing `.artifact_service` to narrow the Optional type.
@@ -65,7 +65,7 @@ Claude Sonnet 4.6 (Thinking)
 
 ### Change Log
 
-- Fixed `ConfluenceReader.read_page()` to use `page_id` (snake_case) instead of `pageId` (camelCase) when calling `confluence_get_page` MCP tool (Date: 2026-05-29)
+- Fixed `ConfluenceReader.read_page()` to use `page_id` (snake_case) instead of `pageId` (__SKIP_WORD_0_camcorpse__) when calling `confluence_get_page` MCP tool (Date: 2026-05-29)
 - Added AC1/AC2/AC3 test coverage to `test_confluence_reader.py` and `test_bob.py` (Date: 2026-05-29)
 
 ### Review Findings

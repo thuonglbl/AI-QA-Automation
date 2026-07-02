@@ -1,8 +1,56 @@
-<testsuites id="" name="" tests="1" failures="0" skipped="1" errors="0" time="0.238941">
-<testsuite name="diag-ws-capture.spec.ts" timestamp="2026-06-26T13:49:42.949Z" hostname="chromium" tests="1" failures="0" skipped="1" time="0" errors="0">
-<testcase name="diag › diag: capture WS frames around on-prem submit" classname="diag-ws-capture.spec.ts">
-<skipped>
-</skipped>
+<testsuites id="" name="" tests="13" failures="0" skipped="0" errors="0" time="48.118165999999995">
+<testsuite name="group-1-admin-flow.spec.ts" timestamp="2026-07-02T08:47:48.760Z" hostname="chromium" tests="3" failures="0" skipped="0" time="14.937" errors="0">
+<testcase name="Group 1 — Admin ⇄ Project-Admin lifecycle › [P0] step 1 — admin creates &amp; renames a project" classname="group-1-admin-flow.spec.ts" time="4.34">
+</testcase>
+<testcase name="Group 1 — Admin ⇄ Project-Admin lifecycle › [P0] step 2 — configure the project and add an account" classname="group-1-admin-flow.spec.ts" time="7.235">
+</testcase>
+<testcase name="Group 1 — Admin ⇄ Project-Admin lifecycle › [P0] step 3 — admin deletes the project" classname="group-1-admin-flow.spec.ts" time="3.362">
+</testcase>
+</testsuite>
+<testsuite name="group-2-one-project-ptp-claude-sso.spec.ts" timestamp="2026-07-02T08:47:48.760Z" hostname="chromium" tests="2" failures="0" skipped="0" time="2.91" errors="0">
+<testcase name="Group 4 — PTP Claude SSO › [P0] navigate to the provider step" classname="group-2-one-project-ptp-claude-sso.spec.ts" time="1.786">
+</testcase>
+<testcase name="Group 4 — PTP Claude SSO › [P1] Claude SSO card exposes the Login SSO button (feature pending)" classname="group-2-one-project-ptp-claude-sso.spec.ts" time="1.124">
+</testcase>
+</testsuite>
+<testsuite name="group-3-multiple-projects-pt-claude-sso.spec.ts" timestamp="2026-07-02T08:47:48.760Z" hostname="chromium" tests="2" failures="0" skipped="0" time="2.928" errors="0">
+<testcase name="Group 5 — Multiple projects, PT Tool Claude SSO › [P0] multi-project workspace: both projects bootstrapped and listed" classname="group-3-multiple-projects-pt-claude-sso.spec.ts" time="0.021">
+</testcase>
+<testcase name="Group 5 — Multiple projects, PT Tool Claude SSO › [P1] open PT Tool thread; Claude SSO card exposes the Login SSO button (feature pending)" classname="group-3-multiple-projects-pt-claude-sso.spec.ts" time="2.907">
+</testcase>
+</testsuite>
+<testsuite name="group-4-multiple-projects-ptp-on-prem.spec.ts" timestamp="2026-07-02T08:47:48.760Z" hostname="chromium" tests="2" failures="0" skipped="0" time="2.333" errors="0">
+<testcase name="Group 6 — Multiple projects, PTP on-prem (up to Bob) › [P0] multi-project workspace: both projects bootstrapped and listed" classname="group-4-multiple-projects-ptp-on-prem.spec.ts" time="0.026">
+</testcase>
+<testcase name="Group 6 — Multiple projects, PTP on-prem (up to Bob) › [P0] configure On-Premises provider on the PTP thread" classname="group-4-multiple-projects-ptp-on-prem.spec.ts" time="2.307">
+<properties>
+<property name="slow" value="">
+</property>
+</properties>
+</testcase>
+</testsuite>
+<testsuite name="group-5-one-project-pt-on-prem.spec.ts" timestamp="2026-07-02T08:47:48.760Z" hostname="chromium" tests="2" failures="0" skipped="0" time="2.402" errors="0">
+<testcase name="Group 7 — PT Tool on-prem (up to Bob) › [P0] navigate to the provider step" classname="group-5-one-project-pt-on-prem.spec.ts" time="1.745">
+</testcase>
+<testcase name="Group 7 — PT Tool on-prem (up to Bob) › [P0] configure On-Premises provider" classname="group-5-one-project-pt-on-prem.spec.ts" time="0.657">
+<properties>
+<property name="slow" value="">
+</property>
+</properties>
+</testcase>
+</testsuite>
+<testsuite name="group-8-isolated-project-on-prem.spec.ts" timestamp="2026-07-02T08:47:48.760Z" hostname="chromium" tests="2" failures="0" skipped="0" time="3.659" errors="0">
+<testcase name="Group 8 — Isolated throwaway project, on-prem (provider config + Bob ready) › [P0] open the isolated project&apos;s thread → Alice asks for a provider" classname="group-8-isolated-project-on-prem.spec.ts" time="0.553">
+</testcase>
+<testcase name="Group 8 — Isolated throwaway project, on-prem (provider config + Bob ready) › [P0] configure On-Premises for real — live connection test + model discovery" classname="group-8-isolated-project-on-prem.spec.ts" time="3.106">
+<properties>
+<property name="slow" value="">
+</property>
+</properties>
+<system-out>
+<![CDATA[[group-8 cleanup] OK: project "E2E Isolated OnPrem 1782982107733-9kissijesw6" removed (DB + file storage).
+]]>
+</system-out>
 </testcase>
 </testsuite>
 </testsuites>

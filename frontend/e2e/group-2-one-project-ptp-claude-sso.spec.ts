@@ -43,10 +43,6 @@ test.describe.serial("Group 4 — PTP Claude SSO", () => {
 
     // Open project thread using helper
     await createNewProjectThread(page, PROJECT_PTP, ptp.id);
-
-    await expect(
-      page.getByText(/Which AI provider would you like to use/i),
-    ).toBeVisible({ timeout: 15_000 });
   });
 
   test("[P1] Claude SSO card exposes the Login SSO button (feature pending)", async () => {

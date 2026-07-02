@@ -181,7 +181,7 @@ class JiraReader:
                 self._get_tool_name("jira_get_issue"),
                 {
                     # Verified against the live MCP server (2026-06-17): the
-                    # jira_get_issue tool requires the camelCase "issueKey" param.
+                    # jira_get_issue tool requires the __SKIP_WORD_0_camcorpse__ "issueKey" param.
                     # Both snake_case "issue_key" and the Atlassian-style
                     # "issueIdOrKey" are rejected by the server ("Required: issueKey").
                     # Guarded by TestReadIssueRequestPayload in

@@ -268,7 +268,7 @@ def test_agent_message_json_serialization_iso8601() -> None:
     assert isinstance(data["timestamp"], str)
     assert data["timestamp"] == "2026-04-08T10:30:45.123456+00:00"
     assert "T" in data["timestamp"]  # ISO 8601 format
-    # Verify camelCase aliases are used
+    # Verify __SKIP_WORD_0_camcorpse__ aliases are used
     assert data["agentName"] == "Sarah"
     assert data["messageType"] == "success"
 

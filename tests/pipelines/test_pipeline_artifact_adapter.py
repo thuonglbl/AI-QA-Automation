@@ -1133,17 +1133,6 @@ def test_load_requirement_markdown_skips_artifact_with_missing_blob(
     assert any("missing storage object" in r.getMessage() for r in caplog.records)
 
 
-def test_load_raw_html_returns_none_when_blob_missing(
-    adapter_env: tuple[PipelineArtifactAdapter, Path],
-) -> None:
-    """load_raw_html tolerates a deleted blob by returning None instead of raising."""
-    adapter, root = adapter_env
-    art = adapter.save_raw_html("777/raw.html", "<html></html>")
-    (root / art.storage_path).unlink()
-
-    assert adapter.load_raw_html("777") is None
-
-
 def test_load_all_metadata_skips_config_with_missing_blob(
     adapter_env: tuple[PipelineArtifactAdapter, Path],
     caplog: pytest.LogCaptureFixture,

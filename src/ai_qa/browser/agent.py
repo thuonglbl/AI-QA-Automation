@@ -49,6 +49,7 @@ class BrowserAgent:
                 browser_config={
                     "chrome_path": chrome_path,
                     "headless": False,  # Visible for SSO session detection
+                    "disable_security": True,  # Allow self-signed certificates on UAT/Dev
                 },
                 use_vision=True,  # For Story 5.3 vision model
             )

@@ -1,0 +1,685 @@
+# Code Review Packet — Story 11.7 (Requirements Artifact Save) — FOCUSED SCOPE
+
+This packet is the diff to review. Scope = ONLY the Story 11.7 surface. The
+shared files `bob.py` and `tests/test_agents/test_bob.py` carry cumulative
+Epic-11 (11.1–11.6) changes that were ALREADY reviewed in prior sessions and
+are OUT OF SCOPE here — so for those two files only the 11.7 regions are shown
+as labeled "current code under review" blocks (not as noisy cumulative diffs).
+All other files are shown as true unified diffs vs baseline `8cf53eb`.
+
+Story intent (one line): make the on-approve save of an extracted requirement
+AUTHORITATIVE and FULLY PROVENANCED — add 3 nullable columns
+(`source_type`, `source_url`, `warnings`) to the `artifacts` table, save the
+approved markdown under `projects/{project_id}/requirements/` with provenance,
+harden the save against failure (AC3: stay reviewable, no DONE, no partial
+corruption), and expose the 3 fields on the artifact query surface + the TS type.
+
+===============================================================================
+## 1. NEW FILE — Alembic migration (provenance columns)
+===============================================================================
+
+```python
+# alembic/versions/c8e6ace95b08_add_provenance_columns_to_artifacts.py  (NEW)
+"""add_provenance_columns_to_artifacts
+
+Revision ID: c8e6ace95b08
+Revises: 604f28c24393
+Create Date: 2026-06-12 02:18:49.203871
+"""
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
+
+from alembic import op
+
+revision: str = "c8e6ace95b08"
+down_revision: str | Sequence[str] | None = "604f28c24393"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+def upgrade() -> None:
+    op.add_column("artifacts", sa.Column("source_type", sa.String(length=50), nullable=True))
+    op.add_column("artifacts", sa.Column("source_url", sa.Text(), nullable=True))
+    op.add_column("artifacts", sa.Column("warnings", sa.JSON(), nullable=True))
+
+
+def downgrade() -> None:
+    op.drop_column("artifacts", "warnings")
+    op.drop_column("artifacts", "source_url")
+    op.drop_column("artifacts", "source_type")
+```
+
+===============================================================================
+## 2. UNIFIED DIFF vs 8cf53eb — model / service / api / adapter / TS / adapter-test
+===============================================================================
+
+```diff
+diff --git a/frontend/src/components/conversations/ProjectSidebar.tsx b/frontend/src/components/conversations/ProjectSidebar.tsx
+index 88129e4..a2682e0 100644
+--- a/frontend/src/components/conversations/ProjectSidebar.tsx
++++ b/frontend/src/components/conversations/ProjectSidebar.tsx
+@@ -50,6 +50,9 @@ export interface Artifact {
+   created_by_display?: string | null;
+   /** Resolved updater display name (from /artifacts/tree endpoint). */
+   updated_by_display?: string | null;
++  source_type?: string | null;
++  source_url?: string | null;
++  warnings?: Array<Record<string, unknown>> | null;
+ }
+
+ interface ProjectSidebarProps {
+diff --git a/src/ai_qa/api/artifacts.py b/src/ai_qa/api/artifacts.py
+index cd447ba..dd1f2d6 100644
+--- a/src/ai_qa/api/artifacts.py
++++ b/src/ai_qa/api/artifacts.py
+@@ -5,7 +5,7 @@ from __future__ import annotations
+ import base64
+ import binascii
+ from datetime import datetime
+-from typing import Literal
++from typing import Any, Literal
+ from uuid import UUID
+
+ from fastapi import APIRouter, Depends, HTTPException, Query
+@@ -74,6 +74,9 @@ class ArtifactResponse(BaseModel):
+     created_by_user_id: UUID | None = None
+     updated_by_user_id: UUID | None = None
+     thread_id: UUID | None = None
++    source_type: str | None = None
++    source_url: str | None = None
++    warnings: list[dict[str, Any]] | None = None
+
+
+ class ArtifactTreeEntry(ArtifactResponse):
+@@ -187,6 +190,9 @@ def _artifact_detail_response(artifact: Artifact) -> ArtifactDetailResponse:
+         created_by_user_id=artifact.created_by_user_id,
+         updated_by_user_id=artifact.updated_by_user_id,
+         thread_id=artifact.thread_id,
++        source_type=artifact.source_type,
++        source_url=artifact.source_url,
++        warnings=artifact.warnings,
+         versions=[ArtifactVersionSummary.model_validate(version) for version in versions],
+     )
+
+@@ -251,6 +257,9 @@ async def get_artifact_tree(
+                     thread_id=e["thread_id"],
+                     created_by_display=e["created_by_display"],
+                     updated_by_display=e["updated_by_display"],
++                    source_type=e["source_type"],
++                    source_url=e["source_url"],
++                    warnings=e["warnings"],
+                 )
+                 for e in f["entries"]
+             ],
+diff --git a/src/ai_qa/artifacts/service.py b/src/ai_qa/artifacts/service.py
+index 8ae70ab..aed7d35 100644
+--- a/src/ai_qa/artifacts/service.py
++++ b/src/ai_qa/artifacts/service.py
+@@ -4,7 +4,7 @@ from __future__ import annotations
+
+ import hashlib
+ from datetime import datetime
+-from typing import TypedDict
++from typing import Any, TypedDict
+ from uuid import UUID
+
+ from sqlalchemy import select
+@@ -49,6 +49,9 @@ class ArtifactTreeEntryDict(TypedDict):
+     thread_id: UUID | None
+     created_by_display: str | None
+     updated_by_display: str | None
++    source_type: str | None
++    source_url: str | None
++    warnings: list[dict[str, Any]] | None
+
+
+ class ArtifactTreeFolderDict(TypedDict):
+@@ -78,6 +81,9 @@ class ArtifactService:
+         content: str | bytes,
+         agent_run_id: UUID | None = None,
+         thread_id: UUID | None = None,
++        source_type: str | None = None,
++        source_url: str | None = None,
++        warnings: list[dict[str, Any]] | None = None,
+     ) -> Artifact:
+         """Create an artifact and initial version row for project-owned content."""
+         self._validate_kind(kind)
+@@ -97,6 +103,9 @@ class ArtifactService:
+             name=clean_name,
+             storage_path="pending",
+             current_version=1,
++            source_type=source_type,
++            source_url=source_url,
++            warnings=warnings,
+         )
+         self.db.add(artifact)
+         self.db.flush()
+@@ -307,6 +316,9 @@ class ArtifactService:
+                     if artifact.updated_by_user_id is not None
+                     else None
+                 ),
++                "source_type": artifact.source_type,
++                "source_url": artifact.source_url,
++                "warnings": artifact.warnings,
+             }
+             buckets[browse_folder].append(entry)
+
+diff --git a/src/ai_qa/db/models.py b/src/ai_qa/db/models.py
+index 20f8303..f2e9218 100644
+--- a/src/ai_qa/db/models.py
++++ b/src/ai_qa/db/models.py
+@@ -149,6 +149,9 @@ class Artifact(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+     name: Mapped[str] = mapped_column(String(255), nullable=False)
+     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+     current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
++    source_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
++    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
++    warnings: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+
+     project: Mapped[Project] = relationship(back_populates="artifacts")
+     agent_run: Mapped[AgentRun | None] = relationship(back_populates="artifacts")
+diff --git a/src/ai_qa/pipelines/artifact_adapter.py b/src/ai_qa/pipelines/artifact_adapter.py
+index f6a1127..59a2f61 100644
+--- a/src/ai_qa/pipelines/artifact_adapter.py
++++ b/src/ai_qa/pipelines/artifact_adapter.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+
+ import json
++import logging
+ from dataclasses import dataclass
+ from typing import Any
+ from uuid import UUID
+@@ -11,6 +12,8 @@ from ai_qa.artifacts.service import ArtifactService
+ from ai_qa.db.models import Artifact
+ from ai_qa.pipelines.context import PipelineContext
+
++logger = logging.getLogger(__name__)
++
+
+ @dataclass(frozen=True)
+ class PipelineArtifact:
+@@ -45,6 +48,82 @@ class PipelineArtifactAdapter:
+             name += ".md"
+         return self._save_text(kind="requirements", name=name, content=markdown)
+
++    def save_requirement(
++        self,
++        *,
++        page_id: str,
++        markdown: str,
++        source_type: str | None = None,
++        source_url: str | None = None,
++        warnings: list[dict[str, Any]] | None = None,
++    ) -> Artifact:
++        """Persist an APPROVED requirement under projects/{id}/requirements/ with provenance.
++
++        Idempotent-by-name (D8 — 11.8): if an approved artifact named ``{page_id}/requirement.md``
++        already exists for this project, the prior row is DELETED (delete_artifact COMMITS) before
++        saving a fresh copy.  Intent: an AC3 re-approval never creates a duplicate approved row.
++        """
++        name = f"{page_id}/requirement.md"
++
++        # Dedupe: delete any existing approved artifact with the same name before saving.
++        existing = self.service.list_artifacts(project_id=self.project_id, kind="requirements")
++        for art in existing:
++            if art.name == name:
++                try:
++                    self.service.delete_artifact(
++                        project_id=self.project_id, artifact_id=art.id
++                    )
++                except Exception:
++                    # Best-effort: if deletion fails, proceed and overwrite anyway.
++                    logger.warning(
++                        "save_requirement: could not delete prior approved artifact %s — proceeding",
++                        art.id,
++                    )
++                break
++
++        artifact = self.service.save_artifact(
++            project_id=self.project_id,
++            owner_user_id=self.context.user_id,
++            agent_run_id=self.context.agent_run_id,
++            thread_id=self.context.thread_id,
++            kind="requirements",
++            name=name,
++            content=markdown,
++            source_type=source_type,
++            source_url=source_url,
++            warnings=warnings,
++        )
++        self._schedule_change_event(artifact.id, "created")
++        return artifact
++
++    def delete_draft_requirement(self, page_id: str) -> bool:
++        """Delete the pre-approval draft artifact for a page, if it exists (D8 — 11.8).
++
++        Draft = ``{page_id}.md`` (save_requirement_page).  Approved = ``{page_id}/requirement.md``.
++        Removing the draft after a successful approve keeps exactly one requirement per page.
++        Always safe to call — returns False if no draft; never raises (logs warning).
++        """
++        draft_name = f"{page_id}.md"
++        try:
++            artifacts = self.service.list_artifacts(
++                project_id=self.project_id, kind="requirements"
++            )
++            for art in artifacts:
++                if art.name == draft_name:
++                    return self.service.delete_artifact(
++                        project_id=self.project_id, artifact_id=art.id
++                    )
++            return False
++        except Exception as exc:
++            logger.warning(
++                "delete_draft_requirement(%s): advisory deletion failed — %s", page_id, exc
++            )
++            return False
++
+     def load_requirement_markdown(self) -> list[PipelineArtifact]:
+         """Load all requirement markdown artifacts for the current project."""
+         return self._load_text_artifacts(kind="requirements")
+```
+
+### ⚠️ SCOPE NOTE (read this): the two methods above (`save_requirement` dedupe loop + `delete_draft_requirement`) are Story **11.8 / decision D8** ("single requirement artifact per page"). They were merged INTO the 11.7 working tree while 11.7 is still in `review`. Review them as part of the combined current surface. `delete_artifact` (shown in §3) issues its OWN `db.commit()` and deletes storage objects, so the dedupe is a NON-atomic delete-then-save around 11.7's atomic single-write `save_artifact`.
+
+===============================================================================
+## 3. CONTEXT (unchanged, for reasoning about AC3 atomicity) — ArtifactService.save_artifact
+===============================================================================
+
+```python
+# src/ai_qa/artifacts/service.py  (the atomic write AC3 relies on; provenance kwargs added above)
+    def save_artifact(self, *, project_id, owner_user_id, kind, name, content,
+                       agent_run_id=None, thread_id=None,
+                       source_type=None, source_url=None, warnings=None) -> Artifact:
+        self._validate_kind(kind)
+        clean_name = self._validate_name(name)
+        self._validate_agent_run(project_id, agent_run_id)
+        self._validate_thread(project_id, thread_id)
+        content_bytes = _content_to_bytes(content)
+        content_hash = hashlib.sha256(content_bytes).hexdigest()
+
+        artifact = Artifact(project_id=project_id, agent_run_id=agent_run_id, thread_id=thread_id,
+                            created_by_user_id=owner_user_id, updated_by_user_id=owner_user_id,
+                            kind=kind, name=clean_name, storage_path="pending", current_version=1,
+                            source_type=source_type, source_url=source_url, warnings=warnings)
+        self.db.add(artifact)
+        self.db.flush()
+
+        storage_path = None
+        try:
+            storage_path = self.storage.write(project_id=project_id, artifact_id=artifact.id,
+                                               version=1, kind=kind, name=clean_name, content=content)
+            artifact.storage_path = storage_path
+            artifact.versions.append(ArtifactVersion(version=1, content_hash=content_hash,
+                                                      storage_path=storage_path,
+                                                      created_by_user_id=owner_user_id))
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            if storage_path is not None:
+                self.storage.delete(storage_path)
+            raise
+
+        self.db.refresh(artifact)
+        return artifact
+
+    # --- delete_artifact: invoked by the D8 dedupe loop in save_requirement (§2). ---
+    # NOTE: this COMMITS, and deletes storage objects, BEFORE any subsequent re-save runs.
+    def delete_artifact(self, *, project_id, artifact_id) -> bool:
+        artifact = self.db.execute(select(Artifact).options(selectinload(Artifact.versions))
+            .where(Artifact.project_id == project_id, Artifact.id == artifact_id)).scalar_one_or_none()
+        if artifact is None:
+            return False
+        for version in artifact.versions:          # best-effort storage delete (irreversible)
+            if version.storage_path:
+                self.storage.delete(version.storage_path)
+        if artifact.storage_path:
+            self.storage.delete(artifact.storage_path)
+        self.db.delete(artifact)
+        self.db.commit()                            # <-- COMMITS the deletion
+        return True
+```
+
+===============================================================================
+## 4. CHANGED CODE UNDER REVIEW — bob.py handle_approve (Story 11.7 save logic)
+   (Surrounding 11.1–11.6 structure preserved; ONLY the `if action == "approved":`
+    save body is the 11.7 change. Shown in full for review correctness.)
+===============================================================================
+
+```python
+# src/ai_qa/agents/bob.py  lines ~1063-1190
+    async def handle_approve(self, data: dict[str, Any] | None = None) -> None:
+        """Override to handle paginated approval and parent confirmation."""
+        if self.phase == "confirm_parent":
+            # ... (11.2/11.3 confirm-parent + extraction branch — OUT OF SCOPE) ...
+            return
+
+        # Markdown Review Phase (Split Panel)
+        if data and data.get("action") in ("approved", "not_requirement"):
+            action = data.get("action")
+            page_id = data.get("page_id")
+
+            if not page_id:
+                await self.send_message("No page_id provided for review action.", "error")
+                return
+
+            page = next((p for p in self.pages if p["page_id"] == page_id), None)
+            if page is None:
+                await self.send_message(f"Page '{page_id}' not found.", "error")
+                return
+
+            # Keep the index pointed at the acted page (the reject path reuses it)
+            self.current_page_index = self.pages.index(page)
+
+            if action == "approved":
+                updated_markdown = data.get("markdown")
+                if not updated_markdown:
+                    await self.send_message("Markdown cannot be empty.", "error")
+                    return
+
+                page["requirement_md"] = updated_markdown
+                if self.project_context is None:
+                    raise ValueError("BobAgent requires an active project context.")
+                adapter = PipelineArtifactAdapter(self.project_context)
+
+                source_type = str(page.get("source_type") or "confluence")
+                source_url = str(page.get("source_url") or "")
+                quality_issues = page.get("quality_issues") or []
+
+                try:
+                    adapter.save_requirement(
+                        page_id=page["page_id"],
+                        markdown=updated_markdown,
+                        source_type=source_type,
+                        source_url=source_url,
+                        warnings=quality_issues,
+                    )
+                    # D8 (11.8): delete the pre-approval draft (advisory — never blocks approval).
+                    adapter.delete_draft_requirement(page["page_id"])
+                    adapter.save_metadata(
+                        f"{page['page_id']}/requirement.metadata.json",
+                        {
+                            "source_url": source_url,
+                            "extracted_at": datetime.now(UTC).isoformat(),
+                            "source_type": source_type,
+                            "quality_warnings_acknowledged": bool(quality_issues),
+                            "acknowledged_quality_issues": quality_issues,
+                            "acknowledged_at": datetime.now(UTC).isoformat(),
+                            "artifact_kind": "requirements",
+                        },
+                    )
+                    self.output_files_saved += 1
+                except Exception as exc:
+                    logger.error("Bob failed to save requirement: %s", exc, exc_info=True)
+                    await self.send_message(
+                        content=self._format_error_message(
+                            [
+                                "Failed to save the approved requirement to the project artifact store.",
+                                f"Reason: {type(exc).__name__}.",
+                                "Please approve again to retry. No partial requirement was saved.",
+                            ]
+                        ),
+                        message_type="error",
+                    )
+                    return  # do NOT resolve this page id; do NOT transition to DONE
+
+            self._resolved_page_ids.add(page_id)
+
+        # DONE only when every extracted page has been approved or skipped.
+        if self.pages and len(self._resolved_page_ids) >= len(self.pages):
+            await self.transition_to(AgentState.DONE)
+            await self.send_message(
+                f"Saved {self.output_files_saved} approved requirements. "
+                "I'm handing off to Mary to create test cases.",
+                "success",
+            )
+            return
+        # Otherwise the frontend stays on the review payload and navigates locally.
+```
+
+Notes for reviewers on §4:
+- `save_requirement` and `save_metadata` are TWO separate `save_artifact` calls.
+  If the requirement saves (commits) but the side-car `save_metadata` raises, the
+  `except` fires AFTER the requirement is already committed → requirement exists
+  without its side-car, page stays un-resolved, re-approval creates a duplicate.
+  The story DECLARES this acceptable (warnings column is the durable record).
+- On the `not_requirement` action, the `if action == "approved":` block is skipped
+  and control falls to `self._resolved_page_ids.add(page_id)` — i.e. a skip resolves
+  the page with no save.
+- `save_metadata` is NOT inside the `try`'s rollback scope of the requirement — it is
+  a second artifact write. Consider whether a side-car-only failure should block resolution.
+
+===============================================================================
+## 5. NEW FILE — tests/unit/test_artifact_service_provenance.py
+===============================================================================
+
+```python
+"""Tests for provenance columns on the artifact service (Story 11.7)."""
+from __future__ import annotations
+from collections.abc import Generator
+from pathlib import Path
+from typing import cast
+import pytest
+from sqlalchemy import Table, create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+from ai_qa.artifacts.service import ArtifactService
+from ai_qa.artifacts.storage import LocalArtifactStorage
+from ai_qa.db.base import Base
+from ai_qa.db.models import Artifact, ArtifactVersion, Project, User
+from ai_qa.pipelines.artifact_adapter import PipelineArtifactAdapter
+from ai_qa.pipelines.context import PipelineContext
+from ai_qa.threads.models import AgentRun, Thread
+
+
+@pytest.fixture
+def db_session() -> Generator[Session]:
+    engine = create_engine("sqlite+pysqlite:///:memory:",
+                           connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine, tables=cast(list[Table],
+        [User.__table__, Project.__table__, Thread.__table__, AgentRun.__table__,
+         Artifact.__table__, ArtifactVersion.__table__]))
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    session = session_factory()
+    try:
+        yield session
+    finally:
+        session.close()
+    engine.dispose()
+
+
+@pytest.fixture
+def _seed(db_session: Session) -> tuple[Project, User]:
+    user = User(email="member@example.com", display_name="member", password_hash="hash",
+                role="standard", is_active=True)
+    project = Project(name="Scoped", created_by_user=user)
+    db_session.add_all([user, project])
+    db_session.commit()
+    return project, user
+
+
+def test_save_artifact_provenance_columns_round_trip(db_session, _seed, tmp_path) -> None:
+    """6.1: provenance columns persist and round-trip from DB; storage path under requirements/."""
+    project, user = _seed
+    service = ArtifactService(db_session, LocalArtifactStorage(root=tmp_path))
+    artifact = service.save_artifact(
+        project_id=project.id, owner_user_id=user.id, kind="requirements",
+        name="p1/requirement.md", content="# Requirement", source_type="confluence",
+        source_url="https://example.atlassian.net/wiki/spaces/TEST/pages/12345",
+        warnings=[{"category": "vague_language", "message": "m", "location": "P1", "impact": "i"}])
+    db_session.expire(artifact)
+    reloaded = db_session.get(Artifact, artifact.id)
+    assert reloaded is not None
+    assert reloaded.source_type == "confluence"
+    assert reloaded.source_url == "https://example.atlassian.net/wiki/spaces/TEST/pages/12345"
+    assert reloaded.warnings is not None
+    assert len(reloaded.warnings) == 1
+    assert reloaded.warnings[0]["category"] == "vague_language"
+    assert reloaded.storage_path.startswith(f"projects/{project.id}/requirements/")
+
+
+def test_save_artifact_provenance_defaults_to_none(db_session, _seed, tmp_path) -> None:
+    """6.1 back-compat: omitting provenance params leaves all three columns NULL."""
+    project, user = _seed
+    service = ArtifactService(db_session, LocalArtifactStorage(root=tmp_path))
+    artifact = service.save_artifact(project_id=project.id, owner_user_id=user.id,
+        kind="requirements", name="p1.md", content="# Draft")
+    db_session.expire(artifact)
+    reloaded = db_session.get(Artifact, artifact.id)
+    assert reloaded is not None
+    assert reloaded.source_type is None
+    assert reloaded.source_url is None
+    assert reloaded.warnings is None
+
+
+def test_ac2_query_reachability_no_workspace_path(db_session, _seed, tmp_path) -> None:
+    """6.5: approved requirement queryable via list_artifacts + read_current_content; no workspace path."""
+    project, user = _seed
+    thread = Thread(project_id=project.id, user_id=user.id)
+    db_session.add(thread); db_session.flush()
+    agent_run = AgentRun(thread_id=thread.id, status="running")
+    db_session.add(agent_run); db_session.commit()
+    storage = LocalArtifactStorage(root=tmp_path)
+    service = ArtifactService(db_session, storage)
+    adapter = PipelineArtifactAdapter(PipelineContext(project_id=project.id, user_id=user.id,
+        user_email=user.email, artifact_service=service, agent_run_id=agent_run.id, thread_id=thread.id))
+    adapter.save_requirement(page_id="p1",
+        markdown="# Approved Requirement\n\nGiven setup, Then result expected.",
+        source_type="confluence", source_url="https://example.atlassian.net/p1", warnings=[])
+    artifacts = service.list_artifacts(project_id=project.id, kind="requirements")
+    approved = [a for a in artifacts if a.name == "p1/requirement.md"]
+    assert len(approved) == 1
+    a = approved[0]
+    content = service.read_current_content(a)
+    assert b"Approved Requirement" in content
+    assert a.source_type == "confluence"
+    assert a.source_url == "https://example.atlassian.net/p1"
+    assert a.warnings == []
+    assert "workspace" not in a.storage_path
+
+
+def test_ac2_draft_vs_approved_discriminator(db_session, _seed, tmp_path) -> None:
+    """6.5: draft has NULL provenance; approved has provenance set — discriminator works."""
+    project, user = _seed
+    thread = Thread(project_id=project.id, user_id=user.id)
+    db_session.add(thread); db_session.flush()
+    agent_run = AgentRun(thread_id=thread.id, status="running")
+    db_session.add(agent_run); db_session.commit()
+    storage = LocalArtifactStorage(root=tmp_path)
+    service = ArtifactService(db_session, storage)
+    adapter = PipelineArtifactAdapter(PipelineContext(project_id=project.id, user_id=user.id,
+        user_email=user.email, artifact_service=service, agent_run_id=agent_run.id, thread_id=thread.id))
+    adapter.save_requirement_page("p1", "# Draft")            # draft (no provenance)
+    adapter.save_requirement(page_id="p1", markdown="# Approved", source_type="confluence",
+        source_url="https://example.atlassian.net/p1", warnings=[])   # approved (with provenance)
+    all_requirements = service.list_artifacts(project_id=project.id, kind="requirements")
+    assert len(all_requirements) == 2
+    drafts = [a for a in all_requirements if a.source_type is None]
+    approved = [a for a in all_requirements if a.source_type is not None]
+    assert len(drafts) == 1
+    assert len(approved) == 1
+    assert approved[0].name == "p1/requirement.md"
+```
+
+===============================================================================
+## 6. NEW FILE — tests/api/test_artifact_provenance_api.py (abbreviated to assertions)
+===============================================================================
+
+```python
+# Full RBAC-scaffold API test. Key assertions:
+# test_list_artifacts_includes_provenance_fields:
+#   GET /api/projects/{id}/artifacts?kind=requirements -> item source_type/source_url/warnings present
+# test_get_artifact_detail_includes_provenance_fields:
+#   GET /api/projects/{id}/artifacts/{artifact_id} -> detail carries 3 fields
+# test_artifact_tree_includes_provenance_fields:
+#   GET /api/projects/{id}/artifacts/tree -> requirements folder entry carries 3 fields
+# test_non_member_cannot_access_provenance:
+#   non-member GET detail -> 404
+# test_artifact_provenance_fields_optional_on_draft:
+#   POST /artifacts (no provenance kwarg in API) -> source_type/source_url/warnings == None
+#
+# Seeds requirement via service.save_artifact(..., source_type="confluence",
+#   source_url="https://example.atlassian.net/wiki/spaces/TEST/pages/42",
+#   warnings=[{"category":"vague_language",...}]).
+# NOTE: storage is a LocalStorageFake; write(**kwargs) with `# type: ignore[arg-type]`.
+```
+
+===============================================================================
+## 7. CHANGED CODE UNDER REVIEW — tests/test_agents/test_bob.py (3 NEW 11.7 tests)
+===============================================================================
+
+```python
+@pytest.mark.asyncio
+async def test_bob_handle_approve_saves_requirement_with_provenance(bob_agent) -> None:
+    """6.3 (AC1): handle_approve calls save_requirement with provenance from the page dict."""
+    bob_agent.phase = "review_markdown"
+    quality_issues = [{"category": "vague_language", "location": "P1", "message": "m", "impact": "i"}]
+    bob_agent.pages = [{
+        "page_id": "p1", "page_title": "P1",
+        "source_url": "https://example.atlassian.net/p1", "source_type": "confluence",
+        "requirement_md": "# P1", "quality_issues": quality_issues, "raw_html": "<p>x</p>"}]
+    with (patch("ai_qa.agents.bob.PipelineArtifactAdapter") as mock_adapter_class,
+          patch.object(bob_agent, "transition_to"),
+          patch.object(bob_agent, "send_message")):
+        mock_adapter = mock_adapter_class.return_value
+        mock_adapter.save_requirement.return_value = MagicMock()
+        mock_adapter.save_metadata.return_value = MagicMock()
+        await bob_agent.handle_approve({"action": "approved", "page_id": "p1", "markdown": "edited P1"})
+    mock_adapter.save_requirement.assert_called_once()
+    _, kwargs = mock_adapter.save_requirement.call_args
+    assert kwargs["page_id"] == "p1"
+    assert kwargs["markdown"] == "edited P1"
+    assert kwargs["source_type"] == "confluence"
+    assert kwargs["source_url"] == "https://example.atlassian.net/p1"
+    assert kwargs["warnings"] == quality_issues
+    assert bob_agent.output_files_saved == 1
+    assert "p1" in bob_agent._resolved_page_ids
+
+
+@pytest.mark.asyncio
+async def test_bob_handle_approve_save_failure_keeps_page_reviewable(bob_agent) -> None:
+    """6.4 (AC3): save failure -> error message sent, page not resolved, no DONE, output_files_saved=0."""
+    bob_agent.phase = "review_markdown"
+    bob_agent.pages = [{"page_id": "p1", "page_title": "P1",
+        "source_url": "https://example.atlassian.net/p1", "source_type": "confluence",
+        "requirement_md": "# P1", "quality_issues": []}]
+    send_message_calls = []
+    async def capture_send(content, message_type="text", **kw):
+        send_message_calls.append({"content": content, "message_type": message_type})
+    with (patch("ai_qa.agents.bob.PipelineArtifactAdapter") as mock_adapter_class,
+          patch.object(bob_agent, "transition_to") as mock_transition,
+          patch.object(bob_agent, "send_message", side_effect=capture_send)):
+        mock_adapter = mock_adapter_class.return_value
+        mock_adapter.save_requirement.side_effect = RuntimeError("storage down")
+        await bob_agent.handle_approve({"action": "approved", "page_id": "p1", "markdown": "edited P1"})
+    error_calls = [c for c in send_message_calls if c["message_type"] == "error"]
+    assert len(error_calls) == 1
+    assert "retry" in error_calls[0]["content"].lower() or "approve" in error_calls[0]["content"].lower()
+    assert "p1" not in bob_agent._resolved_page_ids
+    from ai_qa.agents.base import AgentState
+    assert mock_transition.call_args_list == [] or all(
+        AgentState.DONE not in c.args for c in mock_transition.call_args_list)
+    assert bob_agent.output_files_saved == 0
+
+
+@pytest.mark.asyncio
+async def test_bob_handle_approve_save_failure_no_mcp_client(bob_agent) -> None:
+    """6.6 regression: save path opens NO MCP client — save failure does not touch MCPClient."""
+    bob_agent.phase = "review_markdown"
+    bob_agent.pages = [{"page_id": "p1", "page_title": "P1",
+        "source_url": "https://example.atlassian.net/p1", "source_type": "confluence",
+        "requirement_md": "# P1", "quality_issues": []}]
+    with (patch("ai_qa.agents.bob.MCPClient") as mock_mcp,
+          patch("ai_qa.agents.bob.PipelineArtifactAdapter") as mock_adapter_class,
+          patch.object(bob_agent, "transition_to"),
+          patch.object(bob_agent, "send_message")):
+        mock_adapter_class.return_value.save_requirement.side_effect = RuntimeError("storage down")
+        await bob_agent.handle_approve({"action": "approved", "page_id": "p1", "markdown": "edited P1"})
+    mock_mcp.assert_not_called()
+```
+
+===============================================================================
+END OF PACKET
+===============================================================================

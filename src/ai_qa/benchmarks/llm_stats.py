@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The app's 6 capability names (mirror ai_qa.api.admin.ModelCapability).
+# The app's 6 capability names (mirror ai_qa.api.admin.__SKIP_WORD_2_Modcorppability__).
 APP_CAPABILITIES: tuple[str, ...] = (
     "global",
     "reasoning",

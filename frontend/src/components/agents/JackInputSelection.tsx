@@ -52,7 +52,7 @@ interface JackInputSelectionProps {
 const BROWSER_CHOICES: { label: string; name: string }[] = [
   { label: "chromium", name: "Chromium (Chrome, Edge)" },
   { label: "firefox", name: "Firefox" },
-  { label: "webkit", name: "WebKit" },
+  { label: "webkit", name: "WebKit (Safari)" },
 ];
 
 function ScriptRow({
